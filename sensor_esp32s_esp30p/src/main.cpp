@@ -100,8 +100,7 @@ Serial.begin(115200);
   Serial.print("MAC: ");
   Serial.println(macAddress);
 
-// Inicialización LoRa con manejo de errores
-iniciarLoRaConReintentos();
+
 
   if (registrado) {
     leerDatosDeEEPROM();
@@ -111,6 +110,10 @@ iniciarLoRaConReintentos();
     Serial.println("Dispositivo NO registrado. Presione botón para registro.");
     inicializarDispositivo();
   }
+
+
+// Inicialización LoRa con manejo de errores
+iniciarLoRaConReintentos();
 
     Serial.println("Termina SETUP...");
 //      limpiarEEPROMYReiniciar();
