@@ -3,6 +3,10 @@
 #include <XPT2046_Touchscreen.h>
 #include <SPI.h>
 
+
+#include <WiFi.h>
+#include "esp_wifi.h"  // Necesario para usar esp_wifi_set_mac()
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -25,7 +29,7 @@
 // Configuración WiFi
 #define AP_SSID "NUUP_2025"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
 #define AP_PASS "12345678"
-#define WIFI_TIMEOUT 30000 // 30 segundos
+#define WIFI_TIMEOUT 5000 // 30 segundos
 #define USER_ID_MAX_LEN 32    // Máximo 32 caracteres para el ID lo puedo cambiar si solo necesito el users.users_id concatenado a la clave NUUP2025
 // --- Nueva Configuración para Dispositivos LoRa ---
 #define MAX_DISPOSITIVOS 50         // Máximo de dispositivos registrables
@@ -220,7 +224,7 @@ bool apMode = false;
 bool forceAPMode = false;
 //intento de reconectar
 unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 1 * 60 * 1000; ; // 5 minutos
+const unsigned long reconnectInterval = 2 * 60 * 1000; ; // 5 minutos
 
 
 WiFiCredential savedNetworks[MAX_NETWORKS];
@@ -234,7 +238,6 @@ bool buttonActive = false;
 void inicializa_eeprom();
 void iniciarLoRaConReintentos();
 void clearEEPROM_WIFFI();
-void initWiFi();
 void startAPMode();
 void handleRoot();
 void handleSaveCredentials();
@@ -242,7 +245,6 @@ void handleDeleteNetwork();
 void handleSelectNetwork();
 void saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
-void connectToWiFi();
 void blinkLED(int times, int delayTime);
 void attemptReconnectToAllNetworks();
 void handleSetID();
@@ -551,14 +553,12 @@ Serial.println("Se cargaron redes de EEPROM");
 
     // Si no hay ID guardado, forzar el modo AP para que el usuario lo ingrese
     if (userID.isEmpty()) {
-   Serial.println("No hay Cargando  ID de EEPROM inicia modo AP");
+   Serial.println("No hay Cargando  ID de EEPROM ");
   } else {
     // Intentar conectar a WiFi normalmente
-   Serial.println("Si hay Cargando  ID de EEPROM inicia conexion WIFFI");
+   Serial.println("ID cargado en  EEPROM ");
   }
 delay(1000);
-
-connectToWiFi();
 
  // 4. Manejo de arreglo de redes WiFi si existe alguna actualmente dada de alta
 
@@ -593,17 +593,13 @@ cargarDispositivos();  //
 delay(1000);
 
 //Wiffi 
+ //attemptReconnectToAllNetworks();  
  if (WiFi.status() != WL_CONNECTED) {
-Serial.println("Borrando conexiones anteriores");
-WiFi.disconnect(true);  // Borra conexiones anteriores
-delay(1000);
-//initWiFi(); // Reinicia el modo WiFi
-//WiFi.setAutoReconnect(true);
-//WiFi.persistent(false); 
-attemptReconnectToAllNetworks();  }
+  attemptReconnectToAllNetworks();     
+}
 
 
-  // 9. Configuración MQTT con parámetros mejorados
+// 9. Configuración MQTT con parámetros mejorados
 
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
@@ -627,21 +623,15 @@ Serial.println("Setup completado");
 
 void loop() {
 
-    
-  //0. Si no hay Wiffi 
- if (WiFi.status() != WL_CONNECTED) {
-Reintentar_Wiffi();
-  }
-
-
+ 
 // 1. Manejo básico de conexiones
-if (!client.connected() && WL_CONNECTED) {
+if (!client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
     reconnect();  //Solo para reconectar y configuracion de subscripciones
   }
  client.loop();
 
 
- if ( client.connected() && WL_CONNECTED) {
+ if ( client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode)  {
  MQTT_ALTA();  //Para solicitar el alta en broker
   }
 
@@ -650,10 +640,10 @@ if (!client.connected() && WL_CONNECTED) {
 
  // 2. Si estamos en modo AP, manejar eso y salir
 if (boton_w) { //mientras no exista comando en pantalla
-  forceAPMode = true;
-  if(una_APmode){
+    if(una_APmode){
   startAPMode();
 una_APmode = false;
+forceAPMode = true;
 }
   }
 
@@ -661,9 +651,8 @@ if (forceAPMode) {
     dnsServer.processNextRequest();
     server.handleClient();
     static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 200) {
-      //digitalWrite(LED_WIFFI, !digitalRead(LED_WIFFI));
-      lastBlink = millis();
+    if (millis() - lastBlink > 300) {
+        lastBlink = millis();
     }
     return;
   }
@@ -685,7 +674,7 @@ if (forceAPMode) {
 
 // 6. Comportamiento en modo normal 
   // 6.1 En caso de que tenga WIFFI conectado a MQTT y este dado de alta 
-  if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed) {  
+  if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed && !forceAPMode) {  
 
   // Verificar si hay mensaje LoRa nuevo (protegido atómicamente)
   bool hayDatos = false;
@@ -740,16 +729,19 @@ if (boton_s){
     
     delay(10);
 
-}
+  //0. Si no hay Wiffi 
+ if (WiFi.status() != WL_CONNECTED && !forceAPMode) {
+Reintentar_Wiffi();
+  }
+
+
+
+  }
 
 
 // Implementación de funciones
-void initWiFi() {
-  WiFi.mode(WIFI_STA);
-}
 
 void startAPMode() {
-  apMode = true;
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
   dnsServer.start(53, "*", WiFi.softAPIP());
@@ -766,9 +758,6 @@ void startAPMode() {
   Serial.print("SSID: "); Serial.println(AP_SSID);
   Serial.print("IP: "); Serial.println(WiFi.softAPIP());
   
-  // Indicar con LED que estamos en modo configuración
-  //digitalWrite(LED_WIFFI, HIGH);
-
 
 }
 
@@ -1251,62 +1240,37 @@ bool loadNetworksFromEEPROM() {
   return success;
 }
 
-
-void connectToWiFi() {
-  initWiFi();
-  bool connected = false;
-
-  for (int i = 0; i < MAX_NETWORKS; i++) {
-    if (savedNetworks[i].ssid.length() > 0) {
-      Serial.print("Conectando a: ");
-      Serial.println(savedNetworks[i].ssid);
-      WiFi.begin(savedNetworks[i].ssid.c_str(), savedNetworks[i].password.c_str());
-
-      unsigned long startTime = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - startTime < WIFI_TIMEOUT) {
-        delay(500);
-        Serial.print(".");
-      }
-
-      if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n¡WiFi conectado!");
-        Serial.println(WiFi.localIP());
-        connected = true;
-        currentNetwork = i;
-
-        for (int j = 0; j < MAX_NETWORKS; j++)
-          savedNetworks[j].active = (j == i);
-
-        saveNetworksToEEPROM();
-        apMode = false;
-        break;
-      }
-    }
-  }
-
-  if (!connected) {
-    Serial.println("\n❌ No se pudo conectar a ninguna red WiFi.");
-    apMode = false; // solo indica que no está en modo AP
-   // startAPMode()
-  }
-}
-
-
 void blinkLED(int times, int delayTime) {
   for(int i = 0; i < times; i++) {
     //digitalWrite(LED_WIFFI, HIGH);
     delay(delayTime);
     //digitalWrite(LED_WIFFI, LOW);
-    delay(delayTime);
+    delay(delayTime); 
   }
 }
 
 void attemptReconnectToAllNetworks() {
+   WiFi.mode(WIFI_STA);
   for (int i = 0; i < MAX_NETWORKS; i++) {
     if (savedNetworks[i].ssid.length() > 0) {
       Serial.print("Intentando reconectar a: ");
       Serial.println(savedNetworks[i].ssid);
+ //cofigo para rotar la MAC y no tenga bloqueos por conexiones fantasmas 
+ // Inicializa el WiFi en modo STA
+  WiFi.mode(WIFI_STA);
+  delay(100);  // Pequeña pausa para estabilizar
+  // Configura una nueva MAC
+  uint8_t newMAC[6];
+  WiFi.macAddress(newMAC);        // Obtiene la MAC actual
+  newMAC[5] = random(0, 255);    // Cambia el último byte (aleatorio)
 
+  // Aplica la nueva MAC (¡Solo después de WiFi.mode()!)
+  esp_err_t result = esp_wifi_set_mac(WIFI_IF_STA, newMAC);
+  if (result != ESP_OK) {
+    Serial.printf("Error al cambiar MAC: %d\n", result);
+    return;
+  }
+  //    
       WiFi.begin(savedNetworks[i].ssid.c_str(), savedNetworks[i].password.c_str());
 
       unsigned long startAttempt = millis();
@@ -1331,6 +1295,7 @@ void attemptReconnectToAllNetworks() {
         Serial.println("\nNo se pudo conectar.");
       }
     }
+else{     Serial.println("No Existen redes guardadas.");}
   }
 
   Serial.println("No se pudo conectar a ninguna red.");
@@ -1947,7 +1912,6 @@ void clearEEPROM_WIFFI() {
 
     saveNetworksToEEPROM();
     Serial.println("Reestablece correctamente EEPROM y Redes Wiffi....");
-    forceAPMode = true;
     Serial.println("Modo AP activado (configuración inicial)");
 }
 

@@ -92,7 +92,11 @@ Serial.begin(115200);
   
    // Inicializar EEPROM
   EEPROM.begin(EEPROM_SIZE);
+  //      limpiarEEPROMYReiniciar();
+
   registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
+
+
 
   // Obtener MAC
   macAddress = WiFi.macAddress();
@@ -112,28 +116,30 @@ Serial.begin(115200);
   }
 
 
+    digitalWrite(LED_PIN, LOW);
+delay(2000);
+    digitalWrite(LED_PIN, HIGH);
+delay(2000);
+  digitalWrite(LED_PIN, LOW);
+delay(2000);
+    digitalWrite(LED_PIN, HIGH);
+delay(2000);
+  digitalWrite(LED_PIN, LOW);
+delay(2000);
+    digitalWrite(LED_PIN, HIGH);
+delay(2000);
+  digitalWrite(LED_PIN, LOW);
+delay(2000);
+    digitalWrite(LED_PIN, HIGH);
+delay(2000);
+
+
 // Inicialización LoRa con manejo de errores
 iniciarLoRaConReintentos();
 
     Serial.println("Termina SETUP...");
-//      limpiarEEPROMYReiniciar();
 
-  digitalWrite(LED_PIN, LOW);
-delay(2000);
-    digitalWrite(LED_PIN, HIGH);
-delay(2000);
-  digitalWrite(LED_PIN, LOW);
-delay(2000);
-    digitalWrite(LED_PIN, HIGH);
-delay(2000);
-  digitalWrite(LED_PIN, LOW);
-delay(2000);
-    digitalWrite(LED_PIN, HIGH);
-delay(2000);
-  digitalWrite(LED_PIN, LOW);
-delay(2000);
-    digitalWrite(LED_PIN, HIGH);
-delay(2000);
+
 
 
 }
