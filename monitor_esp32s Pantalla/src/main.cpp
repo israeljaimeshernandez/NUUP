@@ -292,8 +292,7 @@ if(!Usando_lora_nucleo1){
 int packetSize = LoRa.parsePacket();
 if (packetSize > 0) {
 
-
-//para ver como recibo todo
+  //para ver como recibo todo
 Serial.println("LoRa recibido desde dispositivo ..");
 
     String received = "";
@@ -1565,7 +1564,7 @@ void procesarMensajeLoRa() {
   if (LoRa.parsePacket()) {
     String mensaje = LoRa.readString();
     mensaje.trim();
-    Serial.println("LoRa recibido desde dispositivo para configuracion de alta o baja: " + mensaje);
+    Serial.println("PROCESAR MENSAJE LoRa recibido desde dispositivo para configuracion de alta o baja: " + mensaje);
 
     // Procesar mensajes de alta (REG)
     if (mensaje.startsWith("REG")) {

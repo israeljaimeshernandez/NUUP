@@ -20,8 +20,8 @@
 #define ADC_PIN 34
 // --- LoRa ---
 #define LORA_SS 5
-#define LORA_RST 14   //no definido
-#define LORA_DIO0 2  //no defnido
+#define LORA_RST -1   //14 lo tengo conectado pero no definido
+#define LORA_DIO0 -1  //2 lo tengo conectado pero no defnido
 // --- Configuración Deep Sleep ---
 #define BOTON_WAKEUP_PIN GPIO_NUM_33 // Usar el mismo pin que tu botón
 // Variables conservadas durante el sleep
