@@ -92,7 +92,7 @@ Serial.begin(115200);
   
    // Inicializar EEPROM
   EEPROM.begin(EEPROM_SIZE);
-  //      limpiarEEPROMYReiniciar();
+   //     limpiarEEPROMYReiniciar();
 
   registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
 

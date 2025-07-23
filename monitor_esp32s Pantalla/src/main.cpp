@@ -3,7 +3,6 @@
 #include <XPT2046_Touchscreen.h>
 #include <SPI.h>
 
-
 #include <WiFi.h>
 #include "esp_wifi.h"  // Necesario para usar esp_wifi_set_mac()
 
@@ -11,11 +10,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
-//#include <SPI.h>
+
 #include <LoRa.h>
 #include <EEPROM.h>
 #include <PubSubClient.h>
 #include <esp_task_wdt.h>
+
 //EEPROM  Tamaño EEPROM (ESP32 tiene 4KB)
 // Definir direcciones para nombre y email (después de tus otras configuraciones) 
 #define USER_NAME_ADDR 3000    // 
@@ -168,7 +168,6 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 String lastLoRaMessage = "";
 
 
-bool modoRecepcion = false;
 bool Usando_lora_nucleo1=false;
 extern char macAddress[18]; // Debe contener la MAC del dispositivo actual
 bool registrado = false;
@@ -305,14 +304,14 @@ if (packetSize > 0) {
 
         // Guardar el mensaje recibido en la variable global
         lastLoRaMessage = received;
-    // Control del LED
-    //digitalWrite(LED_WIFFI, HIGH);
-    delay(100);
-    //digitalWrite(LED_WIFFI, LOW);
-    delay(1000);
 
 
-      // Contar comas para validar estructura (ahora deben ser 7 comas)
+//para ver como recibo todo
+Serial.println("LoRa recibido desde dispositivo ...: " + lastLoRaMessage);
+
+
+//
+// Contar comas para validar estructura (ahora deben ser 7 comas)
     int commaCount = 0;
     for (int i = 0; i < received.length(); i++) {
         if (received.charAt(i) == ',') commaCount++;
@@ -623,7 +622,6 @@ Serial.println("Setup completado");
 
 void loop() {
 
- 
 // 1. Manejo básico de conexiones
 if (!client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
     reconnect();  //Solo para reconectar y configuracion de subscripciones
@@ -709,14 +707,14 @@ if (forceAPMode) {
 // 7. Manejo del botón S para registro de dispositivo o emparejamiento
 if (boton_s){
       Usando_lora_nucleo1=true;
-      modoRecepcion = true;
+      delay(100);
     Serial.println("Modo recepción activado. Esperando solicitudes REG o BAJA...");
-        // Solo procesar mensajes (el OK_REG se envía desde procesarMensajeLoRa si es necesario)
+        // Solo procesar mensajes (el OK_REG se envía desde procesarMensajeLoRa)
         procesarMensajeLoRa();
-        delay(10); // Pequeña pausa para evitar saturación
+        delay(100); // Pequeña pausa para evitar saturación
       }
-      modoRecepcion = false;
       Usando_lora_nucleo1=false;
+
 
 
       //8.  Verificaciones de botones en TOUCH
@@ -733,7 +731,6 @@ if (boton_s){
  if (WiFi.status() != WL_CONNECTED && !forceAPMode) {
 Reintentar_Wiffi();
   }
-
 
 
   }
