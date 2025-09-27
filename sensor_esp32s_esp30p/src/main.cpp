@@ -1,3 +1,4 @@
+//actualizacion
 #include <Arduino.h>
 #include <SPI.h>
 #include <LoRa.h>
@@ -70,7 +71,6 @@ void limpiarEEPROMYReiniciar();
 void enviarDatos(int distancia); 
 void enviarSolicitudBaja();
 void enviarSolicitudRegistro();
-void procesarBaja();
 void confirmarRegistro(String datos);
 void manejarBoton();
 float measureDistance();
@@ -188,12 +188,12 @@ float measureDistance() {
 
 // Función para inicializar estructura de dispositivo
 void inicializarDispositivo() {
-  memset(&dispositivo, 0, sizeof(dispositivo));
+  memset(&dispositivo, 0, sizeof(dispositivo)); //inicializa a cero la memoria de esa estrucutura
   strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac)-1);
   dispositivo.mac[sizeof(dispositivo.mac)-1] = '\0';
-  strncpy(dispositivo.nombre, "Nuevo Dispositivo", sizeof(dispositivo.nombre)-1);
-  dispositivo.altura = 0;
-  dispositivo.litros = 0;
+  strncpy(dispositivo.nombre, "Deposito estandar", sizeof(dispositivo.nombre)-1);
+  dispositivo.altura = 160; //Altura Estandar 1.60 mts
+  dispositivo.litros = 1100;//deposito estandar de 1,100 litros
 }
 
 void guardarDatosEnEEPROM() {
@@ -256,11 +256,6 @@ void enviarSolicitudRegistro() {
   Serial.println(mensaje);
 }
 
-void procesarBaja() {
-  Serial.println("Baja confirmada. Reiniciando...");
-  limpiarEEPROMYReiniciar();
-  delay(1000);  //si no me espero continua con baja luego alta consecutivamente por que es el mismo boton
-}
 
 void confirmarRegistro(String datos) {
   int pos1 = datos.indexOf(',');
@@ -323,11 +318,9 @@ if (millis() - ultimoEnvioSolicitud >= INTERVALO_ENVIO_SOLICITUD) {
     Serial.println("Baja forzada por tiempo (BAJA FORZADA) espera 5 seg y Deep Sleep..");
       digitalWrite(LED_PIN, LOW);
       delay(5000);
-
-    limpiarEEPROMYReiniciar();
-    prepararParaDeepSleep();
-    esp_deep_sleep_start();
-  }
+    limpiarEEPROMYReiniciar(); 
+     // ya reinicia Eprom ESP.restart();
+}
 
  if (LoRa.parsePacket()) {
     String respuesta = LoRa.readString();
@@ -336,19 +329,17 @@ if (millis() - ultimoEnvioSolicitud >= INTERVALO_ENVIO_SOLICITUD) {
     Serial.println(respuesta);
 
     if (respuesta == "OK_BAJA" ) {
-      procesarBaja();
     Serial.println("Recibe confirmacion de Baja manda a dormir espero 5 segundos...");
          digitalWrite(LED_PIN, LOW);
       delay(5000);
-
-  prepararParaDeepSleep();
-    esp_deep_sleep_start();
+ESP.restart();
 
     } else if (respuesta.startsWith("OK_REG") && !registrado) {
       confirmarRegistro(respuesta);
          digitalWrite(LED_PIN, HIGH);
-      delay(5000);
-      Serial.println("Recibe confirmacion de ALTA manda a dormir espero 5 seg...");
+          Serial.println("Recibe confirmacion de ALTA manda a dormir espero 5 seg...");
+      delay(5000);     
+    ESP.restart();
     }
   }
 
@@ -469,6 +460,7 @@ String(round((analogRead(12.052) / 4095.0 * 3.3 * 2.0 ))) + "," +
 
   Serial.print("[Datos] ");
   Serial.println(mensaje);
+
 }
 
 // --- Función para resetear el sensor ---

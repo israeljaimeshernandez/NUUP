@@ -3,58 +3,57 @@
 #include <XPT2046_Touchscreen.h>
 #include <SPI.h>
 
+//Wiffi
 #include <WiFi.h>
 #include "esp_wifi.h"  // Necesario para usar esp_wifi_set_mac()
 
+//AP
 #include <Arduino.h>
-#include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 
 #include <LoRa.h>
 #include <EEPROM.h>
+
+//MQTT
 #include <PubSubClient.h>
-#include <esp_task_wdt.h>
 
 //EEPROM  Tamaño EEPROM (ESP32 tiene 4KB)
 // Definir direcciones para nombre y email (después de tus otras configuraciones) 
 #define USER_NAME_ADDR 3000    // 
 #define USER_EMAIL_ADDR 3500 //
 #define EEPROM_SIZE 4096              //
+#define ALIAS_DISPOSITIVOS 2000       // 
+
 #define MQTT_CONFIRMED_FLAG_ADDR 350  //
 #define USER_ID_ADDR 400              // 
 #define LORA_DEVICES_ADDR 500         //
 #define CONFIG_DISPOSITIVOS_ADDR 700  // 
-#define ALIAS_DISPOSITIVOS 2000       // 
+
 // Configuración WiFi
 #define AP_SSID "NUUP_2025"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
 #define AP_PASS "12345678"
 #define WIFI_TIMEOUT 5000 // 30 segundos
 #define USER_ID_MAX_LEN 32    // Máximo 32 caracteres para el ID lo puedo cambiar si solo necesito el users.users_id concatenado a la clave NUUP2025
+
 // --- Nueva Configuración para Dispositivos LoRa ---
 #define MAX_DISPOSITIVOS 50         // Máximo de dispositivos registrables
 #define MAC_LEN 17                  // Longitud de MAC (ej: "A0:B1:C2:D3:E4:F5")
 #define VALORES_POR_DISPOSITIVO 5    // Máximo de valores por dispositivo
+
 // Pines LoRa
 #define LORA_SS 27
 //#define LORA_RST 35
 //#define LORA_DIO0 35  //lo quiero cambiar sospecho que algo esta haciendo interferencia se queda pasmado el LORA despues de un tiempo
                     //voy a probar en el PCB de desarollo y vemos si se cambia
-// Botón configuración
-//#define CONFIG_BUTTON 26
-#define BUTTON_HOLD_TIME 3000 // 20 segundos
-#define BOTON_PIN 35          // botón de emparejamiento D15 le puse el D33 por que se complica el PCB probar en proto si funciona
-//#define LED_WIFFI 27          // LED estatus WIFFI
-#define INIT_FLAG_VALUE 0x42
-//#define EEPROM_SIZE 512 la tengo definida en seccion de dispositivos
+
+//Redes guardadas
 #define MAX_NETWORKS 3
 #define SSID_LEN 32
 #define PASS_LEN 64
 #define NETWORK_SIZE (SSID_LEN + PASS_LEN + 2) // +2 para los bytes de longitud
 
 // ==================== CONSTANTES ====================
-#define EN 4
-
 // Pines LCD
 #define LCD_CS   15
 #define LCD_DC    2
@@ -78,7 +77,6 @@
 #define LORA_MOSI 23
 
 //Definiciones PANTALLA 
-
 // ==================== CLASE LGFX ====================
 class LGFX : public lgfx::LGFX_Device {
     lgfx::Panel_ILI9488 _panel_instance;
@@ -134,13 +132,6 @@ SPIClass touchSPI(VSPI);
 SPIClass loraSPI(HSPI);  // Segundo SPI para LoRa
 XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
 
-
-// Usa los valores de borde COMPLETOS para el mapeo general
-#define X_MIN 410     // Esquina Superior Izquierda X
-#define X_MAX 3613    // Esquina Superior Derecha X
-#define Y_MIN 387     // Esquina Superior Derecha Y
-#define Y_MAX 3401    // Esquina Inferior Izquierda Y
-
 // ==================== CONSTANTES Y VARIABLES ====================
 const int btnW_x = 50;
 const int btnS_x = 170;
@@ -152,25 +143,11 @@ bool boton_w = false;
 bool boton_s = false;
 bool tocado_w=false;
 bool tocado_s=false;
-
 //Fin pantalla
 
-
-
-// Variables globales para comunicación entre núcleos
+// Variable global para almacenar el último mensaje LoRa recibido
 volatile bool nuevoMensajeLoRa = false;
 String mensajeLoRa = "";
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-
-
-
-// Variable global para almacenar el último mensaje LoRa recibido
-String lastLoRaMessage = "";
-
-
-bool Usando_lora_nucleo1=false;
-extern char macAddress[18]; // Debe contener la MAC del dispositivo actual
-bool registrado = false;
 
 typedef struct {
   char mac[MAC_LEN + 1];  // MAC del dispositivo (18 caracteres)
@@ -181,24 +158,19 @@ typedef struct {
 ConfigDispositivo configDispositivos[MAX_DISPOSITIVOS];
 //para asignar un numero de serial al dispositivo lector este viene del LORA pero ahorita lo fijmos aqui
 const String serial_number = "TOPICMYSQL";  //aqui voy a maper la MAC
-//para el uso del segundo procesador
-TaskHandle_t Task1;
+
 
 //*****************************
 //***   CONFIGURACION MQTT  ***
 //*****************************
-const char *mqtt_server ="168.231.67.152";
-const int  mqtt_port =1883;
+const char *mqtt_server ="168.231.66.42";
+const int  mqtt_port =2783; //Es docker
 const char *mqtt_user="nuup_web";
 const char *mqtt_pass ="Kfl-0878";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 long lastMsg = 0;
-bool send_access_query = false;
-char rfid[50] = {0};
-char user_name[50] = {0};
-char msg[50] = {0};
 
 //*****************************
 //***   ALTA MQTT DE MONITOR ***
@@ -210,7 +182,7 @@ const unsigned long confirmationRetryInterval = 10000; // segundos entre reinten
 String userID = "";
 
 
-// Estructura para almacenar credenciales
+// Estructura para almacenar credenciales WIFFI
 typedef struct {
   String ssid;
   String password;
@@ -224,16 +196,10 @@ bool forceAPMode = false;
 //intento de reconectar
 unsigned long lastReconnectAttempt = 0;
 const unsigned long reconnectInterval = 2 * 60 * 1000; ; // 5 minutos
-
-
 WiFiCredential savedNetworks[MAX_NETWORKS];
 int currentNetwork = -1;
-unsigned long buttonPressedTime = 0;
-bool buttonActive = false;
-
 
 // Declaración de funciones
-//Incializa en setup
 void inicializa_eeprom();
 void iniciarLoRaConReintentos();
 void clearEEPROM_WIFFI();
@@ -244,7 +210,6 @@ void handleDeleteNetwork();
 void handleSelectNetwork();
 void saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
-void blinkLED(int times, int delayTime);
 void attemptReconnectToAllNetworks();
 void handleSetID();
 void saveUserIDToEEPROM(const String& id);
@@ -252,269 +217,35 @@ bool loadUserIDFromEEPROM();
 void callback(char* topic, byte* playload, unsigned int lengt);
 void reconnect();
 void  checkMemory();
-void guardarDispositivos();
+bool guardarDispositivos();
 void cargarDispositivos();
+bool eliminarDispositivo(const String &mac);
+
+
 bool registrarDispositivo(const String &mac);
-void imprimirDatos(const String &mac, int contador, float voltaje, float temperatura);
-bool isNetworkReady();
 void MQTT_ALTA();
-void saveMQTTConfirmationState(bool confirmed);
 bool loadMQTTConfirmationState();
 void procesarMensajeLoRa();
-void cargarConfigDispositivos();
 void imprimirConfigDispositivo(const String &mac);
-void resetConfigDispositivo(const String &mac);
-void guardarConfigDispositivos(); 
 void imprimirDispositivosRegistrados();
 void Reintentar_Wiffi();
 
-void codeForTask1(void *parameter);
-
-
 // ==================== DECLARACIÓN DE FUNCIONES PANTALLA====================
-void hardwareReset();
 void dibujarIconoWiFi(int x, int y);
 void dibujarIconoSensor(int x, int y);
 void dibujarBotones();
 void verificarToques();
-void calibrarSilencioso();
-void calibrarBordes();
 
 
-
-//*****************************
-//***   TAREA OTRO NUCLEO   ***
-//*****************************
-void codeForTask1(void *parameter) {
-for (;;) {
-if(!Usando_lora_nucleo1){
-
-int packetSize = LoRa.parsePacket();
-if (packetSize > 0) {
-
-  //para ver como recibo todo
-Serial.println("LoRa recibido desde dispositivo ..");
-
-    String received = "";
-    while (LoRa.available()) {
-        received += (char)LoRa.read();
-    }
-    received.trim();
- // Guardar mensaje (protegido atómicamente)
-        portENTER_CRITICAL(&mux);
-        mensajeLoRa = received;
-        nuevoMensajeLoRa = true;
-        portEXIT_CRITICAL(&mux);
-
-        // Guardar el mensaje recibido en la variable global
-        lastLoRaMessage = received;
-
-
-//para ver como recibo todo
-Serial.println("LoRa Mensaje ...: " + lastLoRaMessage);
-
-
-//
-// Contar comas para validar estructura (ahora deben ser 7 comas)
-    int commaCount = 0;
-    for (int i = 0; i < received.length(); i++) {
-        if (received.charAt(i) == ',') commaCount++;
-    }
-
-    // Validar que tenga exactamente 7 comas (7 campos + coma final)
-    if (commaCount == 8) {
-        // Variables para los campos
-        String tipo = "";
-        String mac = "";
-        String val1 = "";
-        String val2 = "";
-        String val3 = "";
-        String val4 = "";
-        String val5 = "";
-        String nombre = "";
-        
-        // Posiciones de las comas
-        int commaPositions[8];
-        int currentComma = 0;
-        
-        // Encontrar posiciones de todas las comas
-        for (int i = 0; i < received.length() && currentComma < 8; i++) {
-            if (received.charAt(i) == ',') {
-                commaPositions[currentComma] = i;
-                currentComma++;
-            }
-        }
-
-        // Extraer cada campo
-        tipo = received.substring(0, commaPositions[0]);
-        mac = received.substring(commaPositions[0]+1, commaPositions[1]);
-        val1 = received.substring(commaPositions[1]+1, commaPositions[2]);
-        val2 = received.substring(commaPositions[2]+1, commaPositions[3]);
-        val3 = received.substring(commaPositions[3]+1, commaPositions[4]);
-        val4 = received.substring(commaPositions[4]+1, commaPositions[5]);
-        val5= received.substring(commaPositions[5]+1, commaPositions[6]);  
-        nombre = received.substring(commaPositions[6]+1, commaPositions[7]); // Ahora va hasta la última coma
-
-  // Verificar si ya existe buscar en el arreglo de dispositivos
-bool busca_registro=false;
-  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-    if (String(configDispositivos[i].mac) == mac) {
-      Serial.println("Dispositivo si esta  registrado: " + mac);
-      busca_registro=true;
-    }
-    }
-
-if(busca_registro){  //solo va a ejecutar el codigo de recepcion LORA normal si existe el dispositivo dado da alta
-        // Validar formato de cada campo
-        bool formatoCorrecto = true;
-
-        // [Resto de validaciones igual que antes...]
-        // Validar tipo (debe ser "002")
-        if (tipo != "002") {
-            Serial.println("Error: El tipo debe ser '002'");
-            formatoCorrecto = false;
-        }
-
-        // Validar MAC (formato XX:XX:XX:XX:XX:XX)
-        if (mac.length() != 17) {
-            Serial.println("Error: Longitud de MAC inválida");
-            formatoCorrecto = false;
-        } else {
-            for (int i = 0; i < mac.length(); i++) {
-                if (i == 2 || i == 5 || i == 8 || i == 11 || i == 14) {
-                    if (mac.charAt(i) != ':') {
-                        Serial.println("Error: Formato de MAC inválido, se esperaban ':' en posiciones específicas");
-                        formatoCorrecto = false;
-                        break;
-                    }
-                } else {
-                    char c = mac.charAt(i);
-                    if (!(c >= '0' && c <= '9') && !(c >= 'A' && c <= 'F') && !(c >= 'a' && c <= 'f')) {
-                        Serial.println("Error: Caracteres MAC inválidos");
-                        formatoCorrecto = false;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Validar valores numéricos
-        // Validar val1 (debe ser entero)
-        for (char c : val1) {
-            if (!isdigit(c)) {
-                Serial.println("Error: Valor 1 debe ser entero");
-                formatoCorrecto = false;
-                break;
-            }
-        }
-
-        // Validar val2 (debe ser decimal)
-        bool puntoEncontrado = false;
-        for (char c : val2) {
-            if (c == '.') {
-                if (puntoEncontrado) {
-                    Serial.println("Error: Valor 2 tiene múltiples puntos decimales");
-                    formatoCorrecto = false;
-                    break;
-                }
-                puntoEncontrado = true;
-            } else if (!isdigit(c)) {
-                Serial.println("Error: Valor 2 debe ser decimal");
-                formatoCorrecto = false;
-                break;
-            }
-        }
-
-        // Validar val3 (debe ser decimal)
-        puntoEncontrado = false;
-        for (char c : val3) {
-            if (c == '.') {
-                if (puntoEncontrado) {
-                    Serial.println("Error: Valor 3 tiene múltiples puntos decimales");
-                    formatoCorrecto = false;
-                    break;
-                }
-                puntoEncontrado = true;
-            } else if (!isdigit(c)) {
-                Serial.println("Error: Valor 3 debe ser decimal");
-                formatoCorrecto = false;
-                break;
-            }
-        }
-
-        // Validar val4 (debe ser entero)
-        for (char c : val4) {
-            if (!isdigit(c)) {
-                Serial.println("Error: Valor 4 debe ser entero");
-                formatoCorrecto = false;
-                break;
-            }
-        }
-
-        // Validar val4 (debe ser entero)
-        for (char c : val5) {
-            if (!isdigit(c)) {
-                Serial.println("Error: Valor 5 debe ser entero");
-                formatoCorrecto = false;
-                break;
-            }
-        }
-
-        // Si todo está correcto
-        if (formatoCorrecto) {
-            Serial.println("Formato correcto!");
-            Serial.println("Tipo: " + tipo);
-            Serial.println("MAC: " + mac);
-            Serial.println("Valor 1: " + val1);
-            Serial.println("Valor 2: " + val2);
-            Serial.println("Valor 3: " + val3);
-            Serial.println("Valor 4: " + val4);
-            Serial.println("Valor 5: " + val5);
-            Serial.println("Nombre: " + nombre);
-
-            // Convertir a valores numéricos
-            int valor1 = val1.toInt();
-            float valor2 = val2.toFloat();
-            float valor3 = val3.toFloat();
-            int valor4 = val4.toInt();
-            int valor5 = val5.toInt();
-
-            Serial.print("Valores convertidos: ");
-            Serial.print(valor1); Serial.print(", ");
-            Serial.print(valor2, 2); Serial.print(", ");
-            Serial.print(valor3, 5); Serial.print(", ");
-            Serial.println(valor4);
-            Serial.println(valor5);
-
-        } else {
-            Serial.println("El mensaje contiene errores de formato");
-        }
-    } else {
-        Serial.println("No existe el dispositivo registrado ..."); //quitarlo en produccion solo para depuracion aqui es donde puede escuchar otroa dispositivos NUUP no registrados en este monitor
-    }
- }
-
-
-    } //LORA detecto recepcion
-
-
-    }
-    // ⏱ Delay mínimo para no saturar la CPU, pero evitar perder paquetes
-    vTaskDelay(5 / portTICK_PERIOD_MS);
-  }
-}
-
+void recepcion_lora();
 
 //temporal para forzar apmode una vez si no hay wiffi
 bool una_APmode=true;
 
 void setup() {
 
-disableCore0WDT(); // Desactiva watchdog para el núcleo 0
-disableCore1WDT(); // Desactiva watchdog para el núcleo 1
   // 0. Inicialización básica SERIAL PANTLALLA  EEPROM
   Serial.begin(115200);
-      hardwareReset();
     delay(1000);
 
    // Inicialización SPI para touch
@@ -531,8 +262,6 @@ disableCore1WDT(); // Desactiva watchdog para el núcleo 1
  dibujarBotones();
     
     Serial.println("Pantalla inicializada correctamente");
-//calibrarSilencioso();
-//calibrarBordes();
   while (!Serial && millis() < 5000); // Esperar hasta 5 segundos para Serial en desarrollo
  inicializa_eeprom();
 //clearEEPROM_WIFFI();  //solo para configuracion inicial
@@ -576,34 +305,18 @@ delay(1000);
 // 6. Inicialización LoRa con manejo de errores mejorado
 iniciarLoRaConReintentos();
 
-  // 7. Configuración del segundo núcleo
-  Serial.println("Iniciando tarea en segundo núcleo...");
-  if (xTaskCreatePinnedToCore(
-    codeForTask1,    // Función de la tarea
-    "Task_1",       // Nombre
-    4096,           // Stack size aumentado
-    NULL,           // Parámetros
-    1,              // Prioridad
-    &Task1,         // Handle
-    0               // Núcleo
-  ) != pdPASS) {
-    Serial.println("Error al crear tarea en segundo núcleo");
-  }
-
- //8. configura DISPOSITIVOS
+ //7. configura DISPOSITIVOS
 // Cargar dispositivos registrados
 cargarDispositivos();  // 
 delay(1000);
 
 //Wiffi 
- //attemptReconnectToAllNetworks();  
+ //8. attemptReconnectToAllNetworks();  
  if (WiFi.status() != WL_CONNECTED) {
   attemptReconnectToAllNetworks();     
 }
 
-
 // 9. Configuración MQTT con parámetros mejorados
-
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   client.setBufferSize(512);  // Buffer aumentado para mensajes grandes
@@ -626,19 +339,27 @@ Serial.println("Setup completado");
 
 void loop() {
 
-// 1. Manejo básico de conexiones
-if (!client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
-    reconnect();  //Solo para reconectar y configuracion de subscripciones
+// 0. Recepcion de LORA 
+if (!boton_s){ recepcion_lora();} //Solo se procesa si el oton de emparejamiento no esta activo 
+// 1. Comportamiento en recepcion continua 
+// 1.1 Codigo para presentar datos en pantalla
+
+// 1.2 En caso de que tenga WIFFI conectado a MQTT y este dado de alta envia el dato
+if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed && !forceAPMode) {  
+  // Publicar inmediatamente si hay datos y estamos conectados
+  if (nuevoMensajeLoRa) {
+    String miMac = WiFi.macAddress();
+    miMac.replace(":", "_");
+    String topico = "NUUP/" + miMac;
+    if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
+      Serial.print("Publicado: ");
+      Serial.println(mensajeLoRa);
+    } else {
+      Serial.println("Error al publicar");
+    }
+    nuevoMensajeLoRa=false; //solo publicar una vez el mensaje y esperar a otro nuevo
   }
- client.loop();
-
-
- if ( client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode)  {
- MQTT_ALTA();  //Para solicitar el alta en broker
-  }
-
-
-
+} 
 
  // 2. Si estamos en modo AP, manejar eso y salir
 if (boton_w) { //mientras no exista comando en pantalla
@@ -659,79 +380,47 @@ if (forceAPMode) {
     return;
   }
 
+  // 3. Manejo básico de conexiones
+if (!client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
+    reconnect();  //Solo para reconectar y configuracion de subscripciones
+  }
+ client.loop();
+
+ if ( client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode)  {
+ MQTT_ALTA();  //Para solicitar el alta en broker
+  }
+
   
-  
-  //3. Variables para el control de memoria (declaradas una sola vez)
+  //4. Variables para el control de memoria (declaradas una sola vez)
   static unsigned long lastMemoryCheck = 0;
   const unsigned long memoryCheckInterval = 30000; // 30 segundos en milisegundos
 
-  // 4. Verificación periódica de memoria (solo para debug)
+  //5. Verificación periódica de memoria (solo para debug)
    if (millis() - lastMemoryCheck > memoryCheckInterval) {
     lastMemoryCheck = millis();
     checkMemory();
   }
 
-
-
-
-// 6. Comportamiento en modo normal 
-  // 6.1 En caso de que tenga WIFFI conectado a MQTT y este dado de alta 
-  if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed && !forceAPMode) {  
-
-  // Verificar si hay mensaje LoRa nuevo (protegido atómicamente)
-  bool hayDatos = false;
-  String mensajeActual = "";
-  
-  portENTER_CRITICAL(&mux);
-  if (nuevoMensajeLoRa) {
-    hayDatos = true;
-    mensajeActual = mensajeLoRa;
-    nuevoMensajeLoRa = false;
-  }
-  portEXIT_CRITICAL(&mux);
-
-  // Publicar inmediatamente si hay datos y estamos conectados
-  if (hayDatos && WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed) {
-    String miMac = WiFi.macAddress();
-    miMac.replace(":", "_");
-    String topico = "NUUP/" + miMac;
-    
-    if (client.publish(topico.c_str(), mensajeActual.c_str())) {
-      Serial.print("Publicado: ");
-      Serial.println(mensajeActual);
-    } else {
-      Serial.println("Error al publicar");
-    }
-  }
-    
-  } 
-
- 
 ///dispositivos
-// 7. Manejo del botón S para registro de dispositivo o emparejamiento
-if (boton_s){
-      Usando_lora_nucleo1=true;
+//6. Manejo del botón S para registro de dispositivo o emparejamiento
+if (boton_s){ 
       delay(100);
     Serial.println("Modo recepción activado. Esperando solicitudes REG o BAJA...");
         // Solo procesar mensajes (el OK_REG se envía desde procesarMensajeLoRa)
         procesarMensajeLoRa();
         delay(100); // Pequeña pausa para evitar saturación
       }
-      Usando_lora_nucleo1=false;
-
-
-
-      //8.  Verificaciones de botones en TOUCH
+    
+//7.  Verificaciones de botones en TOUCH
       verificarToques(); //solo programado dos botones 
     static uint32_t lastPrint = 0;
     if(millis() - lastPrint > 1000) {
         Serial.printf("Estado: W=%d S=%d\n", boton_w, boton_s);
         lastPrint = millis();
-    }
-    
+    }    
     delay(10);
 
-  //0. Si no hay Wiffi 
+//8. Si no hay Wiffi 
  if (WiFi.status() != WL_CONNECTED && !forceAPMode) {
 Reintentar_Wiffi();
   }
@@ -759,7 +448,6 @@ void startAPMode() {
   Serial.print("SSID: "); Serial.println(AP_SSID);
   Serial.print("IP: "); Serial.println(WiFi.softAPIP());
   
-
 }
 
 String getCheckedStatus(bool active) {
@@ -1241,15 +929,6 @@ bool loadNetworksFromEEPROM() {
   return success;
 }
 
-void blinkLED(int times, int delayTime) {
-  for(int i = 0; i < times; i++) {
-    //digitalWrite(LED_WIFFI, HIGH);
-    delay(delayTime);
-    //digitalWrite(LED_WIFFI, LOW);
-    delay(delayTime); 
-  }
-}
-
 void attemptReconnectToAllNetworks() {
    WiFi.mode(WIFI_STA);
   for (int i = 0; i < MAX_NETWORKS; i++) {
@@ -1351,79 +1030,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   Serial.printf("Mensaje recibido MQTT TOPIC[%s]: message--> %s\n", topic, message);
 
-
-//seccion de validacion de alta de cualquier tipo de dispositivo:
- // Procesar confirmación de alta
- /*
-  if (strTopic.endsWith("/confirmacion/") && strMessage == "registrado") {
-    // Extraer MAC del topic
-    int lastSlash = strTopic.lastIndexOf('/');
-    int prevSlash = strTopic.lastIndexOf('/', lastSlash - 1);
-    String mac = strTopic.substring(prevSlash + 1, lastSlash);
-    
-    // Extraer tipo de dispositivo
-    int tipoSlash = strTopic.indexOf('/', 5); // después de "alta/"
-    int tipo = strTopic.substring(5, tipoSlash).toInt();
-
-    // Buscar o crear entrada para este dispositivo
-    int index = -1;
-    for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-      if (String(configDispositivos[i].mac) == mac) {
-        index = i;
-        break;
-      }
-      if (index == -1 && configDispositivos[i].mac[0] == '\0') {
-        index = i;
-      }
-    }
-    
-    if (index != -1) {
-      mac.toCharArray(configDispositivos[index].mac, MAC_LEN + 1);
-      configDispositivos[index].tipoDispositivo = tipo;
-      
-      // Inicializar valores
-      for (int i = 0; i < VALORES_POR_DISPOSITIVO; i++) {
-        configDispositivos[index].valores[i] = 0.0;
-      }
-      
-      guardarConfigDispositivos();
-      Serial.printf("Dispositivo registrado: MAC=%s, Tipo=%d\n", mac.c_str(), tipo);
-    }
-    return;
-  }
-*/
-/*
-  // Procesar configuración de valores (alta/X/MAC/config/valorY)
-  if (strTopic.indexOf("/config/valor") != -1) {
-    // Extraer MAC
-    int macStart = strTopic.indexOf('/', 5) + 1; // después de "alta/X/"
-    int macEnd = strTopic.indexOf('/', macStart);
-    String mac = strTopic.substring(macStart, macEnd);
-    
-    // Extraer índice del valor (valor1, valor2, etc.)
-    int valIndex = strTopic.substring(strTopic.lastIndexOf('r') + 1).toInt() - 1;
-    
-    if (valIndex >= 0 && valIndex < VALORES_POR_DISPOSITIVO) {
-      float valor = strMessage.toFloat();
-      
-      // Buscar dispositivo
-      for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-        if (String(configDispositivos[i].mac) == mac) {
-          configDispositivos[i].valores[valIndex] = valor;
-          guardarConfigDispositivos();
-          Serial.printf("Config actualizada - MAC: %s, Valor%d: %.2f\n", 
-                       mac.c_str(), valIndex + 1, valor);
-          break;
-        }
-      }
-    }
-    return;
-  }
-*/
-
-
-// ALTA MONITOR Validación estricta para el topic de confirmación solo considerar que 1 es para monitor modelo NUUP01
-
 // ALTA MONITOR Validación estricta para el topic de confirmación
 if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     // Obtener la MAC del dispositivo
@@ -1471,8 +1077,7 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
             Serial.println("Email guardado: " + emailUsuario);
             
             mqttConfirmed = true;
-            // saveMQTTConfirmationState(true); // Descomenta si necesitas guardar el estado
-            delay(3000); // Espera para evitar conflictos
+                 delay(3000); // Espera para evitar conflictos
         } else {
             Serial.println("Formato de mensaje incorrecto. Faltan datos de usuario");
         }
@@ -1489,26 +1094,6 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     return;
 }
 //termina confirmacion de alta
-
-
-  // 4. Construir el topic esperado de forma segura
-  /*
-  char expectedCommandTopic[60];
-  snprintf(expectedCommandTopic, sizeof(expectedCommandTopic), "%s/comando", serial_number.c_str());
-
-  // 5. Comparar topics (evitando Strings)
-  if (strcmp(topic, expectedCommandTopic) == 0) {
-    // 6. Procesar comandos
-    if (strcmp(message, "on") == 0) {
-      Serial.println("Mensaje de encendido recibido");
-      // Aquí tu lógica para el comando 'on'
-    } 
-    else if (strcmp(message, "off") == 0) {
-      Serial.println("Mensaje de apagado recibido");
-      // Aquí tu lógica para el comando 'off'
-    }
-  }*/
-
 
 }
 
@@ -1619,82 +1204,46 @@ void procesarMensajeLoRa() {
           LoRa.endPacket();
           Serial.println("Nuevo dispositivo registrado - OK_REG enviado con datos");
           Serial.println("OK_REG," + miMac + ",tinaco solares,1200,1100"); //ahortia son valores fijos
-
         } else {
           Serial.println("Error: No se pudo registrar (no hay espacio)");
         }
       }
-    } //FIN DE MENSAJE REG 02
+    } //FIN DE MENSAJE REG 
 //CODIGO PARA DAR DE BAJA
 // Procesar mensajes de baja (BAJA02)
-    else if (mensaje.startsWith("BAJA02:")) {
-      String macBaja = mensaje.substring(7); // Extraer MAC después de "BAJA02:"
-      Serial.println("Solicitud de baja recibida para MAC: " + macBaja);
+   else if (mensaje.startsWith("BAJA")) {
+    String macBaja = mensaje.substring(7);
+    Serial.println("\nSolicitud de baja recibida para MAC: " + macBaja);
 
-      // Verificar MAC válida
-      if (macBaja.length() != MAC_LEN) {
-        Serial.println("Error: MAC inválida");
+    // Verificación adicional de MAC
+    if (macBaja.length() != MAC_LEN || macBaja.indexOf(':') == -1) {
+        Serial.println("Error: Formato de MAC inválido");
+        LoRa.beginPacket();
+        LoRa.print("ERROR:MAC_INVALIDA");
+        LoRa.endPacket();
         return;
-      }
+    }
 
-      bool dispositivoEncontrado = false;
-      int posicionBorrar = -1;
+    Serial.println("Buscando dispositivo...");
+    imprimirDispositivosRegistrados();
 
-
-//voy a ver si los cargo algo esta pasando      cargarDispositivos()
-      // Buscar el dispositivo
-      for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-        if (String(configDispositivos[i].mac) == macBaja) {
-          dispositivoEncontrado = true;
-          posicionBorrar = i;
-          break;
-        }
-      }
-
-
-      Serial.println("********************** ");
-      Serial.println("Buscando mac para baja: "+macBaja);
-      //imprimir dispositivos
-      imprimirDispositivosRegistrados(); 
-      Serial.println("********************** ");
-
-
-      if (dispositivoEncontrado) {
-        // 1. Eliminar el dispositivo
-        memset(&configDispositivos[posicionBorrar], 0, sizeof(ConfigDispositivo));
-        
-        // 2. Reorganizar el array para eliminar huecos
-        for (int i = posicionBorrar; i < MAX_DISPOSITIVOS - 1; i++) {
-          memcpy(&configDispositivos[i], &configDispositivos[i+1], sizeof(ConfigDispositivo));
-        }
-        
-        // 3. Limpiar la última posición
-        memset(&configDispositivos[MAX_DISPOSITIVOS-1], 0, sizeof(ConfigDispositivo));
-        
-        // 4. Guardar cambios en EEPROM
-        guardarDispositivos();
-        
-        // 5. Enviar confirmación
+    if (eliminarDispositivo(macBaja)) {
         LoRa.beginPacket();
         LoRa.print("OK_BAJA");
         LoRa.endPacket();
-        
-        Serial.println("Dispositivo eliminado y EEPROM reorganizada. OK_BAJA enviado");
-        Serial.println("Nuevo listado de dispositivos:");
-        imprimirDispositivosRegistrados();
-      } else {
-        Serial.println("Error: Dispositivo no encontrado");
-      }
+        Serial.println("Confirmación OK_BAJA enviada");
+    } else {
+        LoRa.beginPacket();
+        LoRa.print("ERROR:NO_ENCONTRADO");
+        LoRa.endPacket();
+        Serial.println("Error: No se pudo completar la baja");
     }
-
-
+}
 
 //FIN DE CODIGO PARA DAR DE BAJA
 
   }
 }
-
-
 
 // Función auxiliar para imprimir dispositivos (para debug)
 void imprimirDispositivosRegistrados() {
@@ -1708,52 +1257,7 @@ void imprimirDispositivosRegistrados() {
   }
   Serial.println("-----------------------------");
 }
-    /*
-      // Solo procesar si tenemos un userID válido
-      if (userID.length() > 0) {
-        // Construir el mensaje MQTT
-        String topic = "alta/" + String(tipoDispositivo) + "/" + mac  + "/solicitud/";
-                // Publicar en MQTT
-        if (client.publish(topic.c_str(), userID.c_str())) {
-          Serial.println("Solicitud de alta enviada por MQTT");
-          
-          // Esperar confirmación con timeout
-          unsigned long startTime = millis();
-          bool confirmado = false;
-          
-          while (millis() - startTime < 10000 && !confirmado) { // 10 segundos
-            client.loop();
-            
-            // Verificar si ya está registrado
-            for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-              if (String(configDispositivos[i].mac) == mac) {
-                confirmado = true;
-                break;
-              }
-            }
-            delay(100);
-          }
-          
-          if (confirmado) {
-            // Enviar confirmación LoRa
-            LoRa.beginPacket();
-            LoRa.print("OK_REG");
-            LoRa.endPacket();
-            Serial.println("Confirmación OK_REG enviada");
-          } else {
-            Serial.println("Timeout: No se recibió confirmación");
-          }
-        } else {
-          Serial.println("Error al publicar solicitud MQTT");
-        }
-      } else {
-        Serial.println("Error: userID no configurado");
-      }
-*/
 
-
-
-// --- Funciones Modificadas ---
 bool registrarDispositivo(const String &mac) {
   // Verificar si ya existe
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
@@ -1776,11 +1280,11 @@ bool registrarDispositivo(const String &mac) {
   return false;
 }
 
-
-void guardarDispositivos() {
-    int addr = LORA_DEVICES_ADDR;
+bool guardarDispositivos() {
+    EEPROM.begin(EEPROM_SIZE); // Reiniciar EEPROM
+    int addr = CONFIG_DISPOSITIVOS_ADDR;
     
-    // 1. Contar dispositivos con MAC no vacía
+    // Contar dispositivos válidos
     int count = 0;
     for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
         if (strlen(configDispositivos[i].mac) > 0) {
@@ -1788,30 +1292,42 @@ void guardarDispositivos() {
         }
     }
 
-    // 2. Guardar contador (2 bytes)
+    // Guardar contador (2 bytes)
     EEPROM.write(addr++, (count >> 8) & 0xFF);
     EEPROM.write(addr++, count & 0xFF);
 
-    // 3. Guardar solo las MACs (6 bytes cada una)
-    for (int i = 0; i < count; i++) {
-        // Convertir MAC "XX:XX:XX:XX:XX:XX" a 6 bytes
-        byte macBytes[6];
-        sscanf(configDispositivos[i].mac, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
-               &macBytes[0], &macBytes[1], &macBytes[2],
-               &macBytes[3], &macBytes[4], &macBytes[5]);
-        
-        // Guardar los 6 bytes
-        for (int j = 0; j < 6; j++) {
-            EEPROM.write(addr++, macBytes[j]);
+    // Guardar cada dispositivo
+    for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+        if (strlen(configDispositivos[i].mac) > 0) {
+            // Guardar MAC (18 bytes incluyendo \0)
+            for (int j = 0; j < MAC_LEN + 1; j++) {
+                EEPROM.write(addr++, configDispositivos[i].mac[j]);
+            }
+            
+            // Guardar valores (float * VALORES_POR_DISPOSITIVO)
+            for (int j = 0; j < VALORES_POR_DISPOSITIVO; j++) {
+                EEPROM.put(addr, configDispositivos[i].valores[j]);
+                addr += sizeof(float);
+            }
+            
+            // Guardar tipo y estado (2 bytes)
+            EEPROM.write(addr++, configDispositivos[i].tipoDispositivo);
+            EEPROM.write(addr++, configDispositivos[i].activo ? 1 : 0);
         }
     }
 
-    if (!EEPROM.commit()) {
-        Serial.println("Error al guardar en EEPROM");
-    } else {
-        Serial.println("Dispositivos guardados en EEPROM");
+    bool success = EEPROM.commit();
+    EEPROM.end();
+    
+    if (!success) {
+        Serial.println("Error crítico: Falló EEPROM.commit()");
+        // Aquí podrías agregar reintentos o manejo de error más robusto
     }
+    
+    return success;
 }
+
+
 void cargarDispositivos() {
     int addr = LORA_DEVICES_ADDR;
     
@@ -1841,15 +1357,6 @@ void cargarDispositivos() {
         Serial.print(": ");
         Serial.println(mac);
 
-        // Verificar si es el dispositivo actual
-        #ifdef macAddress
-        if (strcmp(mac, macAddress) == 0) {
-            Serial.println("[DEBUG] ¡Este dispositivo YA está registrado!");
-            registrado = true;
-            dispositivoEncontrado = true;
-        }
-        #endif
-
         // Copiar MAC al arreglo de dispositivos (siempre se hace para mantener estructura)
         strncpy(configDispositivos[i].mac, mac, sizeof(configDispositivos[i].mac));
         configDispositivos[i].activo = false;
@@ -1862,23 +1369,6 @@ void cargarDispositivos() {
         Serial.println("[DEBUG] Fin de carga (dispositivo nuevo)");
     }
 }
-
-// --- Función para imprimir datos ---
-void imprimirDatos(const String &mac, int contador, float voltaje, float temperatura) {
-  Serial.print("Datos de ");
-  Serial.print(mac);
-  Serial.print(" | Contador: ");
-  Serial.print(contador);
-  Serial.print(" | Voltaje: ");
-  Serial.print(voltaje, 2);
-  Serial.print("V | Temp: ");
-  Serial.print(temperatura, 2);
-  Serial.println("°C");
-}
-
-
-
-
 
 //Funciones SETUP de innicializacion
    // 2. Inicialización segura de EEPROM
@@ -1916,23 +1406,6 @@ void clearEEPROM_WIFFI() {
     Serial.println("Modo AP activado (configuración inicial)");
 }
 
-//Funcion para alta de monitor
-bool isNetworkReady() {
-  // Verificar conexión WiFi
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi no conectado");
-    return false;
-  }
-  
-  // Verificar conexión MQTT
-  if (!client.connected()) {
-    Serial.println("MQTT no conectado");
-    return false;
-  }
-  
-  return true;
-}
-
 void MQTT_ALTA() {
   if (mqttConfirmed) return;
   
@@ -1952,10 +1425,6 @@ String mensajeCompleto = miMac + "," + userID;
           Serial.println("MQTT ALTA Solicitud de alta enviada correctamente");
           Serial.println("MQTT ALTA topico: alta/1/solicitud/");
           Serial.println("MQTT ALTA mensaje: "+mensajeCompleto);
-
-
-
-
         } else {
           Serial.println("MQTT ALTA Error al publicar solicitud de alta");
         }
@@ -1964,62 +1433,10 @@ String mensajeCompleto = miMac + "," + userID;
   }
 }
 
-void saveMQTTConfirmationState(bool confirmed) {
-  EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, confirmed ? 1 : 0);
-  EEPROM.commit();
-}
 
 bool loadMQTTConfirmationState() {
   return EEPROM.read(MQTT_CONFIRMED_FLAG_ADDR) == 1;
 }
-
-
-//Funciones para dar de alta a Broker cualquier tipo de dispositivo LORA mediante MQTT 
-void guardarConfigDispositivos() {
-  int addr = CONFIG_DISPOSITIVOS_ADDR;
-  
-  // Contar dispositivos configurados
-  int count = 0;
-  while (count < MAX_DISPOSITIVOS && configDispositivos[count].mac[0] != '\0') {
-    count++;
-  }
-  
-  // Guardar contador (2 bytes)
-  EEPROM.write(addr++, (count >> 8) & 0xFF);
-  EEPROM.write(addr++, count & 0xFF);
-  
-  // Guardar configuraciones
-  for (int i = 0; i < count; i++) {
-    EEPROM.put(addr, configDispositivos[i]);
-    addr += sizeof(ConfigDispositivo);
-  }
-  
-  EEPROM.commit();
-}
-
-void cargarConfigDispositivos() {
-  int addr = CONFIG_DISPOSITIVOS_ADDR;
-  
-  // Leer contador
-  int count = (EEPROM.read(addr++) << 8) | EEPROM.read(addr++);
-  count = min(count, MAX_DISPOSITIVOS);
-  
-  // Inicializar todos como vacíos
-  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-    configDispositivos[i].mac[0] = '\0';
-    for (int j = 0; j < VALORES_POR_DISPOSITIVO; j++) {
-      configDispositivos[i].valores[j] = 0.0;
-    }
-    configDispositivos[i].tipoDispositivo = 0;
-  }
-  
-  // Cargar configuraciones
-  for (int i = 0; i < count; i++) {
-    EEPROM.get(addr, configDispositivos[i]);
-    addr += sizeof(ConfigDispositivo);
-  }
-}
-
 
 // Obtener configuración de un dispositivo por MAC
 ConfigDispositivo* getConfigDispositivo(const String &mac) {
@@ -2047,22 +1464,6 @@ void imprimirConfigDispositivo(const String &mac) {
   }
 }
 
-// Reiniciar configuración de un dispositivo
-void resetConfigDispositivo(const String &mac) {
-  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-    if (String(configDispositivos[i].mac) == mac) {
-      for (int j = 0; j < VALORES_POR_DISPOSITIVO; j++) {
-        configDispositivos[i].valores[j] = 0.0;
-      }
-      guardarConfigDispositivos();
-      Serial.println("Configuración reiniciada para MAC: " + mac);
-      return;
-    }
-  }
-  Serial.println("Dispositivo no encontrado");
-}
-
-
 
 void iniciarLoRaConReintentos() {
   int intentos = 0;
@@ -2079,20 +1480,12 @@ Serial.println("Iniciando LoRa...");
     // Verifica manualmente SPI
     Serial.println("SPI test: " + String(SPI.transfer(0x42), HEX));
 
-    // Reset LoRa
-//    pinMode(LORA_RST, OUTPUT);
- //   digitalWrite(LORA_RST, LOW);
- //   delay(100);
- //   digitalWrite(LORA_RST, HIGH);
- //   delay(100);
-
     estadoLED = !estadoLED;
     intentos++;
     Serial.println("Intento #" + String(intentos));
     delay(3000);
   }
 
-  //digitalWrite(LED_WIFFI, LOW);
   Serial.println("LoRa listo después de " + String(intentos) + " intento(s)!");
 }
 
@@ -2105,119 +1498,8 @@ void Reintentar_Wiffi(){
     }
 }
 
-
 /******FUNCIONES PANTALLA   */
-
-
-// ======== CALIBRACIÓN SILENCIOSA (SOLO SERIAL) ========
-void calibrarSilencioso() {
-
-  
-  /*
-  
->>> Toque 5 veces el botón W (centro) <<<
-Lectura 1: Raw[2749,1489] -> Mapeado[234,158] | Objetivo[90,90]
-Lectura 2: Raw[2648,1489] -> Mapeado[224,158] | Objetivo[90,90]
-Lectura 3: Raw[2660,1494] -> Mapeado[225,159] | Objetivo[90,90]
-Lectura 4: Raw[2609,1473] -> Mapeado[220,156] | Objetivo[90,90]
-Lectura 5: Raw[2742,1438] -> Mapeado[233,150] | Objetivo[90,90]
-
-=== RESULTADOS ===
-Botón W:
-- Raw promedio: X=2681, Y=1476
-- Mapeado promedio: X=227, Y=156
-- Error: X=137px, Y=66px
---------------------------------------
-
->>> Toque 5 veces el botón S (centro) <<<
-Lectura 1: Raw[1456,1722] -> Mapeado[103,194] | Objetivo[210,90]
-Lectura 2: Raw[1438,1707] -> Mapeado[101,192] | Objetivo[210,90]
-Lectura 3: Raw[1282,1529] -> Mapeado[85,164] | Objetivo[210,90]
-Lectura 4: Raw[1251,1557] -> Mapeado[82,169] | Objetivo[210,90]
-Lectura 5: Raw[1380,1664] -> Mapeado[95,185] | Objetivo[210,90]
-
-=== RESULTADOS ===
-Botón S:
-- Raw promedio: X=1361, Y=1635
-- Mapeado promedio: X=93, Y=181
-- Error: X=117px, Y=91px
---------------------------------------
-  */
-  Serial.println("\n\n=== MODO CALIBRACIÓN PRECISO ===");
-  Serial.println("Toque 5 veces el CENTRO de cada botón");
-  Serial.println("Siga el orden indicado en Serial Monitor");
-  Serial.println("--------------------------------------");
-
-  // Configuración inicial con tus valores
-  const int calibValues[2][2] = {{436, 3580}, {470, 3549}}; // {{X_MIN, X_MAX}, {Y_MIN, Y_MAX}}
-
-  // Coordenadas esperadas de los botones (píxeles)
-  const int btnCoords[2][2] = {
-    {btnW_x + btn_width/2, btn_y + btn_height/2},  // Centro botón W
-    {btnS_x + btn_width/2, btn_y + btn_height/2}   // Centro botón S
-  };
-
-  // Diagnóstico para ambos botones
-  for(int boton = 0; boton < 2; boton++) {
-    Serial.printf("\n>>> Toque 5 veces el botón %c (centro) <<<\n", (boton == 0) ? 'W' : 'S');
-    
-    int totalX = 0, totalY = 0;
-    for(int i = 1; i <= 5; i++) {
-      while(!touch.touched()); // Espera toque
-      
-      TS_Point p = touch.getPoint();
-      totalX += p.x;
-      totalY += p.y;
-      
-      // Mapeo en tiempo real con tus constantes
-      int x_mapped = map(p.x, calibValues[0][0], calibValues[0][1], 0, lcd.width()-1);
-      int y_mapped = map(p.y, calibValues[1][0], calibValues[1][1], 0, lcd.height()-1);
-      
-      Serial.printf("Lectura %d: Raw[%d,%d] -> Mapeado[%d,%d] | Objetivo[%d,%d]\n", 
-                   i, p.x, p.y, x_mapped, y_mapped, 
-                   btnCoords[boton][0], btnCoords[boton][1]);
-
-      // Parpadeo del botón actual
-      int btnX = (boton == 0) ? btnW_x : btnS_x;
-      lcd.drawRect(btnX, btn_y, btn_width, btn_height, TFT_RED);
-      delay(150);
-      dibujarBotones();
-      
-      while(touch.touched()); // Espera dejar de tocar
-      delay(250);
-    }
-
-    // Resultados por botón
-    int avgX = totalX / 5;
-    int avgY = totalY / 5;
-    int avgX_mapped = map(avgX, calibValues[0][0], calibValues[0][1], 0, lcd.width()-1);
-    int avgY_mapped = map(avgY, calibValues[1][0], calibValues[1][1], 0, lcd.height()-1);
-    
-    Serial.println("\n=== RESULTADOS ===");
-    Serial.printf("Botón %c:\n", (boton == 0) ? 'W' : 'S');
-    Serial.printf("- Raw promedio: X=%d, Y=%d\n", avgX, avgY);
-    Serial.printf("- Mapeado promedio: X=%d, Y=%d\n", avgX_mapped, avgY_mapped);
-    Serial.printf("- Error: X=%dpx, Y=%dpx\n", 
-                 abs(avgX_mapped - btnCoords[boton][0]), 
-                 abs(avgY_mapped - btnCoords[boton][1]));
-    Serial.println("--------------------------------------");
-  }
-
-  // Restaura pantalla
-  dibujarBotones();
-  Serial.println("\nCalibración completada. Revise los errores de precisión.");
-}
-
 // ==================== IMPLEMENTACIÓN DE FUNCIONES ====================
-void hardwareReset() {
-    pinMode(EN, OUTPUT);
-    digitalWrite(EN, LOW);
-    delay(50);
-    digitalWrite(EN, HIGH);
-    delay(150);
-}
-
-
 void dibujarIconoWiFi(int x, int y) {
     lcd.fillCircle(x, y, 3, boton_w ? TFT_WHITE : TFT_YELLOW);
     lcd.drawArc(x, y, 10, 12, 0, 180, boton_w ? TFT_WHITE : TFT_YELLOW);
@@ -2300,58 +1582,165 @@ void verificarToques() {
         }
     }
 }
-
-void calibrarBordes() {
-  /*
-  
-=== VALORES PARA TU CODIGO ===
-// Reemplaza en tus constantes:
-const int X_MIN = 436;  // Esq. Sup. Izq. X
-const int X_MAX = 3580;  // Esq. Sup. Der. X
-const int Y_MIN = 470;  // Esq. Sup. Der. Y
-const int Y_MAX = 3549;  // Esq. Inf. Izq. Y
-=============================
-  */
-  lcd.fillScreen(TFT_BLACK);
-  lcd.setTextColor(TFT_WHITE);
-  lcd.setTextSize(2);
-  lcd.drawString("Calibracion Bordes", 20, 20);
-  lcd.drawString("Toque las 4 esquinas", 20, 50);
-  lcd.drawString("en este orden:", 20, 80);
-  lcd.drawString("1. Superior Izq", 20, 110);
-  lcd.drawString("2. Superior Der", 20, 140);
-  lcd.drawString("3. Inferior Der", 20, 170);
-  lcd.drawString("4. Inferior Izq", 20, 200);
-
-  int puntos[4][2]; // Almacenar [X,Y] de cada esquina
-  const char* nombres[4] = {"Superior Izq", "Superior Der", "Inferior Der", "Inferior Izq"};
-
-  for(int i = 0; i < 4; i++) {
-    lcd.fillRect(0, 230, 320, 30, TFT_BLACK);
-    lcd.drawString("Toque: " + String(nombres[i]), 20, 230);
-    
-    while(!touch.touched()); // Espera toque
-    TS_Point p = touch.getPoint();
-    puntos[i][0] = p.x;
-    puntos[i][1] = p.y;
-    
-    Serial.printf("Esquina %d (%s): X=%d, Y=%d\n", i+1, nombres[i], p.x, p.y);
-    lcd.fillRect(0, 260, 320, 30, TFT_BLACK);
-    lcd.drawString("X:" + String(p.x) + " Y:" + String(p.y), 20, 260);
-    
-    delay(500);
-    while(touch.touched()); // Espera dejar de tocar
-  }
-
-  // Resultados finales
-  Serial.println("\n=== VALORES PARA TU CODIGO ===");
-  Serial.println("// Reemplaza en tus constantes:");
-  Serial.printf("const int X_MIN = %d;  // Esq. Sup. Izq. X\n", puntos[0][0]);
-  Serial.printf("const int X_MAX = %d;  // Esq. Sup. Der. X\n", puntos[1][0]);
-  Serial.printf("const int Y_MIN = %d;  // Esq. Sup. Der. Y\n", puntos[1][1]);
-  Serial.printf("const int Y_MAX = %d;  // Esq. Inf. Izq. Y\n", puntos[3][1]);
-  Serial.println("=============================");
-
-  while(1); // Detiene ejecución después de calibrar
-}
 /*******************FIN FUNCIONES PANTALLA */
+
+void recepcion_lora(){
+
+if (LoRa.parsePacket()) {
+    String received = LoRa.readString();
+    received.trim();
+ if ((received.startsWith("REG")) or received.startsWith("BAJA")) {
+  return; //si es baja o registro no se procesa por que solo actua con el boron de amparejamiento activo
+ }
+         mensajeLoRa = received;
+        nuevoMensajeLoRa = true;
+
+// Contar comas para validar estructura (ahora deben ser 7 comas)
+    int commaCount = 0;
+    for (int i = 0; i < received.length(); i++) {
+        if (received.charAt(i) == ',') commaCount++;
+    }
+
+    // Validar que tenga exactamente 7 comas (7 campos + coma final)
+    if (commaCount == 8) {
+        // Variables para los campos
+        String tipo = "";
+        String mac = "";
+        String val1 = "";
+        String val2 = "";
+        String val3 = "";
+        String val4 = "";
+        String val5 = "";
+        String nombre = "";
+        
+        // Posiciones de las comas
+        int commaPositions[8];
+        int currentComma = 0;
+        
+        // Encontrar posiciones de todas las comas
+        for (int i = 0; i < received.length() && currentComma < 8; i++) {
+            if (received.charAt(i) == ',') {
+                commaPositions[currentComma] = i;
+                currentComma++;
+            }
+        }
+
+        // Extraer cada campo
+        tipo = received.substring(0, commaPositions[0]);
+        mac = received.substring(commaPositions[0]+1, commaPositions[1]);
+        val1 = received.substring(commaPositions[1]+1, commaPositions[2]);
+        val2 = received.substring(commaPositions[2]+1, commaPositions[3]);
+        val3 = received.substring(commaPositions[3]+1, commaPositions[4]);
+        val4 = received.substring(commaPositions[4]+1, commaPositions[5]);
+        val5= received.substring(commaPositions[5]+1, commaPositions[6]);  
+        nombre = received.substring(commaPositions[6]+1, commaPositions[7]); // Ahora va hasta la última coma
+
+  // Verificar si ya existe buscar en el arreglo de dispositivos
+bool busca_registro=false;
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (String(configDispositivos[i].mac) == mac) {
+      Serial.println("Dispositivo si esta  registrado: " + mac);
+      busca_registro=true;
+    }
+    }
+
+if(busca_registro){  //solo va a ejecutar el codigo de recepcion LORA normal si existe el dispositivo dado da alta
+        // Validar formato de cada campo
+        bool formatoCorrecto = true;
+
+
+        // Validar MAC (formato XX:XX:XX:XX:XX:XX)
+        if (mac.length() != 17) {
+            Serial.println("Error: Longitud de MAC inválida");
+            formatoCorrecto = false;
+        } else {
+            for (int i = 0; i < mac.length(); i++) {
+                if (i == 2 || i == 5 || i == 8 || i == 11 || i == 14) {
+                    if (mac.charAt(i) != ':') {
+                        Serial.println("Error: Formato de MAC inválido, se esperaban ':' en posiciones específicas");
+                        formatoCorrecto = false;
+                        break;
+                    }
+                } else {
+                    char c = mac.charAt(i);
+                    if (!(c >= '0' && c <= '9') && !(c >= 'A' && c <= 'F') && !(c >= 'a' && c <= 'f')) {
+                        Serial.println("Error: Caracteres MAC inválidos");
+                        formatoCorrecto = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Si todo está correcto
+        if (formatoCorrecto) {
+            Serial.println("Formato correcto!");
+            Serial.println("Tipo: " + tipo);
+            Serial.println("MAC: " + mac);
+            Serial.println("Valor 1: " + val1);
+            Serial.println("Valor 2: " + val2);
+            Serial.println("Valor 3: " + val3);
+            Serial.println("Valor 4: " + val4);
+            Serial.println("Valor 5: " + val5);
+            Serial.println("Nombre: " + nombre);
+        } else {
+            Serial.println("El mensaje contiene errores de formato");
+        }
+           }
+      } else {
+        Serial.println("No existe el dispositivo registrado ..."); //quitarlo en produccion solo para depuracion aqui es donde puede escuchar otroa dispositivos NUUP no registrados en este monitor
+    }
+ }
+
+}
+
+// Función para eliminar un dispositivo
+bool eliminarDispositivo(const String &mac) {
+    int posicion = -1;
+    
+    // Buscar el dispositivo
+    for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+        if (String(configDispositivos[i].mac) == mac) {
+            posicion = i;
+            break;
+        }
+    }
+    
+    if (posicion == -1) {
+        Serial.println("Dispositivo no encontrado para eliminar");
+        return false;
+    }
+
+    // Debug: Mostrar antes de eliminar
+    Serial.println("Dispositivo encontrado en posición: " + String(posicion));
+    Serial.println("Contenido antes de eliminar:");
+    imprimirConfigDispositivo(mac);
+
+    // Reorganizar el array
+    for (int i = posicion; i < MAX_DISPOSITIVOS - 1; i++) {
+        // Copiar manualmente cada campo
+        strncpy(configDispositivos[i].mac, configDispositivos[i+1].mac, MAC_LEN + 1);
+        memcpy(configDispositivos[i].valores, configDispositivos[i+1].valores, sizeof(float) * VALORES_POR_DISPOSITIVO);
+        configDispositivos[i].tipoDispositivo = configDispositivos[i+1].tipoDispositivo;
+        configDispositivos[i].activo = configDispositivos[i+1].activo;
+    }
+    
+    // Limpiar la última posición
+    configDispositivos[MAX_DISPOSITIVOS-1].mac[0] = '\0';
+    memset(configDispositivos[MAX_DISPOSITIVOS-1].valores, 0, sizeof(float) * VALORES_POR_DISPOSITIVO);
+    configDispositivos[MAX_DISPOSITIVOS-1].tipoDispositivo = 0;
+    configDispositivos[MAX_DISPOSITIVOS-1].activo = false;
+
+    // Debug: Mostrar después de eliminar
+    Serial.println("Contenido después de eliminar:");
+    imprimirDispositivosRegistrados();
+
+    // Guardar cambios
+    if (guardarDispositivos()) {
+        Serial.println("Dispositivo eliminado y EEPROM actualizada correctamente");
+        return true;
+    } else {
+        Serial.println("Error al guardar cambios en EEPROM");
+        return false;
+    }
+}
