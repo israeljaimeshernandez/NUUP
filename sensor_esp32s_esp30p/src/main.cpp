@@ -9,6 +9,7 @@
 #include <algorithm>
 
 // --- Configuración ---
+
 #define INTERVALO_ENVIO_DATOS 30000
 #define INTERVALO_PARPADEO 62 //configurando 62ms
 #define INTERVALO_PARPADEO2 1000 //Dispositivo no configurado 1 seg
@@ -21,8 +22,8 @@
 #define ADC_PIN 34
 // --- LoRa ---
 #define LORA_SS 5
-#define LORA_RST -1   //14 lo tengo conectado pero no definido
-#define LORA_DIO0 -1  //2 lo tengo conectado pero no defnido
+#define LORA_RST -1   //-1 SIN USAR 14 lo tengo conectado pero no definido
+#define LORA_DIO0 -1  //4 lo tengo conectado pero no defnido
 // --- Configuración Deep Sleep ---
 #define BOTON_WAKEUP_PIN GPIO_NUM_33 // Usar el mismo pin que tu botón
 // Variables conservadas durante el sleep
@@ -419,6 +420,7 @@ int obtenerDistanciaValida() {
 
 
 void enviarDatos(int distancia) {
+//  ultimoEnvioDatos = millis(); //faltaba esta linea al parecer
   int litrosActuales = 0;
   
   // Solo calcular litros si la distancia es válida (no es 9999)
@@ -442,16 +444,14 @@ Serial.print("Altura:");
   }
 
  // Construir mensaje maximo 10 datos
- String mensaje = "002,"+
-                  macAddress + "," + 
-                  String(litrosActuales) + "," + 
-String(round((analogRead(12.052) / 4095.0 * 3.3 * 2.0 ))) + "," +                   
-                  //String(round((analogRead(ADC_PIN) / 4095.0 * 3.3 * 2.0 ))) + "," + 
-                  String(round(temperatureRead() ))+","+
-                  String(dispositivo.altura)+ "," + 
-                  String(dispositivo.litros)+ "," + 
-                  String(dispositivo.nombre)+ ","                                     
-                  ;
+String mensaje = "002," +
+                macAddress + "," + 
+                String(litrosActuales) + "," + 
+                String(round((analogRead(ADC_PIN) / 4095.0 * 3.3 * 2.0))) + "," + 
+                String(round(temperatureRead())) + "," +
+                String(dispositivo.altura) + "," + 
+                String(dispositivo.litros) + "," + 
+                String(dispositivo.nombre);
   
   // Enviar por LoRa
   LoRa.beginPacket();
@@ -549,12 +549,12 @@ void iniciarLoRaConReintentos() {
     // Verifica manualmente SPI
     Serial.println("SPI test: " + String(SPI.transfer(0x42), HEX));
 
-    // Reset LoRa
-    pinMode(LORA_RST, OUTPUT);
-    digitalWrite(LORA_RST, LOW);
-    delay(164);
-    digitalWrite(LORA_RST, HIGH);
-    delay(164);
+    // Reset LoRa deberiamos probar conectando reset 
+    //pinMode(LORA_RST, OUTPUT);
+    //digitalWrite(LORA_RST, LOW);
+    //delay(164);
+    //digitalWrite(LORA_RST, HIGH);
+    //delay(164);
 
     estadoLED = !estadoLED;
     digitalWrite(LED_PIN, estadoLED);
