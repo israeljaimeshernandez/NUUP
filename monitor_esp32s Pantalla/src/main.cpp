@@ -163,7 +163,7 @@ const String serial_number = "TOPICMYSQL";  //aqui voy a maper la MAC
 //*****************************
 //***   CONFIGURACION MQTT  ***
 //*****************************
-const char *mqtt_server ="168.231.66.42";
+const char *mqtt_server ="168.231.66.42";//
 const int  mqtt_port =2783; //Es docker
 const char *mqtt_user="nuup_web";
 const char *mqtt_pass ="Kfl-0878";
