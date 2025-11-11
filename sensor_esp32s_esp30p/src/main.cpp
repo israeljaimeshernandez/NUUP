@@ -1,3 +1,4 @@
+//actualizacion
 #include <Arduino.h>
 #include <SPI.h>
 #include <LoRa.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 
 // --- Configuración ---
+
 #define INTERVALO_ENVIO_DATOS 30000
 #define INTERVALO_PARPADEO 62 //configurando 62ms
 #define INTERVALO_PARPADEO2 1000 //Dispositivo no configurado 1 seg
@@ -20,8 +22,8 @@
 #define ADC_PIN 34
 // --- LoRa ---
 #define LORA_SS 5
-#define LORA_RST -1   //14 lo tengo conectado pero no definido
-#define LORA_DIO0 -1  //2 lo tengo conectado pero no defnido
+#define LORA_RST -1   //-1 SIN USAR 14 lo tengo conectado pero no definido
+#define LORA_DIO0 -1  //4 lo tengo conectado pero no defnido
 // --- Configuración Deep Sleep ---
 #define BOTON_WAKEUP_PIN GPIO_NUM_33 // Usar el mismo pin que tu botón
 // Variables conservadas durante el sleep
@@ -70,7 +72,6 @@ void limpiarEEPROMYReiniciar();
 void enviarDatos(int distancia); 
 void enviarSolicitudBaja();
 void enviarSolicitudRegistro();
-void procesarBaja();
 void confirmarRegistro(String datos);
 void manejarBoton();
 float measureDistance();
@@ -188,12 +189,12 @@ float measureDistance() {
 
 // Función para inicializar estructura de dispositivo
 void inicializarDispositivo() {
-  memset(&dispositivo, 0, sizeof(dispositivo));
+  memset(&dispositivo, 0, sizeof(dispositivo)); //inicializa a cero la memoria de esa estrucutura
   strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac)-1);
   dispositivo.mac[sizeof(dispositivo.mac)-1] = '\0';
-  strncpy(dispositivo.nombre, "Nuevo Dispositivo", sizeof(dispositivo.nombre)-1);
-  dispositivo.altura = 0;
-  dispositivo.litros = 0;
+  strncpy(dispositivo.nombre, "Deposito estandar", sizeof(dispositivo.nombre)-1);
+  dispositivo.altura = 160; //Altura Estandar 1.60 mts
+  dispositivo.litros = 1100;//deposito estandar de 1,100 litros
 }
 
 void guardarDatosEnEEPROM() {
@@ -256,11 +257,6 @@ void enviarSolicitudRegistro() {
   Serial.println(mensaje);
 }
 
-void procesarBaja() {
-  Serial.println("Baja confirmada. Reiniciando...");
-  limpiarEEPROMYReiniciar();
-  delay(1000);  //si no me espero continua con baja luego alta consecutivamente por que es el mismo boton
-}
 
 void confirmarRegistro(String datos) {
   int pos1 = datos.indexOf(',');
@@ -323,11 +319,9 @@ if (millis() - ultimoEnvioSolicitud >= INTERVALO_ENVIO_SOLICITUD) {
     Serial.println("Baja forzada por tiempo (BAJA FORZADA) espera 5 seg y Deep Sleep..");
       digitalWrite(LED_PIN, LOW);
       delay(5000);
-
-    limpiarEEPROMYReiniciar();
-    prepararParaDeepSleep();
-    esp_deep_sleep_start();
-  }
+    limpiarEEPROMYReiniciar(); 
+     // ya reinicia Eprom ESP.restart();
+}
 
  if (LoRa.parsePacket()) {
     String respuesta = LoRa.readString();
@@ -336,19 +330,17 @@ if (millis() - ultimoEnvioSolicitud >= INTERVALO_ENVIO_SOLICITUD) {
     Serial.println(respuesta);
 
     if (respuesta == "OK_BAJA" ) {
-      procesarBaja();
     Serial.println("Recibe confirmacion de Baja manda a dormir espero 5 segundos...");
          digitalWrite(LED_PIN, LOW);
       delay(5000);
-
-  prepararParaDeepSleep();
-    esp_deep_sleep_start();
+ESP.restart();
 
     } else if (respuesta.startsWith("OK_REG") && !registrado) {
       confirmarRegistro(respuesta);
          digitalWrite(LED_PIN, HIGH);
-      delay(5000);
-      Serial.println("Recibe confirmacion de ALTA manda a dormir espero 5 seg...");
+          Serial.println("Recibe confirmacion de ALTA manda a dormir espero 5 seg...");
+      delay(5000);     
+    ESP.restart();
     }
   }
 
@@ -428,6 +420,7 @@ int obtenerDistanciaValida() {
 
 
 void enviarDatos(int distancia) {
+//  ultimoEnvioDatos = millis(); //faltaba esta linea al parecer
   int litrosActuales = 0;
   
   // Solo calcular litros si la distancia es válida (no es 9999)
@@ -451,16 +444,14 @@ Serial.print("Altura:");
   }
 
  // Construir mensaje maximo 10 datos
- String mensaje = "002,"+
-                  macAddress + "," + 
-                  String(litrosActuales) + "," + 
-String(round((analogRead(12.052) / 4095.0 * 3.3 * 2.0 ))) + "," +                   
-                  //String(round((analogRead(ADC_PIN) / 4095.0 * 3.3 * 2.0 ))) + "," + 
-                  String(round(temperatureRead() ))+","+
-                  String(dispositivo.altura)+ "," + 
-                  String(dispositivo.litros)+ "," + 
-                  String(dispositivo.nombre)+ ","                                     
-                  ;
+String mensaje = "002," +
+                macAddress + "," + 
+                String(litrosActuales) + "," + 
+                String(round((analogRead(ADC_PIN) / 4095.0 * 3.3 * 2.0))) + "," + 
+                String(round(temperatureRead())) + "," +
+                String(dispositivo.altura) + "," + 
+                String(dispositivo.litros) + "," + 
+                String(dispositivo.nombre);
   
   // Enviar por LoRa
   LoRa.beginPacket();
@@ -469,6 +460,7 @@ String(round((analogRead(12.052) / 4095.0 * 3.3 * 2.0 ))) + "," +
 
   Serial.print("[Datos] ");
   Serial.println(mensaje);
+
 }
 
 // --- Función para resetear el sensor ---
@@ -557,12 +549,12 @@ void iniciarLoRaConReintentos() {
     // Verifica manualmente SPI
     Serial.println("SPI test: " + String(SPI.transfer(0x42), HEX));
 
-    // Reset LoRa
-    pinMode(LORA_RST, OUTPUT);
-    digitalWrite(LORA_RST, LOW);
-    delay(164);
-    digitalWrite(LORA_RST, HIGH);
-    delay(164);
+    // Reset LoRa deberiamos probar conectando reset 
+    //pinMode(LORA_RST, OUTPUT);
+    //digitalWrite(LORA_RST, LOW);
+    //delay(164);
+    //digitalWrite(LORA_RST, HIGH);
+    //delay(164);
 
     estadoLED = !estadoLED;
     digitalWrite(LED_PIN, estadoLED);
