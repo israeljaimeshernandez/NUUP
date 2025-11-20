@@ -4,7 +4,8 @@
 
 // --- Pines ---
 #define LED_VERDE_PIN 27
-#define LED_ROJO_PIN 33
+#define LED_ROJO_PIN 26
+#define SENSOR_IMPACTO_PIN 33
 #define LED_PIN LED_VERDE_PIN
 #define ADC_PIN 34
 #define LORA_SS 5
@@ -13,7 +14,7 @@
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 10000   // 10 segundos entre envíos LoRa
-#define INTERVALO_ESCANEO_ALTA 5000   // 5 segundos (búsqueda activa)
+#define INTERVALO_ESCANEO_ALTA 10000  // 10 segundos (búsqueda activa extendida)
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
 #define INTERVALO_PARPADEO 62
 #define INTERVALO_PARPADEO2 1000
@@ -116,6 +117,7 @@ bool enProcesoRegistro = false;
 bool bajaAutomaticaActivada = false;
 unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
+bool wakeByImpact = false;
 
 // Variables sensor
 const int trigPin = 21;
@@ -144,6 +146,13 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 #define PARPADEO_LED_LENTO_MS 1000
 #define DURACION_PARPADEO_PROCESO_BAJA_MS 5000
 #define DURACION_PARPADEO_FINAL_BAJA_MS 1000
+#define PARPADEO_LORA_INTERVALO_MS 100
+#define DURACION_PARPADEO_LORA_MS 500
+#define PARPADEO_WAKE_ROJO_MS 250
+#define DURACION_PARPADEO_WAKE_MS 500
+#define DURACION_PARPADEO_EMPAREJANDO_MS 5000
+#define INTERVALO_PARPADEO_EMPAREJANDO_MS 250
+#define DURACION_LED_CONFIRMACION_MS 5000
 
 // Estructuras IA
 struct MedicionHistorial {
@@ -1012,6 +1021,10 @@ void procesarComandoBLE(String comando) {
         
     // ⭐⭐ EJECUTAR SECUENCIA LED PARA ALTA
     ejecutarSecuenciaLED("ALTA COMPLETADA");
+
+    digitalWrite(LED_VERDE_PIN, HIGH);
+    delay(DURACION_LED_CONFIRMACION_MS);
+    digitalWrite(LED_VERDE_PIN, LOW);
     
     Serial.println("💾 Guardando datos en EEPROM...");
     completarRegistro(macRegistrada, nombreDispositivo, 
@@ -1026,6 +1039,10 @@ enProcesoRegistro = false;
     esperandoDatosConfig = false;
     pendienteEnvioConfig = false;
     bajaAutomaticaActivada = false;
+
+    digitalWrite(LED_ROJO_PIN, HIGH);
+    delay(DURACION_LED_CONFIRMACION_MS);
+    digitalWrite(LED_ROJO_PIN, LOW);
 
     // Limpiar EEPROM y reiniciar
     limpiarEEPROMYReiniciar();
@@ -1247,16 +1264,36 @@ void manejarLED() {
         return;
     }
 
-    if (enProcesoRegistro) {
-        // Durante proceso de registro: LED VERDE SIEMPRE ENCENDIDO
-        digitalWrite(LED_VERDE_PIN, HIGH);
+    if (enProcesoRegistro && !bajaAutomaticaActivada) {
+        static unsigned long ultimoBlinkRegistro = 0;
+        static bool estadoRegistro = false;
+        unsigned long transcurrido = millis() - tiempoInicioRegistro;
+
+        if (transcurrido <= DURACION_PARPADEO_EMPAREJANDO_MS) {
+            if (millis() - ultimoBlinkRegistro >= INTERVALO_PARPADEO_EMPAREJANDO_MS) {
+                estadoRegistro = !estadoRegistro;
+                digitalWrite(LED_VERDE_PIN, estadoRegistro);
+                ultimoBlinkRegistro = millis();
+            }
+        } else {
+            digitalWrite(LED_VERDE_PIN, LOW);
+        }
+
         digitalWrite(LED_ROJO_PIN, LOW);
         return;
     }
 
     if (!registrado) {
-        // NO REGISTRADO: LED ROJO ENCENDIDO FIJO
-        digitalWrite(LED_ROJO_PIN, HIGH);
+        // NO REGISTRADO: LED ROJO ENCENDIDO FIJO (o parpadeo corto al despertar por impacto)
+        if (wakeByImpact) {
+            if (millis() - ultimoCambioLedRojo >= PARPADEO_WAKE_ROJO_MS) {
+                estadoLedRojo = !estadoLedRojo;
+                digitalWrite(LED_ROJO_PIN, estadoLedRojo);
+                ultimoCambioLedRojo = millis();
+            }
+        } else {
+            digitalWrite(LED_ROJO_PIN, HIGH);
+        }
         digitalWrite(LED_VERDE_PIN, LOW);
         return;
     }
@@ -1503,15 +1540,20 @@ void setup() {
     
     // Mostrar causa del wakeup
     switch(wakeup_reason) {
-        case ESP_SLEEP_WAKEUP_EXT0: 
+        case ESP_SLEEP_WAKEUP_EXT0:
             Serial.println("📅 Wakeup por BOTÓN");
+            wakeByImpact = true;
             break;
-        case ESP_SLEEP_WAKEUP_TIMER: 
+        case ESP_SLEEP_WAKEUP_TIMER:
             Serial.println("⏰ Wakeup por TIMER - Ciclo normal");
             break;
-        default: 
+        default:
             Serial.println("🔌 Wakeup por RESET/ALIMENTACIÓN");
             break;
+    }
+
+    if (wakeByImpact) {
+        Serial.println("⚡ Wake por sensor de impacto - habilitando BLE/WiFi solo en este ciclo");
     }
 
     // Inicializar EEPROM
@@ -1533,8 +1575,13 @@ void setup() {
     pinMode(echoPin, INPUT);
     pinMode(LED_PIN, OUTPUT);
     pinMode(LED_ROJO_PIN, OUTPUT);
+    pinMode(SENSOR_IMPACTO_PIN, INPUT_PULLUP);
     digitalWrite(LED_PIN, LOW);
     digitalWrite(LED_ROJO_PIN, LOW);
+
+    if (wakeByImpact && !registrado) {
+        parpadearLED(LED_ROJO_PIN, PARPADEO_WAKE_ROJO_MS, DURACION_PARPADEO_WAKE_MS);
+    }
 
     // Parpadeo inicial de ambos LEDs durante 3 segundos
     unsigned long inicioParpadeo = millis();
@@ -1668,33 +1715,40 @@ void loop() {
 
     // ⭐ ALIMENTAR WATCHDOG
     esp_task_wdt_reset();
-    
+
+    bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo;
+
     // ⭐⭐ PRIORIDAD 1: VERIFICAR CLIENTES WiFi
-    verificarConexionCliente();
-    
-    // ⭐⭐ PRIORIDAD 2: ATENDER SERVIDOR WEB (SIEMPRE ACTIVO)
-    server.handleClient();
-dnsServer.processNextRequest();     
+    if (comunicacionesHabilitadas) {
+        verificarConexionCliente();
+    }
+
+    // ⭐⭐ PRIORIDAD 2: ATENDER SERVIDOR WEB (SOLO SI HAY COMUNICACIÓN HABILITADA)
+    if (comunicacionesHabilitadas) {
+        server.handleClient();
+        dnsServer.processNextRequest();
+    }
+
     // ⭐⭐ PRIORIDAD 3: MANEJAR LED
     manejarLED();
 
     // ⭐⭐ PRIORIDAD 4: VERIFICAR Y ENVIAR CONFIG PENDIENTE BLE
-    if (pendienteEnvioConfig && millis() >= tiempoProgramadoEnvio) {
+    if (comunicacionesHabilitadas && pendienteEnvioConfig && millis() >= tiempoProgramadoEnvio) {
         Serial.println("\n🎯 EJECUTANDO ENVÍO CONFIG PROGRAMADO...");
-        
+
         if (deviceConnected && pClient != nullptr && pClient->isConnected()) {
             // ⭐⭐ USAR LAS VARIABLES EN LUGAR DE VALORES FIJOS
-            String configCommand = "CONFIG," + nombreDispositivo + "," + 
-                                  String(alturaDispositivo) + "," + 
+            String configCommand = "CONFIG," + nombreDispositivo + "," +
+                                  String(alturaDispositivo) + "," +
                                   String(litrosDispositivo);
-            
+
             Serial.println("📤 CONFIG enviado: " + configCommand);
             Serial.printf("✅ Usando variables: Nombre='%s', Altura=%d, Litros=%d\n",
                         nombreDispositivo.c_str(), alturaDispositivo, litrosDispositivo);
-            
+
             sendCommand(configCommand);
             pendienteEnvioConfig = false;
-            
+
             // Esperar respuesta
             unsigned long inicioEspera = millis();
             while (millis() - inicioEspera < 5000) {
@@ -1714,65 +1768,67 @@ dnsServer.processNextRequest();
     unsigned long tiempoDesdeEscaneoBLE = tiempoActual - ultimoEscaneoBLE;
     unsigned long intervaloEscaneo = registrado ? INTERVALO_ESCANEO_BAJA : INTERVALO_ESCANEO_ALTA;
 
-    // Ejecutar BLE si es tiempo
-    if (ultimoEscaneoBLE == 0 || tiempoDesdeEscaneoBLE >= intervaloEscaneo) {
-        Serial.println("\n🔍 ===========================================");
-        Serial.println("🎯 INICIANDO ESCANEO BLE");
-        Serial.printf("   Modo: %s\n", registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO");
-        Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
-        Serial.println("🔍 ===========================================");
-        
-        scanForDevices();
-        
-        if (doConnect) {
-            Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
-            if (connectToServer()) {
-                if (!registrado) {
-                    // MODO REGISTRO
-                    String solicitudRegistro = "REG:" + macAddress;
-                    sendCommand(solicitudRegistro);
-                    Serial.println("📤 ENVIANDO SOLICITUD DE REGISTRO: " + solicitudRegistro);
-                    enProcesoRegistro = true;
-                    tiempoInicioRegistro = millis();
-                    Serial.println("⏳ Esperando confirmación de registro...");
+    if (comunicacionesHabilitadas) {
+        // Ejecutar BLE si es tiempo
+        if (ultimoEscaneoBLE == 0 || tiempoDesdeEscaneoBLE >= intervaloEscaneo) {
+            Serial.println("\n🔍 ===========================================");
+            Serial.println("🎯 INICIANDO ESCANEO BLE");
+            Serial.printf("   Modo: %s\n", registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO");
+            Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
+            Serial.println("🔍 ===========================================");
+
+            scanForDevices();
+
+            if (doConnect) {
+                Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
+                if (connectToServer()) {
+                    if (!registrado) {
+                        // MODO REGISTRO
+                        String solicitudRegistro = "REG:" + macAddress;
+                        sendCommand(solicitudRegistro);
+                        Serial.println("📤 ENVIANDO SOLICITUD DE REGISTRO: " + solicitudRegistro);
+                        enProcesoRegistro = true;
+                        tiempoInicioRegistro = millis();
+                        Serial.println("⏳ Esperando confirmación de registro...");
+                    } else {
+                        // MODO BAJA
+                        String solicitudBaja = "BAJA:" + macAddress;
+                        sendCommand(solicitudBaja);
+                        Serial.println("📤 ENVIANDO SOLICITUD DE BAJA: " + solicitudBaja);
+                        bajaAutomaticaActivada = true;
+                        tiempoInicioBaja = millis();
+                        enProcesoRegistro = true;
+                        Serial.println("⏳ Esperando confirmación de baja...");
+                    }
                 } else {
-                    // MODO BAJA
-                    String solicitudBaja = "BAJA:" + macAddress;
-                    sendCommand(solicitudBaja);
-                    Serial.println("📤 ENVIANDO SOLICITUD DE BAJA: " + solicitudBaja);
-                    bajaAutomaticaActivada = true;
-                    tiempoInicioBaja = millis();
-                    enProcesoRegistro = true;
-                    Serial.println("⏳ Esperando confirmación de baja...");
+                    Serial.println("❌ FALLO EN CONEXIÓN BLE");
                 }
             } else {
-                Serial.println("❌ FALLO EN CONEXIÓN BLE");
+                Serial.println("❌ SERVIDOR NUUP_Monitor NO ENCONTRADO");
             }
-        } else {
-            Serial.println("❌ SERVIDOR NUUP_Monitor NO ENCONTRADO");
-        }
-        
-        ultimoEscaneoBLE = millis();
-        Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
-        
-        // ⭐ SI SE ENCONTRÓ BLE, NO CONTINUAR INMEDIATAMENTE
-        if (doConnect) {
-            delay(100);
-            return;
+
+            ultimoEscaneoBLE = millis();
+            Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
+
+            // ⭐ SI SE ENCONTRÓ BLE, NO CONTINUAR INMEDIATAMENTE
+            if (doConnect) {
+                delay(100);
+                return;
+            }
         }
     }
 
     // ⭐⭐ PRIORIDAD 6: PROCESAR COMUNICACIÓN BLE ACTIVA
-    if (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected) {
+    if (comunicacionesHabilitadas && (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected)) {
         static unsigned long ultimoUpdate = 0;
         if (millis() - ultimoUpdate > 2000) {
             ultimoUpdate = millis();
-            
+
             if (bajaAutomaticaActivada) {
                 unsigned long tiempoBaja = millis() - tiempoInicioBaja;
-                Serial.printf("⏳ Procesando BAJA: %lu/%d segundos\n", 
+                Serial.printf("⏳ Procesando BAJA: %lu/%d segundos\n",
                             tiempoBaja / 1000, TIMEOUT_BAJA / 1000);
-                
+
                 if (tiempoBaja > TIMEOUT_BAJA) {
                     Serial.println("⏰ TIMEOUT BAJA - Cancelando proceso");
                     bajaAutomaticaActivada = false;
@@ -1784,12 +1840,12 @@ dnsServer.processNextRequest();
                     doConnect = false;
                 }
             }
-            
+
             if (enProcesoRegistro && !bajaAutomaticaActivada) {
                 unsigned long tiempoRegistro = millis() - tiempoInicioRegistro;
-                Serial.printf("⏳ Procesando REGISTRO: %lu/%d segundos\n", 
+                Serial.printf("⏳ Procesando REGISTRO: %lu/%d segundos\n",
                             tiempoRegistro / 1000, TIMEOUT_REGISTRO_COMPLETO / 1000);
-                
+
                 if (tiempoRegistro > TIMEOUT_REGISTRO_COMPLETO) {
                     Serial.println("⏰ TIMEOUT REGISTRO - Reiniciando...");
                     ESP.restart();
@@ -1811,9 +1867,9 @@ dnsServer.processNextRequest();
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !wakeByImpact) {
         unsigned long tiempoDesdeMedicion = millis() - ultimoEnvioDatos;
-        
+
         if (ultimoEnvioDatos < 0 || tiempoDesdeMedicion >= INTERVALO_ENVIO_DATOS) {
             Serial.println("\n📊 ===========================================");
             Serial.println("🎯 INICIANDO MEDICIÓN DE SENSOR");
@@ -1823,13 +1879,17 @@ dnsServer.processNextRequest();
             int distancia = obtenerDistanciaValida();
             enviarDatos(distancia);
             ultimoEnvioDatos = millis();
-            
+
             Serial.printf("✅ Medición completada. Próxima en: %d segundos\n\n", INTERVALO_ENVIO_DATOS / 1000);
+
+            Serial.println("😴 Programando deep sleep hasta el próximo ciclo LoRa...");
+            wakeByImpact = false;
+            entrarDeepSleep();
         }
     }
 
     // ⭐⭐ PRIORIDAD 8: VERIFICAR SLEEP (SOLO SI ESTÁ REGISTRADO)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !modoConfiguracionActivo) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !modoConfiguracionActivo && !wakeByImpact) {
         unsigned long tiempoDesdeEnvio = millis() - ultimoEnvioDatos;
         unsigned long tiempoDesdeBLE = millis() - ultimoEscaneoBLE;
         unsigned long intervaloEscaneo = registrado ? INTERVALO_ESCANEO_BAJA : INTERVALO_ESCANEO_ALTA;
@@ -1856,6 +1916,10 @@ dnsServer.processNextRequest();
             Serial.println("🔍 MODO BÚSQUEDA ACTIVA - Sin Deep Sleep");
         }
         delay(500); // Delay cooperativo normal
+    } else if (wakeByImpact) {
+        Serial.println("😴 Impacto atendido - regresando a deep sleep");
+        wakeByImpact = false;
+        entrarDeepSleep();
     }
     
     // ⭐ DELAY OPTIMIZADO PARA COOPERATIVIDAD
@@ -2070,11 +2134,12 @@ void enviarDatos(int distancia) {
     if (beginResult) {
         int printResult = LoRa.print(mensaje);
         int endResult = LoRa.endPacket();
-        
+
         if (endResult) {
             Serial.println("\n🎉 TRANSMISIÓN COMPLETADA");
             Serial.print("📨 MENSAJE: ");
             Serial.println(mensaje);
+            parpadearLED(LED_VERDE_PIN, PARPADEO_LORA_INTERVALO_MS, DURACION_PARPADEO_LORA_MS);
         }
     }
     
@@ -2157,39 +2222,42 @@ void resetearSensorUltrasonico() {
 }
 
 void prepararParaDeepSleep() {
-    // ⭐⭐ VERIFICAR QUE SOLO ENTRE EN SLEEP SI ESTÁ REGISTRADO
-    if (!registrado) {
-        Serial.println("⚠️  Modo SIN ALTA - No se permite Deep Sleep");
-        return;
-    }
-    
     // ⭐⭐ VERIFICAR SI ESTAMOS EN PERIODO DE ESPERA DESPUÉS DE BAJA
     if (esperaDespuesBaja) {
         Serial.println("⚠️  No se puede dormir - En periodo de espera después de baja");
         return;
     }
-    
-    Serial.println("🛌 Preparando para deep sleep (MODO CON ALTA)...");
-    
-    // Calcular tiempo de sleep exacto
-    unsigned long tiempoDesdeUltimoEnvio = millis() - ultimoEnvioDatos;
-    unsigned long sleepTime = INTERVALO_ENVIO_DATOS - tiempoDesdeUltimoEnvio;
-    
-    // Asegurar que el tiempo de sleep sea válido
-    if (sleepTime < 1000) sleepTime = 1000;
-    if (sleepTime > INTERVALO_ENVIO_DATOS) sleepTime = INTERVALO_ENVIO_DATOS;
-    
-    Serial.printf("   Tiempo calculado de sleep: %lu ms (%lu seg)\n", sleepTime, sleepTime / 1000);
-    
-    // ⭐ SOLO WAKEUP POR TIMER
-    esp_sleep_enable_timer_wakeup(sleepTime * 1000);
-    
+
+    Serial.println("🛌 Preparando para deep sleep...");
+
+    unsigned long sleepTime = INTERVALO_ENVIO_DATOS;
+
+    if (registrado) {
+        // Calcular tiempo de sleep exacto
+        unsigned long tiempoDesdeUltimoEnvio = millis() - ultimoEnvioDatos;
+        sleepTime = INTERVALO_ENVIO_DATOS - tiempoDesdeUltimoEnvio;
+
+        // Asegurar que el tiempo de sleep sea válido
+        if (sleepTime < 1000) sleepTime = 1000;
+        if (sleepTime > INTERVALO_ENVIO_DATOS) sleepTime = INTERVALO_ENVIO_DATOS;
+
+        esp_sleep_enable_timer_wakeup(sleepTime * 1000);
+        Serial.printf("   Sleep por TIMER: %lu ms (%lu seg)\n", sleepTime, sleepTime / 1000);
+    } else {
+        // Sin alta: solo despertar por impacto
+        Serial.println("   Sleep sin alta - esperando impacto para despertar");
+    }
+
+    // ⭐ Wakeup adicional por sensor de impacto (nivel bajo)
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)SENSOR_IMPACTO_PIN, 0);
+
     // Apagar periféricos para ahorro de energía
     LoRa.sleep();
     WiFi.mode(WIFI_OFF);
     btStop();
-    
-    Serial.printf("✅ Configurado sleep por %lu segundos\n", sleepTime / 1000);
+
+    Serial.printf("✅ Configurado sleep (timer=%s, impacto=GPIO%d)\n",
+                  registrado ? "SI" : "NO", SENSOR_IMPACTO_PIN);
 }
 
 void iniciarLoRaConReintentos() {
