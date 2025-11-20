@@ -3,8 +3,9 @@
 // ============================================================================
 
 // --- Pines ---
-#define LED_PIN 27
-#define BOTON_PIN 33  
+#define LED_VERDE_PIN 27
+#define LED_ROJO_PIN 33
+#define LED_PIN LED_VERDE_PIN
 #define ADC_PIN 34
 #define LORA_SS 5
 #define LORA_RST -1   
@@ -104,10 +105,8 @@ unsigned long tiempoProgramadoEnvio = 0;
 bool botonPresionado = false;
 unsigned long tiempoInicioPresion = 0;
 unsigned long ultimoEnvioDatos = 0;
-unsigned long ultimoCambioLED = 0;
-bool estadoLED = false;
-unsigned long ultimoCambioLED2 = 0;
-bool estadoLED2 = false;
+unsigned long ultimoCambioLedRojo = 0;
+bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 
 unsigned long tiempoInicioRegistro = 0;
@@ -198,6 +197,7 @@ void completarRegistro(String macServidor, String nombre, String alturaStr, Stri
 void debugEstadoBLE();
 void verificarConexionYCercania();
 void debugConexionBLE();
+void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion);
 
 // Funciones del sistema
 void inicializarDispositivo();
@@ -1017,14 +1017,12 @@ void procesarComandoBLE(String comando) {
     // 3. CONFIRMACIÓN DE BAJA EXITOSA
   else if (comando == "OK_BAJA") {
     Serial.println("\n✅ BAJA CONFIRMADA - Limpiando EEPROM...");
-    
+
 enProcesoRegistro = false;
     esperandoDatosConfig = false;
     pendienteEnvioConfig = false;
     bajaAutomaticaActivada = false;
-      // ⭐⭐ EJECUTAR SECUENCIA LED PARA BAJA
-    ejecutarSecuenciaLED("BAJA COMPLETADA");
-    
+
     // Limpiar EEPROM y reiniciar
     limpiarEEPROMYReiniciar();
 }
@@ -1040,10 +1038,7 @@ enProcesoRegistro = false;
         esperandoDatosConfig = false;
         pendienteEnvioConfig = false;
         bajaAutomaticaActivada = false;
-        
-        // ⭐⭐ EJECUTAR SECUENCIA LED PARA BAJA (aunque no existía en servidor)
-        ejecutarSecuenciaLED("BAJA COMPLETADA (NO EXISTÍA)");
-        
+
         // Limpiar EEPROM y reiniciar
         limpiarEEPROMYReiniciar();
     }
@@ -1151,6 +1146,23 @@ void debugConexionBLE() {
 // IMPLEMENTACIÓN DE FUNCIONES DEL SISTEMA
 // ============================================================================
 
+void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion) {
+    unsigned long inicio = millis();
+    unsigned long ultimoCambio = inicio;
+    bool estado = false;
+
+    while (millis() - inicio < duracion) {
+        if (millis() - ultimoCambio >= intervalo) {
+            estado = !estado;
+            digitalWrite(pin, estado);
+            ultimoCambio = millis();
+        }
+        delay(10);
+    }
+
+    digitalWrite(pin, LOW);
+}
+
 void ejecutarSecuenciaLED(String tipoOperacion) {
     Serial.println("\n🎭 INICIANDO SECUENCIA LED - " + tipoOperacion);
     Serial.println("   Fase 1: 💡 LED FIJO (" + String(SECUENCIA_LED_FIJO/1000) + " segundos)");
@@ -1161,7 +1173,7 @@ void ejecutarSecuenciaLED(String tipoOperacion) {
     unsigned long inicioFase1 = millis();
     
     while (millis() - inicioFase1 < SECUENCIA_LED_FIJO) {
-        digitalWrite(LED_PIN, HIGH); // Siempre encendido
+        digitalWrite(LED_VERDE_PIN, HIGH); // Siempre encendido
         
         // Mostrar progreso cada segundo
         static unsigned long ultimoDisplay = 0;
@@ -1185,7 +1197,7 @@ void ejecutarSecuenciaLED(String tipoOperacion) {
         // Parpadeo rápido cada 200ms
         if (millis() - ultimoCambioLED >= SECUENCIA_INTERVALO_PARPADEO) {
             estadoLED = !estadoLED;
-            digitalWrite(LED_PIN, estadoLED);
+            digitalWrite(LED_VERDE_PIN, estadoLED);
             ultimoCambioLED = millis();
         }
         
@@ -1202,37 +1214,52 @@ void ejecutarSecuenciaLED(String tipoOperacion) {
     }
     
     // ⭐⭐ FINAL: APAGAR LED
-    digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_VERDE_PIN, LOW);
     Serial.println("✅ SECUENCIA LED COMPLETADA - " + tipoOperacion);
 }
 
 void manejarLED() {
-    // ⭐⭐ MODO ESPERA DESPUÉS DE BAJA: LED SIEMPRE ENCENDIDO
-    if (esperaDespuesBaja) {
-        digitalWrite(LED_PIN, HIGH);
-        return;
-    }
-    
-    if (enProcesoRegistro) {
-        // Durante proceso de registro: LED SIEMPRE ENCENDIDO
-        digitalWrite(LED_PIN, HIGH);
-        return;
-    }
-    
-    if (!registrado) {
-        // NO REGISTRADO: LED parpadea cada 500ms
-        if (millis() - ultimoCambioLED >= 500) {
-            estadoLED = !estadoLED;
-            digitalWrite(LED_PIN, estadoLED);
-            ultimoCambioLED = millis();
-            
-            // ⭐ IMPRIMIR CADA 500ms CUANDO NO ESTÁ REGISTRADO
-            Serial.println("💡 LED parpadeando - Buscando servidor para registro...");
+    // ⭐⭐ MODO BAJA: LED ROJO PARPADEANDO CADA 250ms
+    if (bajaAutomaticaActivada) {
+        if (millis() - ultimoCambioLedRojo >= 250) {
+            estadoLedRojo = !estadoLedRojo;
+            digitalWrite(LED_ROJO_PIN, estadoLedRojo);
+            ultimoCambioLedRojo = millis();
         }
-    } else {
-        // REGISTRADO: LED APAGADO completamente
-        digitalWrite(LED_PIN, LOW);
+
+        digitalWrite(LED_VERDE_PIN, LOW);
+        return;
     }
+
+    // ⭐⭐ MODO ESPERA DESPUÉS DE BAJA: LED ROJO PARPADEO LENTO
+    if (esperaDespuesBaja) {
+        if (millis() - ultimoCambioLedRojo >= 1000) {
+            estadoLedRojo = !estadoLedRojo;
+            digitalWrite(LED_ROJO_PIN, estadoLedRojo);
+            ultimoCambioLedRojo = millis();
+        }
+
+        digitalWrite(LED_VERDE_PIN, LOW);
+        return;
+    }
+
+    if (enProcesoRegistro) {
+        // Durante proceso de registro: LED VERDE SIEMPRE ENCENDIDO
+        digitalWrite(LED_VERDE_PIN, HIGH);
+        digitalWrite(LED_ROJO_PIN, LOW);
+        return;
+    }
+
+    if (!registrado) {
+        // NO REGISTRADO: LED ROJO ENCENDIDO FIJO
+        digitalWrite(LED_ROJO_PIN, HIGH);
+        digitalWrite(LED_VERDE_PIN, LOW);
+        return;
+    }
+
+    // REGISTRADO Y SIN EVENTOS: AMBOS LEDs APAGADOS
+    digitalWrite(LED_ROJO_PIN, LOW);
+    digitalWrite(LED_VERDE_PIN, LOW);
 }
 
 void modoEsperaDespuesBaja() {
@@ -1246,7 +1273,7 @@ void modoEsperaDespuesBaja() {
     // ⭐⭐ LED PARPADEO LENTO DURANTE ESPERA (1 segundo)
     if (millis() - ultimoCambioEspera >= 1000) {
         estadoLEDEspera = !estadoLEDEspera;
-        digitalWrite(LED_PIN, estadoLEDEspera);
+        digitalWrite(LED_ROJO_PIN, estadoLEDEspera);
         ultimoCambioEspera = millis();
     }
     
@@ -1269,7 +1296,7 @@ void modoEsperaDespuesBaja() {
     if (tiempoEspera >= TIEMPO_ESPERA_DESPUES_BAJA) {
         esperaDespuesBaja = false;
         tiempoFinBaja = 0;
-        digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_ROJO_PIN, LOW);
         Serial.println("✅✅✅ PERIODO DE ESPERA FINALIZADO - LISTO PARA ALTA ✅✅✅");
     }
 }
@@ -1501,6 +1528,21 @@ void setup() {
     pinMode(trigPin, OUTPUT);
     pinMode(echoPin, INPUT);
     pinMode(LED_PIN, OUTPUT);
+    pinMode(LED_ROJO_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_ROJO_PIN, LOW);
+
+    // Parpadeo inicial de ambos LEDs durante 3 segundos
+    unsigned long inicioParpadeo = millis();
+    bool estadoParpadeo = false;
+    while (millis() - inicioParpadeo < 3000) {
+        digitalWrite(LED_VERDE_PIN, estadoParpadeo);
+        digitalWrite(LED_ROJO_PIN, estadoParpadeo);
+        estadoParpadeo = !estadoParpadeo;
+        delay(250);
+    }
+    digitalWrite(LED_VERDE_PIN, LOW);
+    digitalWrite(LED_ROJO_PIN, LOW);
     
     // ⭐⭐ FORZAR PRIMER ESCANEO BLE INMEDIATO
     ultimoEscaneoBLE = 0; // Esto forzará el escaneo inmediatamente
@@ -1527,11 +1569,15 @@ void setup() {
     }
 
     // LED de inicio
-    for(int i = 0; i < 4; i++) {
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        delay(100);
+    if (registrado) {
+        for(int i = 0; i < 4; i++) {
+            digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+            delay(100);
+        }
+        digitalWrite(LED_PIN, LOW);
+    } else {
+        digitalWrite(LED_ROJO_PIN, HIGH);
     }
-    if (registrado) digitalWrite(LED_PIN, LOW);
 
     // Inicialización LoRa
     Serial.println("📡 INICIANDO LoRa...");
@@ -1900,18 +1946,25 @@ void imprimirDatosDispositivo() {
 
 void limpiarEEPROMYReiniciar() {
     Serial.println("\n🗑️  INICIANDO PROCESO DE BAJA...");
-    
-    // ⭐ PARPADEO RÁPIDO DURANTE 5 SEGUNDOS
-    Serial.println("💡 Parpadeo rápido durante 5 segundos...");
+
+    // ⭐ PARPADEO RÁPIDO DURANTE EL PROCESO (LED ROJO)
+    Serial.println("💡 Parpadeo rápido (250ms) durante 5 segundos con LED rojo...");
     unsigned long inicioParpadeo = millis();
-    
+    unsigned long ultimoCambio = millis();
+    bool estadoRojo = false;
+
     while (millis() - inicioParpadeo < 5000) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(250);
-        digitalWrite(LED_PIN, LOW);
-        delay(250);
-        Serial.print("💫 ");
+        if (millis() - ultimoCambio >= 250) {
+            estadoRojo = !estadoRojo;
+            digitalWrite(LED_ROJO_PIN, estadoRojo);
+            ultimoCambio = millis();
+            Serial.print("💫 ");
+        }
+        delay(10);
     }
+
+    digitalWrite(LED_ROJO_PIN, LOW);
+    digitalWrite(LED_VERDE_PIN, LOW);
     Serial.println("\n");
     
     Serial.println("🧹 Limpiando EEPROM...");
@@ -1932,14 +1985,9 @@ void limpiarEEPROMYReiniciar() {
     
     Serial.println("🔄 Reiniciando en 3 segundos...");
     
-    // Blink de confirmación final
-    for(int i = 0; i < 3; i++) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(500);
-        digitalWrite(LED_PIN, LOW);
-        delay(500);
-    }
-    
+    Serial.println("✨ Parpadeo final de 1 segundo (LED rojo)...");
+    parpadearLED(LED_ROJO_PIN, 250, 1000);
+
     delay(3000);
     Serial.println("🚀 REINICIANDO PARA MODO ALTA...");
     ESP.restart();
