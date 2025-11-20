@@ -1531,6 +1531,18 @@ void setup() {
     pinMode(LED_ROJO_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     digitalWrite(LED_ROJO_PIN, LOW);
+
+    // Parpadeo inicial de ambos LEDs durante 3 segundos
+    unsigned long inicioParpadeo = millis();
+    bool estadoParpadeo = false;
+    while (millis() - inicioParpadeo < 3000) {
+        digitalWrite(LED_VERDE_PIN, estadoParpadeo);
+        digitalWrite(LED_ROJO_PIN, estadoParpadeo);
+        estadoParpadeo = !estadoParpadeo;
+        delay(250);
+    }
+    digitalWrite(LED_VERDE_PIN, LOW);
+    digitalWrite(LED_ROJO_PIN, LOW);
     
     // ⭐⭐ FORZAR PRIMER ESCANEO BLE INMEDIATO
     ultimoEscaneoBLE = 0; // Esto forzará el escaneo inmediatamente
