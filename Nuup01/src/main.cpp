@@ -138,8 +138,12 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 
 // Configuración LED
 #define SECUENCIA_LED_FIJO 10000
-#define SECUENCIA_LED_PARPADEANTE 5000  
+#define SECUENCIA_LED_PARPADEANTE 5000
 #define SECUENCIA_INTERVALO_PARPADEO 200
+#define PARPADEO_LED_RAPIDO_MS 250
+#define PARPADEO_LED_LENTO_MS 1000
+#define DURACION_PARPADEO_PROCESO_BAJA_MS 5000
+#define DURACION_PARPADEO_FINAL_BAJA_MS 1000
 
 // Estructuras IA
 struct MedicionHistorial {
@@ -607,7 +611,7 @@ void guardarConfigWeb() {
             // Secuencia LED de confirmación
             for(int i = 0; i < 6; i++) {
                 digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-                delay(250);
+                delay(PARPADEO_LED_RAPIDO_MS);
             }
             
             delay(3000);
@@ -950,7 +954,7 @@ void completarRegistro(String macServidor, String nombre, String alturaStr, Stri
     // Blink de confirmación
     for(int i = 0; i < 6; i++) {
         digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        delay(250);
+        delay(PARPADEO_LED_RAPIDO_MS);
     }
     
     digitalWrite(LED_PIN, LOW); // Asegurar que queda apagado
@@ -1219,9 +1223,9 @@ void ejecutarSecuenciaLED(String tipoOperacion) {
 }
 
 void manejarLED() {
-    // ⭐⭐ MODO BAJA: LED ROJO PARPADEANDO CADA 250ms
+    // ⭐⭐ MODO BAJA: LED ROJO PARPADEANDO (configurable)
     if (bajaAutomaticaActivada) {
-        if (millis() - ultimoCambioLedRojo >= 250) {
+        if (millis() - ultimoCambioLedRojo >= PARPADEO_LED_RAPIDO_MS) {
             estadoLedRojo = !estadoLedRojo;
             digitalWrite(LED_ROJO_PIN, estadoLedRojo);
             ultimoCambioLedRojo = millis();
@@ -1233,7 +1237,7 @@ void manejarLED() {
 
     // ⭐⭐ MODO ESPERA DESPUÉS DE BAJA: LED ROJO PARPADEO LENTO
     if (esperaDespuesBaja) {
-        if (millis() - ultimoCambioLedRojo >= 1000) {
+        if (millis() - ultimoCambioLedRojo >= PARPADEO_LED_LENTO_MS) {
             estadoLedRojo = !estadoLedRojo;
             digitalWrite(LED_ROJO_PIN, estadoLedRojo);
             ultimoCambioLedRojo = millis();
@@ -1270,8 +1274,8 @@ void modoEsperaDespuesBaja() {
     unsigned long tiempoEspera = millis() - tiempoFinBaja;
     unsigned long segundosRestantes = (TIEMPO_ESPERA_DESPUES_BAJA - tiempoEspera) / 1000;
     
-    // ⭐⭐ LED PARPADEO LENTO DURANTE ESPERA (1 segundo)
-    if (millis() - ultimoCambioEspera >= 1000) {
+    // ⭐⭐ LED PARPADEO LENTO DURANTE ESPERA (configurable)
+    if (millis() - ultimoCambioEspera >= PARPADEO_LED_LENTO_MS) {
         estadoLEDEspera = !estadoLEDEspera;
         digitalWrite(LED_ROJO_PIN, estadoLEDEspera);
         ultimoCambioEspera = millis();
@@ -1539,7 +1543,7 @@ void setup() {
         digitalWrite(LED_VERDE_PIN, estadoParpadeo);
         digitalWrite(LED_ROJO_PIN, estadoParpadeo);
         estadoParpadeo = !estadoParpadeo;
-        delay(250);
+        delay(PARPADEO_LED_RAPIDO_MS);
     }
     digitalWrite(LED_VERDE_PIN, LOW);
     digitalWrite(LED_ROJO_PIN, LOW);
@@ -1948,13 +1952,14 @@ void limpiarEEPROMYReiniciar() {
     Serial.println("\n🗑️  INICIANDO PROCESO DE BAJA...");
 
     // ⭐ PARPADEO RÁPIDO DURANTE EL PROCESO (LED ROJO)
-    Serial.println("💡 Parpadeo rápido (250ms) durante 5 segundos con LED rojo...");
+    Serial.printf("💡 Parpadeo rápido (%d ms) durante %d segundos con LED rojo...\n",
+                  PARPADEO_LED_RAPIDO_MS, DURACION_PARPADEO_PROCESO_BAJA_MS / 1000);
     unsigned long inicioParpadeo = millis();
     unsigned long ultimoCambio = millis();
     bool estadoRojo = false;
 
-    while (millis() - inicioParpadeo < 5000) {
-        if (millis() - ultimoCambio >= 250) {
+    while (millis() - inicioParpadeo < DURACION_PARPADEO_PROCESO_BAJA_MS) {
+        if (millis() - ultimoCambio >= PARPADEO_LED_RAPIDO_MS) {
             estadoRojo = !estadoRojo;
             digitalWrite(LED_ROJO_PIN, estadoRojo);
             ultimoCambio = millis();
@@ -1985,8 +1990,8 @@ void limpiarEEPROMYReiniciar() {
     
     Serial.println("🔄 Reiniciando en 3 segundos...");
     
-    Serial.println("✨ Parpadeo final de 1 segundo (LED rojo)...");
-    parpadearLED(LED_ROJO_PIN, 250, 1000);
+    Serial.printf("✨ Parpadeo final de %d segundo(s) (LED rojo)...\n", DURACION_PARPADEO_FINAL_BAJA_MS / 1000);
+    parpadearLED(LED_ROJO_PIN, PARPADEO_LED_RAPIDO_MS, DURACION_PARPADEO_FINAL_BAJA_MS);
 
     delay(3000);
     Serial.println("🚀 REINICIANDO PARA MODO ALTA...");
