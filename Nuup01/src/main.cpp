@@ -1,5 +1,5 @@
 // ============================================================================
-// LEYENDA: Rama 'work' - Última actualización: ajustes de alta/baixa para mantener MAC nula hasta READY y limpiar a fábrica.
+// LEYENDA: Rama 'work' - Última actualización: persistencia web sin registro, MAC nula hasta READY y limpiezas solo por baja/botón.
 // ============================================================================
 // CONFIGURACIÓN PRINCIPAL - DEFINICIONES ÚNICAS
 // ============================================================================
@@ -1579,6 +1579,11 @@ void setup() {
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("📋 Estado de registro: %s\n", registrado ? "REGISTRADO" : "NO REGISTRADO");
 
+    // Cargar datos almacenados incluso si no está registrado para que las
+    // ediciones web persistan entre reinicios; si la EEPROM está vacía se
+    // restauran los valores de fábrica.
+    leerDatosDeEEPROM();
+
     // ⭐⭐ INICIALIZAR BLE INMEDIATAMENTE
     Serial.println("📱 INICIANDO BLE...");
     BLEDevice::init("NUUP_Controller");
@@ -1626,12 +1631,10 @@ void setup() {
     Serial.println(macAddress);
 
     if (registrado) {
-        leerDatosDeEEPROM();
         Serial.println("✅ Dispositivo registrado - Operación normal");
         imprimirDatosDispositivo();
     } else {
         Serial.println("🔍 Dispositivo NO registrado - Modo búsqueda activa");
-        inicializarDispositivo();
     }
 
     // LED de inicio
@@ -2019,8 +2022,17 @@ void guardarDatosEnEEPROM() {
 void leerDatosDeEEPROM() {
     EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
     size_t macLen = strlen(dispositivo.mac);
+
+    // Detectar contenido vacío/no inicializado (todo en cero y strings vacíos)
+    bool sinDatosUsuario = (macLen == 0) && (strlen(dispositivo.nombre) == 0) &&
+                           (dispositivo.altura == 0 || dispositivo.litros == 0);
+
     if (macLen != 0 && macLen != 17) {
         Serial.println("Datos corruptos en EEPROM. Reinicializando a fábrica...");
+        establecerValoresDeFabrica();
+        guardarDatosEnEEPROM();
+    } else if (sinDatosUsuario) {
+        Serial.println("EEPROM sin datos previos. Cargando valores de fábrica...");
         establecerValoresDeFabrica();
         guardarDatosEnEEPROM();
     }
