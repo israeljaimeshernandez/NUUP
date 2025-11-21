@@ -72,9 +72,13 @@ String macAddress = "";
 int counter = 0;
 
 // --- Variables para configuración web ---
-String nombreDispositivo = "Tinaco villas 1";
-int alturaDispositivo = 180;
-int litrosDispositivo = 1100;
+const char* NOMBRE_DEFAULT = "Tinaco villas 1";
+const uint32_t ALTURA_DEFAULT = 180;
+const uint32_t LITROS_DEFAULT = 1100;
+
+String nombreDispositivo = NOMBRE_DEFAULT;
+int alturaDispositivo = ALTURA_DEFAULT;
+int litrosDispositivo = LITROS_DEFAULT;
 
 // ============================================================================
 // VARIABLES GLOBALES BLE Y SISTEMA
@@ -215,7 +219,7 @@ void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion);
 // Funciones del sistema
 void inicializarDispositivo();
 void guardarDatosEnEEPROM();
-void leerDatosDeEEPROM();
+bool leerDatosDeEEPROM();
 void imprimirDatosDispositivo();
 void limpiarEEPROMYReiniciar();
 void enviarDatos(int distancia);
@@ -539,12 +543,8 @@ void guardarConfigWeb() {
         // Validar datos
         if (nuevoNombre.length() > 0 && nuevaAltura > 0 && nuevosLitros > 0) {
             // Actualizar estructura dispositivo
-            // ✅ Asegurar que siempre guardamos la MAC actual para que el lector no marque datos corruptos
-            if (strlen(dispositivo.mac) != 17) {
-                strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac) - 1);
-                dispositivo.mac[sizeof(dispositivo.mac) - 1] = '\0';
-            }
             strncpy(dispositivo.nombre, nuevoNombre.c_str(), sizeof(dispositivo.nombre)-1);
+            dispositivo.nombre[sizeof(dispositivo.nombre) - 1] = '\0';
             dispositivo.altura = nuevaAltura;
             dispositivo.litros = nuevosLitros;
             
@@ -1569,6 +1569,18 @@ void setup() {
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("📋 Estado de registro: %s\n", registrado ? "REGISTRADO" : "NO REGISTRADO");
 
+    // Intentar cargar datos persistentes aunque el dispositivo no esté dado de alta
+    bool datosConfiguracionValidos = leerDatosDeEEPROM();
+
+    if (!datosConfiguracionValidos) {
+        Serial.println("⚙️ EEPROM sin datos válidos. Aplicando valores por defecto persistentes...");
+        inicializarDispositivo();
+        guardarDatosEnEEPROM();
+
+        // Recargar para sincronizar variables en memoria
+        datosConfiguracionValidos = leerDatosDeEEPROM();
+    }
+
     // ⭐⭐ INICIALIZAR BLE INMEDIATAMENTE
     Serial.println("📱 INICIANDO BLE...");
     BLEDevice::init("NUUP_Controller");
@@ -1616,13 +1628,12 @@ void setup() {
     Serial.println(macAddress);
 
     if (registrado) {
-        leerDatosDeEEPROM();
         Serial.println("✅ Dispositivo registrado - Operación normal");
-        imprimirDatosDispositivo();
     } else {
         Serial.println("🔍 Dispositivo NO registrado - Modo búsqueda activa");
-        inicializarDispositivo();
     }
+
+    imprimirDatosDispositivo();
 
     // LED de inicio
     if (registrado) {
@@ -1968,15 +1979,21 @@ float measureDistance() {
 
 void inicializarDispositivo() {
     memset(&dispositivo, 0, sizeof(dispositivo));
-    strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac)-1);
-    strncpy(dispositivo.nombre, "Deposito estandar", sizeof(dispositivo.nombre)-1);
-    dispositivo.altura = 160;
-    dispositivo.litros = 1100;
+    dispositivo.mac[0] = '\0'; // Se asignará la MAC del servidor al completar el alta
+
+    strncpy(dispositivo.nombre, NOMBRE_DEFAULT, sizeof(dispositivo.nombre) - 1);
+    dispositivo.nombre[sizeof(dispositivo.nombre) - 1] = '\0';
+
+    dispositivo.altura = ALTURA_DEFAULT;
+    dispositivo.litros = LITROS_DEFAULT;
 }
 
 void guardarDatosEnEEPROM() {
     Serial.println("💾 Iniciando guardado en EEPROM...");
-    
+
+    dispositivo.mac[sizeof(dispositivo.mac) - 1] = '\0';
+    dispositivo.nombre[sizeof(dispositivo.nombre) - 1] = '\0';
+
     EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
     Serial.println("📝 Datos escritos en buffer EEPROM");
     
@@ -1999,20 +2016,36 @@ void guardarDatosEnEEPROM() {
     }
 }
 
-void leerDatosDeEEPROM() {
+bool leerDatosDeEEPROM() {
     EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
 
-    // Validar la MAC almacenada para evitar considerar la configuración como corrupta injustificadamente
-    if (strlen(dispositivo.mac) != 17) {
-        Serial.println("Datos corruptos en EEPROM. Reinicializando...");
-        inicializarDispositivo();
-        guardarDatosEnEEPROM();
+    // Asegurar terminación para evitar lecturas fuera de rango si la EEPROM está sin inicializar
+    dispositivo.mac[sizeof(dispositivo.mac) - 1] = '\0';
+    dispositivo.nombre[sizeof(dispositivo.nombre) - 1] = '\0';
+
+    size_t macLen = strlen(dispositivo.mac);
+    bool macValida = (macLen == 17) || (macLen == 0);
+
+    bool nombreValido = dispositivo.nombre[0] != '\0' && dispositivo.nombre[0] != (char)0xFF;
+    bool alturaValida = dispositivo.altura > 0 && dispositivo.altura < 100000;
+    bool litrosValidos = dispositivo.litros > 0 && dispositivo.litros < 100000;
+
+    if (!nombreValido || !alturaValida || !litrosValidos) {
+        Serial.println("⚠️ Datos incompletos o sin inicializar en EEPROM");
+        return false;
+    }
+
+    if (!macValida) {
+        Serial.println("⚠️ MAC inválida en EEPROM. Se mantendrá vacía hasta el alta con el servidor.");
+        dispositivo.mac[0] = '\0';
     }
 
     // Sincronizar variables globales de configuración con los datos persistidos
     nombreDispositivo = dispositivo.nombre;
     alturaDispositivo = dispositivo.altura;
     litrosDispositivo = dispositivo.litros;
+
+    return true;
 }
 
 void imprimirDatosDispositivo() {
