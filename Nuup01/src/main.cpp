@@ -539,6 +539,11 @@ void guardarConfigWeb() {
         // Validar datos
         if (nuevoNombre.length() > 0 && nuevaAltura > 0 && nuevosLitros > 0) {
             // Actualizar estructura dispositivo
+            // ✅ Asegurar que siempre guardamos la MAC actual para que el lector no marque datos corruptos
+            if (strlen(dispositivo.mac) != 17) {
+                strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac) - 1);
+                dispositivo.mac[sizeof(dispositivo.mac) - 1] = '\0';
+            }
             strncpy(dispositivo.nombre, nuevoNombre.c_str(), sizeof(dispositivo.nombre)-1);
             dispositivo.altura = nuevaAltura;
             dispositivo.litros = nuevosLitros;
@@ -1996,11 +2001,18 @@ void guardarDatosEnEEPROM() {
 
 void leerDatosDeEEPROM() {
     EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
+
+    // Validar la MAC almacenada para evitar considerar la configuración como corrupta injustificadamente
     if (strlen(dispositivo.mac) != 17) {
         Serial.println("Datos corruptos en EEPROM. Reinicializando...");
         inicializarDispositivo();
         guardarDatosEnEEPROM();
     }
+
+    // Sincronizar variables globales de configuración con los datos persistidos
+    nombreDispositivo = dispositivo.nombre;
+    alturaDispositivo = dispositivo.altura;
+    litrosDispositivo = dispositivo.litros;
 }
 
 void imprimirDatosDispositivo() {
