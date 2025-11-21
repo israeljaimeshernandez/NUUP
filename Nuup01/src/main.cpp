@@ -617,13 +617,8 @@ void guardarConfigWeb() {
             Serial.println("✅ CONFIGURACIÓN COMPLETA - WiFi AP apagado");
             Serial.println("🔄 Reiniciando en 3 segundos...");
             
-            // Secuencia LED de confirmación
-            for(int i = 0; i < 6; i++) {
-                digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-                delay(PARPADEO_LED_RAPIDO_MS);
-            }
-            
-            delay(3000);
+            // Secuencia LED de confirmación antes de reiniciar
+            parpadearLED(LED_VERDE_PIN, PARPADEO_LED_RAPIDO_MS, DURACION_LED_CONFIRMACION_MS);
             ESP.restart();
             
         } else {
@@ -960,15 +955,8 @@ void completarRegistro(String macServidor, String nombre, String alturaStr, Stri
     // ⭐⭐ REINICIAR PARA APLICAR CAMBIOS
     Serial.println("🔄 Reiniciando en 3 segundos...");
     
-    // Blink de confirmación
-    for(int i = 0; i < 6; i++) {
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        delay(PARPADEO_LED_RAPIDO_MS);
-    }
-    
-    digitalWrite(LED_PIN, LOW); // Asegurar que queda apagado
-    delay(3000);
-    
+    // Blink de confirmación antes de reiniciar
+    parpadearLED(LED_VERDE_PIN, PARPADEO_LED_RAPIDO_MS, DURACION_LED_CONFIRMACION_MS);
     Serial.println("🚀 REINICIANDO...");
     ESP.restart();
 }
