@@ -1583,10 +1583,10 @@ void setup() {
         parpadearLED(LED_ROJO_PIN, PARPADEO_WAKE_ROJO_MS, DURACION_PARPADEO_WAKE_MS);
     }
 
-    // Parpadeo inicial de ambos LEDs durante 3 segundos
+    // Parpadeo inicial de ambos LEDs durante 5 segundos
     unsigned long inicioParpadeo = millis();
     bool estadoParpadeo = false;
-    while (millis() - inicioParpadeo < 3000) {
+    while (millis() - inicioParpadeo < 5000) {
         digitalWrite(LED_VERDE_PIN, estadoParpadeo);
         digitalWrite(LED_ROJO_PIN, estadoParpadeo);
         estadoParpadeo = !estadoParpadeo;
