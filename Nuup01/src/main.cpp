@@ -1,4 +1,6 @@
 // ============================================================================
+// LEYENDA: Rama 'work' - Última actualización: encabezado visible para identificar versión en VSCode.
+// ============================================================================
 // CONFIGURACIÓN PRINCIPAL - DEFINICIONES ÚNICAS
 // ============================================================================
 
