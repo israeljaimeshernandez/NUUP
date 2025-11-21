@@ -529,7 +529,11 @@ void mostrarPaginaConfig() {
 
 void guardarConfigWeb() {
     Serial.println("\n💾 PROCESANDO CONFIGURACIÓN WEB COMPLETA...");
-    
+
+    // Esta ruta se ejecuta solo cuando el usuario envía el formulario del portal
+    // cautivo. Actualiza las variables locales con los valores capturados y marca
+    // al dispositivo como "registrado" en EEPROM para que arranque usando esos
+    // datos, aun sin haber pasado todavía por el ciclo BLE de alta.
     // Verificar parámetros - SOLO los que existen en el formulario
     if (server.hasArg("nombre") && server.hasArg("altura") && server.hasArg("litros")) {
         String nuevoNombre = server.arg("nombre");
@@ -927,7 +931,10 @@ void scanForDevices() {
 
 void completarRegistro(String macServidor, String nombre, String alturaStr, String litrosStr) {
     Serial.println("\n💾 INICIANDO CIERRE DE REGISTRO...");
-    
+
+    // Este cierre de alta se dispara desde BLE (READY) usando la MAC que envía
+    // el servidor y las variables globales de configuración vigentes. Luego
+    // persiste todo en EEPROM y marca el flag de registrado para futuros arranques.
     // Guardar datos EN LAS VARIABLES
     memset(&dispositivo, 0, sizeof(dispositivo));
     strncpy(dispositivo.mac, macServidor.c_str(), sizeof(dispositivo.mac)-1);
