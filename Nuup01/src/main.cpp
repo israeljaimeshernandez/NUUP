@@ -2001,6 +2001,11 @@ void leerDatosDeEEPROM() {
         inicializarDispositivo();
         guardarDatosEnEEPROM();
     }
+
+    // Sincronizar variables globales con los datos persistidos
+    nombreDispositivo = String(dispositivo.nombre);
+    alturaDispositivo = dispositivo.altura;
+    litrosDispositivo = dispositivo.litros;
 }
 
 void imprimirDatosDispositivo() {
