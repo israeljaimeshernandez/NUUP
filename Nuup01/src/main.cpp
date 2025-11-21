@@ -72,7 +72,7 @@ String macAddress = "";
 int counter = 0;
 
 // --- Variables para configuración web ---
-String nombreDispositivo = "Tinaco villas 1";
+String nombreDispositivo = "Tinaco 1";
 int alturaDispositivo = 180;
 int litrosDispositivo = 1100;
 
@@ -213,6 +213,8 @@ void debugConexionBLE();
 void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion);
 
 // Funciones del sistema
+void establecerConfiguracionDefault();
+void cargarConfiguracionPersistente();
 void inicializarDispositivo();
 void guardarDatosEnEEPROM();
 void leerDatosDeEEPROM();
@@ -1566,6 +1568,15 @@ void setup() {
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("📋 Estado de registro: %s\n", registrado ? "REGISTRADO" : "NO REGISTRADO");
 
+    // Obtener MAC
+    macAddress = WiFi.macAddress();
+    macAddress.replace("-", ":");
+    Serial.print("📟 MAC: ");
+    Serial.println(macAddress);
+
+    // Cargar configuración persistente o aplicar valores por defecto
+    cargarConfiguracionPersistente();
+
     // ⭐⭐ INICIALIZAR BLE INMEDIATAMENTE
     Serial.println("📱 INICIANDO BLE...");
     BLEDevice::init("NUUP_Controller");
@@ -1606,19 +1617,10 @@ void setup() {
         Serial.println("💡 LED APAGADO - Modo registrado");
     }
     
-    // Obtener MAC
-    macAddress = WiFi.macAddress();
-    macAddress.replace("-", ":");
-    Serial.print("📟 MAC: ");
-    Serial.println(macAddress);
-
     if (registrado) {
-        leerDatosDeEEPROM();
         Serial.println("✅ Dispositivo registrado - Operación normal");
-        imprimirDatosDispositivo();
     } else {
         Serial.println("🔍 Dispositivo NO registrado - Modo búsqueda activa");
-        inicializarDispositivo();
     }
 
     // LED de inicio
@@ -1963,12 +1965,52 @@ float measureDistance() {
     return distance;
 }
 
-void inicializarDispositivo() {
+void establecerConfiguracionDefault() {
     memset(&dispositivo, 0, sizeof(dispositivo));
-    strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac)-1);
-    strncpy(dispositivo.nombre, "Deposito estandar", sizeof(dispositivo.nombre)-1);
-    dispositivo.altura = 160;
-    dispositivo.litros = 1100;
+
+    if (macAddress.length() == 17) {
+        strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac) - 1);
+    }
+
+    strncpy(dispositivo.nombre, nombreDispositivo.c_str(), sizeof(dispositivo.nombre) - 1);
+    dispositivo.altura = alturaDispositivo;
+    dispositivo.litros = litrosDispositivo;
+
+    nombreDispositivo = dispositivo.nombre;
+    alturaDispositivo = dispositivo.altura;
+    litrosDispositivo = dispositivo.litros;
+}
+
+void inicializarDispositivo() {
+    nombreDispositivo = "Tinaco 1";
+    alturaDispositivo = 180;
+    litrosDispositivo = 1100;
+
+    establecerConfiguracionDefault();
+}
+
+void cargarConfiguracionPersistente() {
+    EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
+
+    bool datosValidos = strlen(dispositivo.nombre) > 0 &&
+                        dispositivo.altura > 0 &&
+                        dispositivo.litros > 0;
+
+    if (!datosValidos) {
+        Serial.println("⚠️  Configuración no válida en EEPROM. Aplicando valores por defecto...");
+        inicializarDispositivo();
+        guardarDatosEnEEPROM();
+    } else {
+        if (strlen(dispositivo.mac) == 0 && macAddress.length() == 17) {
+            strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac) - 1);
+            EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
+            EEPROM.commit();
+        }
+
+        nombreDispositivo = dispositivo.nombre;
+        alturaDispositivo = dispositivo.altura;
+        litrosDispositivo = dispositivo.litros;
+    }
 }
 
 void guardarDatosEnEEPROM() {
@@ -1998,16 +2040,27 @@ void guardarDatosEnEEPROM() {
 
 void leerDatosDeEEPROM() {
     EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
-    if (strlen(dispositivo.mac) != 17) {
+
+    bool datosValidos = strlen(dispositivo.nombre) > 0 &&
+                        dispositivo.altura > 0 &&
+                        dispositivo.litros > 0;
+
+    if (!datosValidos) {
         Serial.println("Datos corruptos en EEPROM. Reinicializando...");
         inicializarDispositivo();
         guardarDatosEnEEPROM();
-    }
+    } else {
+        if (strlen(dispositivo.mac) == 0 && macAddress.length() == 17) {
+            strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac) - 1);
+            EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
+            EEPROM.commit();
+        }
 
-    // Sincronizar variables globales con los datos almacenados
-    nombreDispositivo = dispositivo.nombre;
-    alturaDispositivo = dispositivo.altura;
-    litrosDispositivo = dispositivo.litros;
+        // Sincronizar variables globales con los datos almacenados
+        nombreDispositivo = dispositivo.nombre;
+        alturaDispositivo = dispositivo.altura;
+        litrosDispositivo = dispositivo.litros;
+    }
 }
 
 void imprimirDatosDispositivo() {
@@ -2044,21 +2097,37 @@ void limpiarEEPROMYReiniciar() {
     Serial.println("\n");
     
     Serial.println("🧹 Limpiando EEPROM...");
-    
+
+    // Resetear estado en memoria para evitar valores persistentes
+    registrado = false;
+    enProcesoRegistro = false;
+    esperandoDatosConfig = false;
+    pendienteEnvioConfig = false;
+    deviceConnected = false;
+    comandoPendiente = false;
+    bajaAutomaticaActivada = false;
+    bajaAutomaticaActivadaSleep = false;
+    solicitudBajaPendiente = false;
+    esperaDespuesBaja = false;
+    tiempoFinBaja = 0;
+    ultimoEnvio = 0;
+    ultimoEscaneoBLESleep = 0;
+    ultimoWakeup = 0;
+    macRegistrada = "";
+
     // Limpiar flag de registro
     EEPROM.write(EEPROM_ADDR_REGISTRADO, 0);
-    
-    // Limpiar datos del dispositivo
-    memset(&dispositivo, 0, sizeof(dispositivo));
+
+    // Restablecer configuración por defecto lista para un nuevo registro
+    inicializarDispositivo();
     EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
-    
+
     bool success = EEPROM.commit();
     Serial.printf("💿 EEPROM limpiada: %s\n", success ? "ÉXITO" : "FALLO");
-    
+
     // ⭐ VERIFICACIÓN
-    registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("🔍 Verificación - Registrado: %s\n", registrado ? "SI" : "NO");
-    
+
     Serial.println("🔄 Reiniciando en 3 segundos...");
     
     Serial.printf("✨ Parpadeo final de %d segundo(s) (LED rojo)...\n", DURACION_PARPADEO_FINAL_BAJA_MS / 1000);
