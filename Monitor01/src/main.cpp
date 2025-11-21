@@ -121,6 +121,7 @@ int currentNetwork = -1;
 void inicializa_eeprom();
 void iniciarLoRaConReintentos();
 void clearEEPROM_WIFFI();
+void clearMQTTConfirmationFlag();
 void startAPMode();
 void handleRoot();
 void handleSaveCredentials();
@@ -933,6 +934,7 @@ void handleDeleteNetwork() {
       savedNetworks[index].password = "";
       savedNetworks[index].active = false;
       saveNetworksToEEPROM();
+      clearMQTTConfirmationFlag();
       server.send(200, "text/plain", "OK");
     } else {
       server.send(400, "text/plain", "Índice inválido");
@@ -1236,14 +1238,16 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
             for (int i = 0; i < emailLen; i++) {
                 EEPROM.write(USER_EMAIL_ADDR + 1 + i, emailUsuario[i]);
             }
-            
+
+            EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, 1);
+
             EEPROM.commit();
             EEPROM.end();
 
             Serial.println("CONFIRMACION RECIBIDA - Alta validada correctamente");
             Serial.println("Nombre guardado: " + nombreUsuario);
             Serial.println("Email guardado: " + emailUsuario);
-            
+
             mqttConfirmed = true;
                  delay(3000); // Espera para evitar conflictos
         } else {
@@ -1563,6 +1567,9 @@ void clearEEPROM_WIFFI() {
     EEPROM.write(i, 0);
   }
   EEPROM.commit();
+
+  clearMQTTConfirmationFlag();
+  mqttConfirmed = false;
   
   Serial.println("Configuración inicial - Modo fábrica");
     for (int i = 0; i < MAX_NETWORKS; i++) {
@@ -1572,6 +1579,12 @@ void clearEEPROM_WIFFI() {
     saveNetworksToEEPROM();
     Serial.println("Reestablece correctamente EEPROM y Redes Wiffi....");
     Serial.println("Modo AP activado (configuración inicial)");
+}
+
+void clearMQTTConfirmationFlag() {
+  EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, 0);
+  EEPROM.commit();
+  mqttConfirmed = false;
 }
 
 void MQTT_ALTA() {
