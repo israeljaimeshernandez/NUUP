@@ -1,5 +1,5 @@
 // ============================================================================
-// LEYENDA: Rama 'work' - Última actualización: encabezado visible para identificar versión en VSCode.
+// LEYENDA: Rama 'work' - Última actualización: ajustes de alta/baixa para mantener MAC nula hasta READY y limpiar a fábrica.
 // ============================================================================
 // CONFIGURACIÓN PRINCIPAL - DEFINICIONES ÚNICAS
 // ============================================================================
@@ -218,6 +218,7 @@ void debugConexionBLE();
 void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion);
 
 // Funciones del sistema
+void establecerValoresDeFabrica();
 void inicializarDispositivo();
 void guardarDatosEnEEPROM();
 void leerDatosDeEEPROM();
@@ -531,9 +532,9 @@ void guardarConfigWeb() {
     Serial.println("\n💾 PROCESANDO CONFIGURACIÓN WEB COMPLETA...");
 
     // Esta ruta se ejecuta solo cuando el usuario envía el formulario del portal
-    // cautivo. Actualiza las variables locales con los valores capturados y marca
-    // al dispositivo como "registrado" en EEPROM para que arranque usando esos
-    // datos, aun sin haber pasado todavía por el ciclo BLE de alta.
+    // cautivo. Actualiza las variables locales con los valores capturados, pero
+    // NO marca el dispositivo como registrado para evitar altas prematuras; la
+    // MAC y el flag de registro se fijan únicamente tras confirmar READY por BLE.
     // Verificar parámetros - SOLO los que existen en el formulario
     if (server.hasArg("nombre") && server.hasArg("altura") && server.hasArg("litros")) {
         String nuevoNombre = server.arg("nombre");
@@ -560,11 +561,8 @@ void guardarConfigWeb() {
             // ⭐⭐ CONFIGURAR ALCANCE WiFi FIJO (1 metro por defecto)
             configurarAlcanceWiFi(1);
             
-            // Guardar en EEPROM
+            // Guardar en EEPROM (sin marcar registro)
             guardarDatosEnEEPROM();
-            registrado = true;
-            EEPROM.write(EEPROM_ADDR_REGISTRADO, 1);
-            EEPROM.commit();
             
             // ⭐⭐ APAGAR WiFi ANTES DE REINICIAR
             Serial.println("📴 Apagando WiFi AP...");
@@ -1978,12 +1976,19 @@ float measureDistance() {
     return distance;
 }
 
-void inicializarDispositivo() {
+void establecerValoresDeFabrica() {
     memset(&dispositivo, 0, sizeof(dispositivo));
-    strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac)-1);
     strncpy(dispositivo.nombre, "Deposito estandar", sizeof(dispositivo.nombre)-1);
     dispositivo.altura = 160;
     dispositivo.litros = 1100;
+
+    nombreDispositivo = dispositivo.nombre;
+    alturaDispositivo = dispositivo.altura;
+    litrosDispositivo = dispositivo.litros;
+}
+
+void inicializarDispositivo() {
+    establecerValoresDeFabrica();
 }
 
 void guardarDatosEnEEPROM() {
@@ -2013,9 +2018,10 @@ void guardarDatosEnEEPROM() {
 
 void leerDatosDeEEPROM() {
     EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
-    if (strlen(dispositivo.mac) != 17) {
-        Serial.println("Datos corruptos en EEPROM. Reinicializando...");
-        inicializarDispositivo();
+    size_t macLen = strlen(dispositivo.mac);
+    if (macLen != 0 && macLen != 17) {
+        Serial.println("Datos corruptos en EEPROM. Reinicializando a fábrica...");
+        establecerValoresDeFabrica();
         guardarDatosEnEEPROM();
     }
 
@@ -2062,14 +2068,17 @@ void limpiarEEPROMYReiniciar() {
     
     // Limpiar flag de registro
     EEPROM.write(EEPROM_ADDR_REGISTRADO, 0);
-    
-    // Limpiar datos del dispositivo
-    memset(&dispositivo, 0, sizeof(dispositivo));
+
+    // Restablecer datos del dispositivo a valores de fábrica (MAC nula)
+    establecerValoresDeFabrica();
     EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
     
     bool success = EEPROM.commit();
     Serial.printf("💿 EEPROM limpiada: %s\n", success ? "ÉXITO" : "FALLO");
-    
+
+    registrado = false;
+    macRegistrada = "";
+
     // ⭐ VERIFICACIÓN
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("🔍 Verificación - Registrado: %s\n", registrado ? "SI" : "NO");
