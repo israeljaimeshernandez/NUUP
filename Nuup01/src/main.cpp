@@ -1,4 +1,6 @@
 // ============================================================================
+// LEYENDA: Rama 'work' - Última actualización: persistencia web sin registro, MAC nula hasta READY y limpiezas solo por baja/botón.
+// ============================================================================
 // CONFIGURACIÓN PRINCIPAL - DEFINICIONES ÚNICAS
 // ============================================================================
 
@@ -18,6 +20,9 @@
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
 #define INTERVALO_PARPADEO 62
 #define INTERVALO_PARPADEO2 1000
+
+// --- Banderas de mantenimiento ---
+const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEPROM y reiniciar en setup
 
 // --- EEPROM ---
 #define EEPROM_SIZE 128
@@ -213,6 +218,7 @@ void debugConexionBLE();
 void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion);
 
 // Funciones del sistema
+void establecerValoresDeFabrica();
 void inicializarDispositivo();
 void guardarDatosEnEEPROM();
 void leerDatosDeEEPROM();
@@ -524,7 +530,11 @@ void mostrarPaginaConfig() {
 
 void guardarConfigWeb() {
     Serial.println("\n💾 PROCESANDO CONFIGURACIÓN WEB COMPLETA...");
-    
+
+    // Esta ruta se ejecuta solo cuando el usuario envía el formulario del portal
+    // cautivo. Actualiza las variables locales con los valores capturados, pero
+    // NO marca el dispositivo como registrado para evitar altas prematuras; la
+    // MAC y el flag de registro se fijan únicamente tras confirmar READY por BLE.
     // Verificar parámetros - SOLO los que existen en el formulario
     if (server.hasArg("nombre") && server.hasArg("altura") && server.hasArg("litros")) {
         String nuevoNombre = server.arg("nombre");
@@ -551,11 +561,8 @@ void guardarConfigWeb() {
             // ⭐⭐ CONFIGURAR ALCANCE WiFi FIJO (1 metro por defecto)
             configurarAlcanceWiFi(1);
             
-            // Guardar en EEPROM
+            // Guardar en EEPROM (sin marcar registro)
             guardarDatosEnEEPROM();
-            registrado = true;
-            EEPROM.write(EEPROM_ADDR_REGISTRADO, 1);
-            EEPROM.commit();
             
             // ⭐⭐ APAGAR WiFi ANTES DE REINICIAR
             Serial.println("📴 Apagando WiFi AP...");
@@ -922,7 +929,10 @@ void scanForDevices() {
 
 void completarRegistro(String macServidor, String nombre, String alturaStr, String litrosStr) {
     Serial.println("\n💾 INICIANDO CIERRE DE REGISTRO...");
-    
+
+    // Este cierre de alta se dispara desde BLE (READY) usando la MAC que envía
+    // el servidor y las variables globales de configuración vigentes. Luego
+    // persiste todo en EEPROM y marca el flag de registrado para futuros arranques.
     // Guardar datos EN LAS VARIABLES
     memset(&dispositivo, 0, sizeof(dispositivo));
     strncpy(dispositivo.mac, macServidor.c_str(), sizeof(dispositivo.mac)-1);
@@ -1559,12 +1569,20 @@ void setup() {
     // Inicializar EEPROM
 
     EEPROM.begin(EEPROM_SIZE);
-    // limpiarEEPROMYReiniciar(); //para reiniciar de fabrica
+    if (LIMPIEZA_FABRICA_EN_SETUP) {
+        Serial.println("🧹 LIMPIEZA DE FÁBRICA ACTIVADA (bandera inicial)");
+        limpiarEEPROMYReiniciar();
+    }
     Serial.println("💾 EEPROM inicializada");
 
     // Verificar estado de registro
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("📋 Estado de registro: %s\n", registrado ? "REGISTRADO" : "NO REGISTRADO");
+
+    // Cargar datos almacenados incluso si no está registrado para que las
+    // ediciones web persistan entre reinicios; si la EEPROM está vacía se
+    // restauran los valores de fábrica.
+    leerDatosDeEEPROM();
 
     // ⭐⭐ INICIALIZAR BLE INMEDIATAMENTE
     Serial.println("📱 INICIANDO BLE...");
@@ -1613,12 +1631,10 @@ void setup() {
     Serial.println(macAddress);
 
     if (registrado) {
-        leerDatosDeEEPROM();
         Serial.println("✅ Dispositivo registrado - Operación normal");
         imprimirDatosDispositivo();
     } else {
         Serial.println("🔍 Dispositivo NO registrado - Modo búsqueda activa");
-        inicializarDispositivo();
     }
 
     // LED de inicio
@@ -1963,12 +1979,19 @@ float measureDistance() {
     return distance;
 }
 
-void inicializarDispositivo() {
+void establecerValoresDeFabrica() {
     memset(&dispositivo, 0, sizeof(dispositivo));
-    strncpy(dispositivo.mac, macAddress.c_str(), sizeof(dispositivo.mac)-1);
     strncpy(dispositivo.nombre, "Deposito estandar", sizeof(dispositivo.nombre)-1);
     dispositivo.altura = 160;
     dispositivo.litros = 1100;
+
+    nombreDispositivo = dispositivo.nombre;
+    alturaDispositivo = dispositivo.altura;
+    litrosDispositivo = dispositivo.litros;
+}
+
+void inicializarDispositivo() {
+    establecerValoresDeFabrica();
 }
 
 void guardarDatosEnEEPROM() {
@@ -1998,9 +2021,19 @@ void guardarDatosEnEEPROM() {
 
 void leerDatosDeEEPROM() {
     EEPROM.get(EEPROM_ADDR_DATOS, dispositivo);
-    if (strlen(dispositivo.mac) != 17) {
-        Serial.println("Datos corruptos en EEPROM. Reinicializando...");
-        inicializarDispositivo();
+    size_t macLen = strlen(dispositivo.mac);
+
+    // Detectar contenido vacío/no inicializado (todo en cero y strings vacíos)
+    bool sinDatosUsuario = (macLen == 0) && (strlen(dispositivo.nombre) == 0) &&
+                           (dispositivo.altura == 0 || dispositivo.litros == 0);
+
+    if (macLen != 0 && macLen != 17) {
+        Serial.println("Datos corruptos en EEPROM. Reinicializando a fábrica...");
+        establecerValoresDeFabrica();
+        guardarDatosEnEEPROM();
+    } else if (sinDatosUsuario) {
+        Serial.println("EEPROM sin datos previos. Cargando valores de fábrica...");
+        establecerValoresDeFabrica();
         guardarDatosEnEEPROM();
     }
 
@@ -2047,14 +2080,17 @@ void limpiarEEPROMYReiniciar() {
     
     // Limpiar flag de registro
     EEPROM.write(EEPROM_ADDR_REGISTRADO, 0);
-    
-    // Limpiar datos del dispositivo
-    memset(&dispositivo, 0, sizeof(dispositivo));
+
+    // Restablecer datos del dispositivo a valores de fábrica (MAC nula)
+    establecerValoresDeFabrica();
     EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
     
     bool success = EEPROM.commit();
     Serial.printf("💿 EEPROM limpiada: %s\n", success ? "ÉXITO" : "FALLO");
-    
+
+    registrado = false;
+    macRegistrada = "";
+
     // ⭐ VERIFICACIÓN
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
     Serial.printf("🔍 Verificación - Registrado: %s\n", registrado ? "SI" : "NO");
