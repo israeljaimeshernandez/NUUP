@@ -1557,7 +1557,9 @@ void setup() {
     }
 
     // Inicializar EEPROM
+
     EEPROM.begin(EEPROM_SIZE);
+    // limpiarEEPROMYReiniciar(); //para reiniciar de fabrica
     Serial.println("💾 EEPROM inicializada");
 
     // Verificar estado de registro
