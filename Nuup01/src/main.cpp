@@ -21,6 +21,9 @@
 #define INTERVALO_PARPADEO 62
 #define INTERVALO_PARPADEO2 1000
 
+// --- Banderas de mantenimiento ---
+const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEPROM y reiniciar en setup
+
 // --- EEPROM ---
 #define EEPROM_SIZE 128
 #define EEPROM_ADDR_REGISTRADO 0
@@ -1561,7 +1564,10 @@ void setup() {
     // Inicializar EEPROM
 
     EEPROM.begin(EEPROM_SIZE);
-    // limpiarEEPROMYReiniciar(); //para reiniciar de fabrica
+    if (LIMPIEZA_FABRICA_EN_SETUP) {
+        Serial.println("🧹 LIMPIEZA DE FÁBRICA ACTIVADA (bandera inicial)");
+        limpiarEEPROMYReiniciar();
+    }
     Serial.println("💾 EEPROM inicializada");
 
     // Verificar estado de registro
