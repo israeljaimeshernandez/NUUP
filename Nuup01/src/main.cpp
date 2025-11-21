@@ -153,6 +153,7 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 #define DURACION_PARPADEO_EMPAREJANDO_MS 5000
 #define INTERVALO_PARPADEO_EMPAREJANDO_MS 250
 #define DURACION_LED_CONFIRMACION_MS 5000
+#define PARPADEO_NO_REGISTRADO_MS 500
 
 // Estructuras IA
 struct MedicionHistorial {
@@ -553,8 +554,8 @@ void guardarConfigWeb() {
             
             // Guardar en EEPROM
             guardarDatosEnEEPROM();
-            registrado = true;
-            EEPROM.write(EEPROM_ADDR_REGISTRADO, 1);
+
+            // Mantener el estado de registro intacto: solo BLE debe marcar registro
             EEPROM.commit();
             
             // ⭐⭐ APAGAR WiFi ANTES DE REINICIAR
@@ -1284,16 +1285,15 @@ void manejarLED() {
     }
 
     if (!registrado) {
-        // NO REGISTRADO: LED ROJO ENCENDIDO FIJO (o parpadeo corto al despertar por impacto)
-        if (wakeByImpact) {
-            if (millis() - ultimoCambioLedRojo >= PARPADEO_WAKE_ROJO_MS) {
-                estadoLedRojo = !estadoLedRojo;
-                digitalWrite(LED_ROJO_PIN, estadoLedRojo);
-                ultimoCambioLedRojo = millis();
-            }
-        } else {
-            digitalWrite(LED_ROJO_PIN, HIGH);
+        // NO REGISTRADO: LED ROJO PARPADEANDO (configurable)
+        unsigned long intervaloParpadeo = wakeByImpact ? PARPADEO_WAKE_ROJO_MS : PARPADEO_NO_REGISTRADO_MS;
+
+        if (millis() - ultimoCambioLedRojo >= intervaloParpadeo) {
+            estadoLedRojo = !estadoLedRojo;
+            digitalWrite(LED_ROJO_PIN, estadoLedRojo);
+            ultimoCambioLedRojo = millis();
         }
+
         digitalWrite(LED_VERDE_PIN, LOW);
         return;
     }
