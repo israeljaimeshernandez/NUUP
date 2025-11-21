@@ -486,7 +486,7 @@ void mostrarPaginaConfig() {
     <div class="container">
         <h2>🔧 Configurar Dispositivo</h2>
         
-        <form action="/guardar" method="post">
+        <form action="/guardar" method="post" id="config-form">
             <input type="text" name="nombre" value=")=====" + String(dispositivo.nombre) + R"=====(" placeholder="Nombre del dispositivo" required>
             <input type="number" name="altura" value=")=====" + String(dispositivo.altura) + R"=====(" placeholder="Altura total (cm)" required>
             <input type="number" name="litros" value=")=====" + String(dispositivo.litros) + R"=====(" placeholder="Capacidad total (litros)" required>
@@ -2001,6 +2001,11 @@ void leerDatosDeEEPROM() {
         inicializarDispositivo();
         guardarDatosEnEEPROM();
     }
+
+    // Sincronizar variables globales con los datos almacenados
+    nombreDispositivo = dispositivo.nombre;
+    alturaDispositivo = dispositivo.altura;
+    litrosDispositivo = dispositivo.litros;
 }
 
 void imprimirDatosDispositivo() {
