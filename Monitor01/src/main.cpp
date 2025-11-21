@@ -127,6 +127,7 @@ void handleRoot();
 void handleSaveCredentials();
 void handleDeleteNetwork();
 void handleSelectNetwork();
+void handleDeleteDevice();
 void saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
 void attemptReconnectToAllNetworks();
@@ -143,6 +144,7 @@ bool eliminarDispositivo(const String &mac);
 
 bool registrarDispositivo(const String &mac);
 void MQTT_ALTA();
+void notificarBajaMQTT(const String &mac);
 bool loadMQTTConfirmationState();
 void procesarMensajeLoRa();
 void imprimirConfigDispositivo(const String &mac);
@@ -610,6 +612,7 @@ void startAPMode() {
   server.on("/delete", HTTP_POST, handleDeleteNetwork);
   server.on("/select", HTTP_POST, handleSelectNetwork);
   server.on("/setid", HTTP_POST, handleSetID);  // 👉 Aquí se agrega la ruta nueva
+  server.on("/delete-device", HTTP_POST, handleDeleteDevice);
   server.onNotFound(handleRoot);
   server.begin();
   
@@ -717,6 +720,24 @@ void handleRoot() {
     }
   }
 
+  String devicesList = "";
+  int deviceCount = 0;
+
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    String mac = String(configDispositivos[i].mac);
+    if (mac.length() > 0) {
+      deviceCount++;
+      devicesList += "<div class='device-item'>";
+      devicesList += "<div><strong>MAC:</strong> " + mac + "</div>";
+      devicesList += "<button type='button' onclick=\"deleteDevice('" + mac + "')\">Eliminar</button>";
+      devicesList += "</div>";
+    }
+  }
+
+  if (deviceCount == 0) {
+    devicesList = "<p class='empty-state'>No hay dispositivos registrados en este monitor.</p>";
+  }
+
 
 String idSection = "<h3>ID de usuario actual:</h3>";
 idSection += "<p><strong>" + userID + "</strong></p>";
@@ -820,6 +841,25 @@ idSection += "</form><hr>";
     .network-item button:hover {
       background-color: #cc0000;
     }
+    .device-list {
+      margin-top: 20px;
+    }
+    .device-list h3 {
+      margin-bottom: 10px;
+    }
+    .device-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 10px 0;
+      padding: 10px;
+      background-color: #333;
+      border-radius: 5px;
+    }
+    .empty-state {
+      color: #aaa;
+      text-align: center;
+    }
     ::placeholder {
       color: #888;
       opacity: 1;
@@ -837,6 +877,20 @@ idSection += "</form><hr>";
         });
       }
     }
+
+    function deleteDevice(mac) {
+      if (confirm('¿Borrar el dispositivo ' + mac + '?')) {
+        fetch('/delete-device', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'mac=' + encodeURIComponent(mac)
+        }).then(response => {
+          if (response.ok) {
+            location.reload();
+          }
+        });
+      }
+    }
   </script>
 </head>
 <body>
@@ -851,7 +905,12 @@ idSection += "</form><hr>";
         <button type="button" onclick="submitSelection()">Conectar a red seleccionada</button>
       </form>
     </div>
-    
+
+    <div class="device-list">
+      <h3>Dispositivos registrados:</h3>
+      )=====" + devicesList + R"=====(
+    </div>
+
     <h3>Agregar nueva red:</h3>
     <form action='/save' method='POST'>
       <input type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
@@ -941,6 +1000,30 @@ void handleDeleteNetwork() {
     }
   } else {
     server.send(400, "text/plain", "Falta parámetro index");
+  }
+}
+
+void handleDeleteDevice() {
+  if (!server.hasArg("mac")) {
+    server.send(400, "text/plain", "Falta parámetro mac");
+    return;
+  }
+
+  String mac = server.arg("mac");
+  mac.trim();
+
+  if (mac.length() != MAC_LEN) {
+    server.send(400, "text/plain", "MAC inválida");
+    return;
+  }
+
+  bool eliminado = eliminarDispositivo(mac);
+
+  if (eliminado) {
+    notificarBajaMQTT(mac);
+    server.send(200, "text/plain", "Dispositivo eliminado");
+  } else {
+    server.send(404, "text/plain", "Dispositivo no encontrado");
   }
 }
 
@@ -1593,7 +1676,7 @@ void MQTT_ALTA() {
   if (WiFi.status() == WL_CONNECTED && client.connected()) {
     if (millis() - lastConfirmationAttempt > confirmationRetryInterval) {
       lastConfirmationAttempt = millis();
-      
+
       if (userID.length() > 0) {
         Serial.println("MQTT ALTA Existe USUARIO ID Enviando solicitud de alta INICIAL...");  
         // Versión simplificada usando el método publish() que acepta const char*
@@ -1611,6 +1694,32 @@ String mensajeCompleto = miMac + "," + userID;
         }
       }
     }
+  }
+}
+
+void notificarBajaMQTT(const String &mac) {
+  if (!mqttConfirmed) {
+    Serial.println("MQTT baja omitida: monitor sin alta confirmada");
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+    Serial.println("MQTT baja diferida: sin conexión MQTT activa");
+    return;
+  }
+
+  String monitorMac = WiFi.macAddress();
+  monitorMac.replace("-", ":");
+
+  String mensaje = monitorMac + "," + mac;
+  if (userID.length() > 0) {
+    mensaje += "," + userID;
+  }
+
+  if (client.publish("baja/1/solicitud/", mensaje.c_str())) {
+    Serial.println("Solicitud de baja enviada a MQTT: " + mensaje);
+  } else {
+    Serial.println("Error al publicar solicitud de baja en MQTT");
   }
 }
 
