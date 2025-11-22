@@ -1,3 +1,4 @@
+// 17 - Corrección: simplificar el portal mostrando el User ID guardado y permitir usar/editar redes sin botones extra
 // 16 - Corrección: permitir refrescar/editar redes, persistir UserID visible y reiniciar solo cuando cambian redes
 // 15 - Corrección: mantener portal abierto hasta que el usuario termine; mostrar ID guardado y reiniciar al finalizar
 // 14 - Corrección: mantener pantalla fija y dedicar todo el ciclo al portal mientras el usuario navega hasta cerrar/manual
@@ -1202,7 +1203,7 @@ void procesarEscaneoRedes() {
     scannedNetworks += "<div class='network-item'>";
     scannedNetworks += "<label>" + ssid + "</label>";
     scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
-    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\">Usar</button>";
+    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\"" + disableAttr + ">Usar</button>";
     scannedNetworks += "</div>";
   }
 
@@ -1247,11 +1248,11 @@ void handleRoot() {
       String safeSsid = escapeForJS(savedNetworks[i].ssid);
       String safePass = escapeForJS(savedNetworks[i].password);
       networksList += "<div class='network-item'>";
-      networksList += "<input type='radio' name='selectedNetwork' id='net" + String(i) + "' value='" + String(i) + "'";
-      networksList += getCheckedStatus(savedNetworks[i].active) + disableAttr + ">";
-      networksList += "<label for='net" + String(i) + "'>" + savedNetworks[i].ssid + "</label>";
+      networksList += "<div class='network-info'><strong>" + savedNetworks[i].ssid + "</strong></div>";
+      networksList += "<div class='network-actions'>";
+      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\"" + disableAttr + ">Usar/editar</button>";
       networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'" + disableAttr + ">Borrar</button>";
-      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\"" + disableAttr + ">Editar</button>";
+      networksList += "</div>";
       networksList += "</div>";
     }
   }
@@ -1387,6 +1388,14 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       background-color: #333;
       border-radius: 5px;
     }
+    .network-info {
+      flex-grow: 1;
+    }
+    .network-actions {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
     .network-item label {
       flex-grow: 1;
       margin-left: 10px;
@@ -1459,10 +1468,16 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     function prefillNetwork(ssid) {
       const ssidInput = document.getElementById('ssidInput');
       const passInput = document.getElementById('passInput');
+      const editIndex = document.getElementById('editIndex');
       if (ssidInput && passInput) {
         ssidInput.value = ssid;
+        passInput.value = '';
         passInput.focus();
       }
+      if (editIndex) {
+        editIndex.value = '';
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     function editNetwork(idx, ssid, pass) {
@@ -1495,16 +1510,10 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
-      <form id="networksForm">
+      <p>Usa/editar para rellenar la red seleccionada y actualizar la contraseña si es necesario.</p>
 )=====";
   html += networksList;
   html += R"=====(
-        <button type="button" onclick="submitSelection()"
-)=====";
-  html += disableAttr;
-  html += R"=====(
->Conectar a red seleccionada</button>
-      </form>
     </div>
 
     <div class="network-list">
@@ -1557,26 +1566,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     </div>
   </div>
 
-  <script>
-    function submitSelection() {
-      const form = document.getElementById('networksForm');
-      const selected = form.querySelector('input[name="selectedNetwork"]:checked');
-      if(selected) {
-        fetch('/select', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'index=' + selected.value
-        }).then(response => {
-          if(response.ok) {
-            alert('Red seleccionada. Reconectando...');
-            setTimeout(() => { location.reload(); }, 1000);
-          }
-        });
-      } else {
-        alert('Selecciona una red primero');
-      }
-    }
-  </script>
 </body>
 </html>
 )=====";
