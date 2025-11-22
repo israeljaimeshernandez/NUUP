@@ -1,3 +1,4 @@
+// 10 - Corrección: cachear el escaneo de redes y mantener el portal accesible mientras se completa para evitar cortes al abrir la página
 // 09 - Corrección: el portal se atiende antes de cualquier animación (BLE/WiFi) para evitar cuelgues y "request handler not found"
 // 08 - Corrección: el portal HTTP se sigue atendiendo mientras el AP esté activo para evitar bloqueos al navegar
 // 07 - Corrección: portal unificado en una sola sesión con UserID, redes y dispositivos, bloqueando guardados si falta el ID
@@ -146,6 +147,12 @@ const unsigned long reconnectInterval = 2 * 60 * 1000; ; // 5 minutos
 WiFiCredential savedNetworks[MAX_NETWORKS];
 int currentNetwork = -1;
 
+// Cacheo de redes cercanas para no bloquear el portal en cada petición
+String scannedNetworksCache = "";
+unsigned long lastNetworkScan = 0;
+bool scanInProgress = false;
+const unsigned long SCAN_INTERVAL_MS = 15000;  // re-scan cada 15s en modo AP
+
 // Declaración de funciones
 void inicializa_eeprom();
 void iniciarLoRaConReintentos();
@@ -180,6 +187,9 @@ void Reintentar_Wiffi();
 
 void debugNetworks();
 void checkWiFiStatus();
+
+void iniciarEscaneoRedes();
+void procesarEscaneoRedes();
 
 void recepcion_lora();
 
@@ -1026,6 +1036,9 @@ void detenerConfiguracionWiFi() {
   forceAPMode = false;
   apMode = false;
   detenerAnimacionWifi();
+  scanInProgress = false;
+  scannedNetworksCache = "";
+  WiFi.scanDelete();
 
   dnsServer.stop();
   server.stop();
@@ -1055,7 +1068,12 @@ void startAPMode() {
   server.on("/setid", HTTP_POST, handleSetID);  // 👉 Aquí se agrega la ruta nueva
   server.onNotFound(handleRoot);
   server.begin();
-  
+
+  scannedNetworksCache = "";
+  lastNetworkScan = 0;
+  scanInProgress = false;
+  iniciarEscaneoRedes();
+
   Serial.println("\nModo AP activado");
   Serial.print("SSID: "); Serial.println(AP_SSID);
   Serial.print("IP: "); Serial.println(WiFi.softAPIP());
@@ -1072,6 +1090,67 @@ void mostrarMensajeRedConectada(const String &ssid, bool conectado) {
   ultimoCambioWifi = millis();
   Serial.printf("\n📶 %s a la red '%s'\n", conectado ? "Conectado" : "Fallo de conexión", ssid.c_str());
   dibujarMensajeConexion();
+}
+
+void iniciarEscaneoRedes() {
+  if (scanInProgress) return;
+
+  scanInProgress = true;
+  lastNetworkScan = millis();
+  WiFi.scanDelete();
+  WiFi.scanNetworks(true);  // escaneo asíncrono
+}
+
+void procesarEscaneoRedes() {
+  if (!scanInProgress) return;
+
+  int n = WiFi.scanComplete();
+  if (n == WIFI_SCAN_RUNNING) {
+    return;  // sigue en progreso
+  }
+
+  scanInProgress = false;
+  lastNetworkScan = millis();
+
+  if (n <= 0) {
+    scannedNetworksCache = "<p>No se encontraron redes cercanas. Intenta nuevamente.</p>";
+    WiFi.scanDelete();
+    return;
+  }
+
+  const int MAX_SCAN_RESULTS = 20;
+  int limitedCount = n > MAX_SCAN_RESULTS ? MAX_SCAN_RESULTS : n;
+  int *indices = new int[limitedCount];
+  for (int i = 0; i < limitedCount; i++) {
+    indices[i] = i;
+  }
+
+  for (int i = 0; i < limitedCount - 1; i++) {
+    for (int j = i + 1; j < limitedCount; j++) {
+      if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
+        int temp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = temp;
+      }
+    }
+  }
+
+  String scannedNetworks = "";
+  for (int i = 0; i < limitedCount; i++) {
+    int idx = indices[i];
+    String ssid = WiFi.SSID(idx);
+    int rssi = WiFi.RSSI(idx);
+
+    scannedNetworks += "<div class='network-item'>";
+    scannedNetworks += "<label>" + ssid + "</label>";
+    scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
+    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\">Usar</button>";
+    scannedNetworks += "</div>";
+  }
+
+  scannedNetworksCache = scannedNetworks;
+  delete[] indices;
+  WiFi.scanDelete();
 }
 
 String getCheckedStatus(bool active) {
@@ -1096,46 +1175,15 @@ void handleRoot() {
     }
   }
 
-  String scannedNetworks = "";
-  int networkCount = WiFi.scanNetworks();
+  // Actualizar escaneo en segundo plano para no bloquear la carga
+  procesarEscaneoRedes();
+  if (!scanInProgress && (millis() - lastNetworkScan > SCAN_INTERVAL_MS || scannedNetworksCache.isEmpty())) {
+    iniciarEscaneoRedes();
+  }
 
-  if (networkCount > 0) {
-    int limitedCount = networkCount;
-    const int MAX_SCAN_RESULTS = 20;
-    if (limitedCount > MAX_SCAN_RESULTS) {
-      limitedCount = MAX_SCAN_RESULTS;
-    }
-
-    int *indices = new int[limitedCount];
-    for (int i = 0; i < limitedCount; i++) {
-      indices[i] = i;
-    }
-
-    for (int i = 0; i < limitedCount - 1; i++) {
-      for (int j = i + 1; j < limitedCount; j++) {
-        if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
-          int temp = indices[i];
-          indices[i] = indices[j];
-          indices[j] = temp;
-        }
-      }
-    }
-
-    for (int i = 0; i < limitedCount; i++) {
-      int idx = indices[i];
-      String ssid = WiFi.SSID(idx);
-      int rssi = WiFi.RSSI(idx);
-
-      scannedNetworks += "<div class='network-item'>";
-      scannedNetworks += "<label>" + ssid + "</label>";
-      scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
-      scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\">Usar</button>";
-      scannedNetworks += "</div>";
-    }
-
-    delete[] indices;
-  } else {
-    scannedNetworks = "<p>No se encontraron redes cercanas. Intenta nuevamente.</p>";
+  String scannedNetworks = scannedNetworksCache;
+  if (scannedNetworks.isEmpty()) {
+    scannedNetworks = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
   }
 
   String devicesList = "";
@@ -3183,6 +3231,7 @@ void loop() {
   if (apActivo) {
     dnsServer.processNextRequest();
     server.handleClient();
+    procesarEscaneoRedes();
   }
 
   manejarBotonWifi();
@@ -3276,6 +3325,10 @@ testLoRaPeriodico();
             ultimoCambioWifi = millis();
         }
         mostrarConexionWifi();
+        procesarEscaneoRedes();
+        if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
+            iniciarEscaneoRedes();
+        }
         dnsServer.processNextRequest();
         server.handleClient();
         return;
