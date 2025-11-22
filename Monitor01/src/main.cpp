@@ -1,3 +1,4 @@
+// 06 - Corrección: ajustar reinicio de portal WiFi quitando bandera inexistente para compilar correctamente
 // 05 - Corrección: esconder WiFi al inicio (solo aviso breve) y mantener el portal activo tras guardar ID sin cerrarlo
 // 04 - Corrección: iniciar portal WiFi si falta ID o conexión, proteger OLED antes de inicializarla y mantener reinicios seguros del AP
 // 03 - Corrección: reiniciar el portal WiFi con cada pulsación larga, listar/borrar dispositivos y mostrar redes cercanas en el portal
@@ -1012,7 +1013,6 @@ void reiniciarConfiguracionWiFi() {
   iniciarAnimacionWifi();
   mostrarConexionWifi();
   startAPMode();
-  una_APmode = false;
 }
 
 void detenerConfiguracionWiFi() {
