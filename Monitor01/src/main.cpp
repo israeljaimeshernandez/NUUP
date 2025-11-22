@@ -1621,7 +1621,13 @@ void saveUserIDToEEPROM(const String& id) {
 bool loadUserIDFromEEPROM() {
   bool success = true;
   int len = EEPROM.read(USER_ID_ADDR);
-  if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
+
+  if (len == 0xFF || len < 0 || len > USER_ID_MAX_LEN) {
+    Serial.printf("⚠️ Longitud de UserID corrupta (%d). Reiniciando UserID...\n", len);
+    saveUserIDToEEPROM("");
+    len = 0;
+    success = false;
+  }
 
   char buffer[USER_ID_MAX_LEN + 1] = {0};
   for (int i = 0; i < len; i++) {
@@ -1977,12 +1983,18 @@ void clearEEPROM() {
   for (int i = 0; i < EEPROM_SIZE; i++) {
     EEPROM.write(i, 0xFF); // Escribir 0xFF es más confiable que 0x00
   }
-  
+
   // 2. Borrar flags importantes
   EEPROM.write(0, 0); // Flag de inicialización
   EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, 0);
-  
-  // 3. Borrar contador de dispositivos en la posición específica
+
+  // 3. Borrar UserID para evitar longitudes corruptas
+  EEPROM.write(USER_ID_ADDR, 0);  // longitud = 0
+  for (int i = 0; i < USER_ID_MAX_LEN; i++) {
+    EEPROM.write(USER_ID_ADDR + 1 + i, 0);
+  }
+
+  // 4. Borrar contador de dispositivos en la posición específica
   int addr = CONFIG_DISPOSITIVOS_ADDR;
   EEPROM.write(addr++, 0); // High byte del contador
   EEPROM.write(addr++, 0); // Low byte del contador
@@ -2007,10 +2019,11 @@ void clearEEPROM() {
     savedNetworks[i].password = "";
     savedNetworks[i].active = false;
   }
-  
+
   // 6. Limpiar userID
   userID = "";
-  
+  mqttConfirmed = false;
+
   Serial.println("✅ EEPROM Y MEMORIA RAM BORRADOS COMPLETAMENTE");
   
   // Verificación
@@ -2772,7 +2785,7 @@ pinMode(BOTON_W, INPUT_PULLUP);
  
 
  inicializa_eeprom();
-//clearEEPROM();  //solo para configuracion inicial
+clearEEPROM();  //solo para configuracion inicial
 delay(1000);
 
 
@@ -2786,9 +2799,15 @@ delay(1000);
   // Leer flag de registro
   byte registroFlag = EEPROM.read(0);
   Serial.printf("📋 Flag de registro en addr 0: %d\n", registroFlag);
-  
+
   // Leer userID
   int userIDLen = EEPROM.read(USER_ID_ADDR);
+  bool userIDCorrupto = (userIDLen == 0xFF || userIDLen < 0 || userIDLen > USER_ID_MAX_LEN);
+
+  if (userIDCorrupto) {
+    Serial.printf("⚠️ UserID corrupto detectado en EEPROM (len=%d). Se mostrará como vacío.\n", userIDLen);
+    userIDLen = 0;
+  }
   char userIDBuffer[USER_ID_MAX_LEN + 1] = {0};
   for (int i = 0; i < userIDLen; i++) {
     userIDBuffer[i] = EEPROM.read(USER_ID_ADDR + 1 + i);
