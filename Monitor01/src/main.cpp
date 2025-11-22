@@ -1,3 +1,4 @@
+// 09 - Corrección: el portal se atiende antes de cualquier animación (BLE/WiFi) para evitar cuelgues y "request handler not found"
 // 08 - Corrección: el portal HTTP se sigue atendiendo mientras el AP esté activo para evitar bloqueos al navegar
 // 07 - Corrección: portal unificado en una sola sesión con UserID, redes y dispositivos, bloqueando guardados si falta el ID
 // 06 - Corrección: ajustar reinicio de portal WiFi quitando bandera inexistente para compilar correctamente
@@ -3176,6 +3177,13 @@ Serial.println("Setup completado");
 
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
+
+  // Atender siempre el portal cautivo si el modo AP está activo, incluso durante animaciones BLE/WiFi
+  bool apActivo = (WiFi.getMode() & WIFI_MODE_AP);
+  if (apActivo) {
+    dnsServer.processNextRequest();
+    server.handleClient();
+  }
 
   manejarBotonWifi();
 
