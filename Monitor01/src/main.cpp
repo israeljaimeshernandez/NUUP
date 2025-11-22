@@ -1,3 +1,4 @@
+// 11 - Corrección: registrar rutas de portal cautivo para todos los probes y atenderlas de inmediato al activar AP
 // 10 - Corrección: cachear el escaneo de redes y mantener el portal accesible mientras se completa para evitar cortes al abrir la página
 // 09 - Corrección: el portal se atiende antes de cualquier animación (BLE/WiFi) para evitar cuelgues y "request handler not found"
 // 08 - Corrección: el portal HTTP se sigue atendiendo mientras el AP esté activo para evitar bloqueos al navegar
@@ -158,6 +159,7 @@ void inicializa_eeprom();
 void iniciarLoRaConReintentos();
 void clearEEPROM();
 void startAPMode();
+void registrarRutasPortal();
 void handleRoot();
 void handleSaveCredentials();
 void handleDeleteNetwork();
@@ -1046,6 +1048,25 @@ void detenerConfiguracionWiFi() {
   WiFi.mode(WIFI_STA);
 }
 
+void registrarRutasPortal() {
+  server.on("/", HTTP_ANY, handleRoot);
+  server.on("/save", HTTP_POST, handleSaveCredentials);
+  server.on("/delete", HTTP_POST, handleDeleteNetwork);
+  server.on("/select", HTTP_POST, handleSelectNetwork);
+  server.on("/delete_device", HTTP_POST, handleDeleteDevice);
+  server.on("/setid", HTTP_POST, handleSetID);
+
+  // Captura peticiones típicas de detección de portal cautivo
+  server.on("/generate_204", HTTP_ANY, handleRoot);
+  server.on("/hotspot-detect.html", HTTP_ANY, handleRoot);
+  server.on("/ncsi.txt", HTTP_ANY, handleRoot);
+  server.on("/connecttest.txt", HTTP_ANY, handleRoot);
+  server.on("/fwlink", HTTP_ANY, handleRoot);
+  server.on("/favicon.ico", HTTP_ANY, handleRoot);
+
+  server.onNotFound(handleRoot);
+}
+
 void startAPMode() {
   dnsServer.stop();
   server.stop();
@@ -1060,19 +1081,21 @@ void startAPMode() {
   forceAPMode = true;
   mostrarMensajeConexion = false;
 
-  server.on("/", handleRoot);
-  server.on("/save", HTTP_POST, handleSaveCredentials);
-  server.on("/delete", HTTP_POST, handleDeleteNetwork);
-  server.on("/select", HTTP_POST, handleSelectNetwork);
-  server.on("/delete_device", HTTP_POST, handleDeleteDevice);
-  server.on("/setid", HTTP_POST, handleSetID);  // 👉 Aquí se agrega la ruta nueva
-  server.onNotFound(handleRoot);
+  registrarRutasPortal();
   server.begin();
 
   scannedNetworksCache = "";
   lastNetworkScan = 0;
   scanInProgress = false;
   iniciarEscaneoRedes();
+
+  // Atender inmediatamente las primeras peticiones del portal (probes) para evitar timeouts
+  unsigned long inicioAtencion = millis();
+  while (millis() - inicioAtencion < 1500) {
+    dnsServer.processNextRequest();
+    server.handleClient();
+    delay(5);
+  }
 
   Serial.println("\nModo AP activado");
   Serial.print("SSID: "); Serial.println(AP_SSID);
