@@ -1,3 +1,4 @@
+// 05 - Corrección: esconder WiFi al inicio (solo aviso breve) y mantener el portal activo tras guardar ID sin cerrarlo
 // 04 - Corrección: iniciar portal WiFi si falta ID o conexión, proteger OLED antes de inicializarla y mantener reinicios seguros del AP
 // 03 - Corrección: reiniciar el portal WiFi con cada pulsación larga, listar/borrar dispositivos y mostrar redes cercanas en el portal
 // 02 - Corrección: validar y limpiar UserID corrupto en EEPROM y activar modo AP con botón WiFi de 1s mostrando icono y reinicio tras conexión
@@ -195,9 +196,6 @@ void verificarTiemposSinDatos();
 void debugMensajeLoRa(const String &mensaje);
 void testDispositivosRapido() ;
 
-//temporal para forzar apmode una vez si no hay wiffi
-bool una_APmode=true;
-
 
 //Definiciones pantalla TFT
 #define SCREEN_WIDTH 128
@@ -341,6 +339,7 @@ void setWifiStatus(bool conectado);
 // También agregar estas declaraciones al principio TFT
 void dibujarWifiAnimado(int centroX, int centroY, int frame);
 void mostrarConexionWifi();
+void mostrarWifiInicioTemporal();
 void iniciarAnimacionWifi();
 void detenerAnimacionWifi();
 void conectarWifi();
@@ -1583,8 +1582,8 @@ void handleSetID() {
       wifiConfigInProgress = true;
       forceAPMode = true;
       apMode = true;
-      server.send(200, "text/html",
-        "<html><body><h2>ID guardado. Regresando...</h2><script>setTimeout(()=>location.href='/',500);</script></body></html>");
+      handleRoot();
+      return;
     } else {
       server.send(400, "text/plain", "ID inválido");
     }
@@ -2597,8 +2596,31 @@ void mostrarConexionWifi() {
   for(int i = 0; i < numPuntos; i++) {
     display.print(".");
   }
-  
+
   display.display();
+}
+
+// Aviso breve de WiFi al inicio sin activar el portal
+void mostrarWifiInicioTemporal() {
+  iniciarAnimacionWifi();
+  unsigned long inicioAviso = millis();
+
+  while (millis() - inicioAviso < 2000) { // solo 2 segundos
+    if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+      frameWifi = (frameWifi + 1) % 4;
+      ultimoCambioWifi = millis();
+    }
+    mostrarConexionWifi();
+    delay(50);
+  }
+
+  detenerAnimacionWifi();
+
+  // Limpiar pantalla después del aviso
+  if (displayReady) {
+    display.clearDisplay();
+    display.display();
+  }
 }
 
 // Función para iniciar animación WiFi
@@ -3133,11 +3155,16 @@ delay(1000);
     // VERIFICACIÓN EXTRA
     verificarEstadoConfigDispositivos();
 
-    //Wiffi 
- //8. attemptReconnectToAllNetworks();  
+ //Wiffi
+ //8. attemptReconnectToAllNetworks();
  if (WiFi.status() != WL_CONNECTED) {
-  attemptReconnectToAllNetworks();     
+  attemptReconnectToAllNetworks();
 }
+
+ // Aviso breve de WiFi solo si seguimos desconectados
+ if (WiFi.status() != WL_CONNECTED) {
+   mostrarWifiInicioTemporal();
+ }
 
  // 9. Configuración MQTT con parámetros mejorados
   client.setServer(mqtt_server, mqtt_port);
@@ -3146,11 +3173,6 @@ delay(1000);
   client.setKeepAlive(60);    // Keepalive de 60 segundos
   client.setSocketTimeout(30); // Timeout de 30 segundos
 delay(1000);
-
- // Si no hay ID configurado o seguimos sin WiFi, lanzar el portal de inmediato
- if (una_APmode && (userID.isEmpty() || WiFi.status() != WL_CONNECTED)) {
-   reiniciarConfiguracionWiFi();
- }
 
 // 10. Alta de monitor
 mqttConfirmed = loadMQTTConfirmationState(); // Cargar estado persistente
