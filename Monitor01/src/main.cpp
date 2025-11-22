@@ -1,3 +1,19 @@
+// 17 - Corrección: simplificar el portal mostrando el User ID guardado y permitir usar/editar redes sin botones extra
+// 16 - Corrección: permitir refrescar/editar redes, persistir UserID visible y reiniciar solo cuando cambian redes
+// 15 - Corrección: mantener portal abierto hasta que el usuario termine; mostrar ID guardado y reiniciar al finalizar
+// 14 - Corrección: mantener pantalla fija y dedicar todo el ciclo al portal mientras el usuario navega hasta cerrar/manual
+// 13 - Corrección: congelar animación WiFi y dedicar el ciclo solo al portal cuando el usuario ya abrió la página
+// 12 - Corrección: dedicar ciclo a portal WiFi cuando está activo y permitir scroll completo en la página
+// 11 - Corrección: registrar rutas de portal cautivo para todos los probes y atenderlas de inmediato al activar AP
+// 10 - Corrección: cachear el escaneo de redes y mantener el portal accesible mientras se completa para evitar cortes al abrir la página
+// 09 - Corrección: el portal se atiende antes de cualquier animación (BLE/WiFi) para evitar cuelgues y "request handler not found"
+// 08 - Corrección: el portal HTTP se sigue atendiendo mientras el AP esté activo para evitar bloqueos al navegar
+// 07 - Corrección: portal unificado en una sola sesión con UserID, redes y dispositivos, bloqueando guardados si falta el ID
+// 06 - Corrección: ajustar reinicio de portal WiFi quitando bandera inexistente para compilar correctamente
+// 05 - Corrección: esconder WiFi al inicio (solo aviso breve) y mantener el portal activo tras guardar ID sin cerrarlo
+// 04 - Corrección: iniciar portal WiFi si falta ID o conexión, proteger OLED antes de inicializarla y mantener reinicios seguros del AP
+// 03 - Corrección: reiniciar el portal WiFi con cada pulsación larga, listar/borrar dispositivos y mostrar redes cercanas en el portal
+// 02 - Corrección: validar y limpiar UserID corrupto en EEPROM y activar modo AP con botón WiFi de 1s mostrando icono y reinicio tras conexión
 //Bersion BLE
 
 #include <SPI.h>
@@ -132,21 +148,36 @@ WebServer server(80);
 DNSServer dnsServer;
 bool apMode = false;
 bool forceAPMode = false;
+bool portalEnUso = false;           // Se activa al servir la página para congelar la animación
+bool portalPantallaFija = false;    // Evita reescribir la pantalla en cada loop
+bool reinicioSolicitado = false;    // Permite reiniciar tras finalizar configuración
+unsigned long reinicioProgramado = 0;
 //intento de reconectar
 unsigned long lastReconnectAttempt = 0;
 const unsigned long reconnectInterval = 2 * 60 * 1000; ; // 5 minutos
 WiFiCredential savedNetworks[MAX_NETWORKS];
 int currentNetwork = -1;
 
+// Cacheo de redes cercanas para no bloquear el portal en cada petición
+String scannedNetworksCache = "";
+unsigned long lastNetworkScan = 0;
+bool scanInProgress = false;
+const unsigned long SCAN_INTERVAL_MS = 15000;  // re-scan cada 15s en modo AP
+
 // Declaración de funciones
 void inicializa_eeprom();
 void iniciarLoRaConReintentos();
 void clearEEPROM();
 void startAPMode();
+void registrarRutasPortal();
 void handleRoot();
 void handleSaveCredentials();
+void handleFinalizeConfig();
 void handleDeleteNetwork();
 void handleSelectNetwork();
+void handleDeleteDevice();
+void reiniciarConfiguracionWiFi();
+void detenerConfiguracionWiFi();
 void saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
 void attemptReconnectToAllNetworks();
@@ -170,6 +201,9 @@ void Reintentar_Wiffi();
 void debugNetworks();
 void checkWiFiStatus();
 
+void iniciarEscaneoRedes();
+void procesarEscaneoRedes();
+
 void recepcion_lora();
 
 
@@ -189,9 +223,6 @@ void verificarTiemposSinDatos();
 void debugMensajeLoRa(const String &mensaje);
 void testDispositivosRapido() ;
 
-//temporal para forzar apmode una vez si no hay wiffi
-bool una_APmode=true;
-
 
 //Definiciones pantalla TFT
 #define SCREEN_WIDTH 128
@@ -199,6 +230,7 @@ bool una_APmode=true;
 #define OLED_RESET -1
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool displayReady = false;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -334,6 +366,7 @@ void setWifiStatus(bool conectado);
 // También agregar estas declaraciones al principio TFT
 void dibujarWifiAnimado(int centroX, int centroY, int frame);
 void mostrarConexionWifi();
+void mostrarWifiInicioTemporal();
 void iniciarAnimacionWifi();
 void detenerAnimacionWifi();
 void conectarWifi();
@@ -345,18 +378,28 @@ void verificarEstadoConfigDispositivos();
 void debugEstadoDispositivos();
 
 void debugNombreProblema();
+void manejarBotonWifi();
+void mostrarMensajeRedConectada(const String &ssid, bool conectado);
+void dibujarMensajeConexion();
+void handleRescanNetworks();
+String escapeForJS(const String &input);
 
 // --- Pines para los botones---
-#define BOTON_S 33  
-#define BOTON_W 4  
-#define TIEMPO_BOTON 3000
+#define BOTON_S 33
+#define BOTON_W 4
+#define TIEMPO_BOTON 1000
 
 bool boton_s=false;
-bool boton_w=false;
 unsigned long tiempoInicioPresion = 0;
+bool wifiButtonPressed = false;
+unsigned long wifiButtonPressStart = 0;
+bool wifiConfigInProgress = false;
+bool mostrarMensajeConexion = false;
+unsigned long inicioMensajeConexion = 0;
+String ultimaRedConfigurada = "";
+bool conexionExitosa = false;
 
 //void manejarBoton_S();
-void manejarBoton_W();
 
 
 // Variables BLE
@@ -957,77 +1000,216 @@ void testWiFiConnection() {
   Serial.println("=== FIN PRUEBA MANUAL ===");
 }
 
-void manejarBoton_W() {
-  tiempoInicioPresion = millis();
-  while(!digitalRead(BOTON_W)){
-  if (millis() - tiempoInicioPresion >= TIEMPO_BOTON) {
-  Serial.println("Presionando boton Wiffi  dispositivo..");  // Para detener después de 10 segundos (en producción lo controlarías con el estado real del WiFi)
+void manejarBotonWifi() {
+  bool presionado = digitalRead(BOTON_W) == LOW;
 
-    // Animación de conexión WiFi
-    if (millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
-      frameWifi++;
-      ultimoCambioWifi = millis();
-      
-      // Reiniciar animación cuando llega al final
-      if (frameWifi > 3) {
-        frameWifi = 0;
-      }
-    }
-    mostrarConexionWifi();
- boton_w=true;
-}
-
- // 2. Si estamos en modo AP, manejar eso y salir
-if (boton_w) { //mientras no exista comando en pantalla
-    if(una_APmode){
-  startAPMode();
-una_APmode = false;
-forceAPMode = true;
-}
+  if (presionado && !wifiButtonPressed) {
+    wifiButtonPressed = true;
+    wifiButtonPressStart = millis();
   }
 
-if (forceAPMode) {
-    dnsServer.processNextRequest();
-    server.handleClient();
-    static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 300) {
-        lastBlink = millis();
-    }
-    return;
+  if (!presionado && wifiButtonPressed) {
+    wifiButtonPressed = false;
+    wifiButtonPressStart = 0;
   }
 
-    
- }
+  if (wifiButtonPressed && (millis() - wifiButtonPressStart >= TIEMPO_BOTON)) {
+    wifiButtonPressed = false;
+    wifiButtonPressStart = 0;
 
-if(boton_w){
- boton_w=false;
-  detenerAnimacionWifi();
-  delay(3000);}
-
-
+    if (forceAPMode) {
+      Serial.println("Presionando boton WiFi - cancelando portal y regresando a modo normal...");
+      detenerConfiguracionWiFi();
+    } else {
+      Serial.println("Presionando boton WiFi - reiniciando modo AP...");
+      reiniciarConfiguracionWiFi();
+    }
+  }
 }
 
 
 
 // Implementación de funciones
 
-void startAPMode() {
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASS);
-  dnsServer.start(53, "*", WiFi.softAPIP());
-  
-  server.on("/", handleRoot);
+void reiniciarConfiguracionWiFi() {
+  mostrarMensajeConexion = false;
+  inicioMensajeConexion = 0;
+  conexionExitosa = false;
+  wifiConfigInProgress = true;
+  portalEnUso = false;
+  portalPantallaFija = false;
+  reinicioSolicitado = false;
+  reinicioProgramado = 0;
+  forceAPMode = true;
+  apMode = true;
+  iniciarAnimacionWifi();
+  mostrarConexionWifi();
+  startAPMode();
+}
+
+void detenerConfiguracionWiFi() {
+  mostrarMensajeConexion = false;
+  inicioMensajeConexion = 0;
+  conexionExitosa = false;
+  wifiConfigInProgress = false;
+  portalEnUso = false;
+  portalPantallaFija = false;
+  reinicioSolicitado = false;
+  forceAPMode = false;
+  apMode = false;
+  detenerAnimacionWifi();
+  scanInProgress = false;
+  scannedNetworksCache = "";
+  WiFi.scanDelete();
+
+  dnsServer.stop();
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+}
+
+void registrarRutasPortal() {
+  server.on("/", HTTP_ANY, handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
+  server.on("/rescan", HTTP_POST, handleRescanNetworks);
+  server.on("/finalizar", HTTP_POST, handleFinalizeConfig);
   server.on("/delete", HTTP_POST, handleDeleteNetwork);
   server.on("/select", HTTP_POST, handleSelectNetwork);
-  server.on("/setid", HTTP_POST, handleSetID);  // 👉 Aquí se agrega la ruta nueva
+  server.on("/delete_device", HTTP_POST, handleDeleteDevice);
+  server.on("/setid", HTTP_POST, handleSetID);
+
+  // Captura peticiones típicas de detección de portal cautivo
+  server.on("/generate_204", HTTP_ANY, handleRoot);
+  server.on("/hotspot-detect.html", HTTP_ANY, handleRoot);
+  server.on("/ncsi.txt", HTTP_ANY, handleRoot);
+  server.on("/connecttest.txt", HTTP_ANY, handleRoot);
+  server.on("/fwlink", HTTP_ANY, handleRoot);
+  server.on("/favicon.ico", HTTP_ANY, handleRoot);
+
   server.onNotFound(handleRoot);
+}
+
+void startAPMode() {
+  dnsServer.stop();
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
+  apMode = true;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  portalEnUso = false;
+  portalPantallaFija = false;
+  reinicioSolicitado = false;
+  reinicioProgramado = 0;
+  mostrarMensajeConexion = false;
+
+  registrarRutasPortal();
   server.begin();
-  
+
+  scannedNetworksCache = "";
+  lastNetworkScan = 0;
+  scanInProgress = false;
+  iniciarEscaneoRedes();
+
+  // Atender inmediatamente las primeras peticiones del portal (probes) para evitar timeouts
+  unsigned long inicioAtencion = millis();
+  while (millis() - inicioAtencion < 1500) {
+    dnsServer.processNextRequest();
+    server.handleClient();
+    delay(5);
+  }
+
   Serial.println("\nModo AP activado");
   Serial.print("SSID: "); Serial.println(AP_SSID);
   Serial.print("IP: "); Serial.println(WiFi.softAPIP());
-  
+
+}
+
+void mostrarMensajeRedConectada(const String &ssid, bool conectado) {
+  ultimaRedConfigurada = ssid;
+  conexionExitosa = conectado;
+  inicioMensajeConexion = millis();
+  mostrarMensajeConexion = true;
+  animandoWifi = true;
+  frameWifi = 0;
+  ultimoCambioWifi = millis();
+  Serial.printf("\n📶 %s a la red '%s'\n", conectado ? "Conectado" : "Fallo de conexión", ssid.c_str());
+  dibujarMensajeConexion();
+}
+
+String escapeForJS(const String &input) {
+  String out = input;
+  out.replace("\\", "\\\\");
+  out.replace("'", "\\'");
+  out.replace("\"", "\\\"");
+  out.replace("\n", " ");
+  out.replace("\r", " ");
+  return out;
+}
+
+void iniciarEscaneoRedes() {
+  if (scanInProgress) return;
+
+  scanInProgress = true;
+  lastNetworkScan = millis();
+  WiFi.scanDelete();
+  WiFi.scanNetworks(true);  // escaneo asíncrono
+}
+
+void procesarEscaneoRedes() {
+  if (!scanInProgress) return;
+
+  int n = WiFi.scanComplete();
+  if (n == WIFI_SCAN_RUNNING) {
+    return;  // sigue en progreso
+  }
+
+  scanInProgress = false;
+  lastNetworkScan = millis();
+
+  if (n <= 0) {
+    scannedNetworksCache = "<p>No se encontraron redes cercanas. Intenta nuevamente.</p>";
+    WiFi.scanDelete();
+    return;
+  }
+
+  const int MAX_SCAN_RESULTS = 20;
+  int limitedCount = n > MAX_SCAN_RESULTS ? MAX_SCAN_RESULTS : n;
+  int *indices = new int[limitedCount];
+  for (int i = 0; i < limitedCount; i++) {
+    indices[i] = i;
+  }
+
+  for (int i = 0; i < limitedCount - 1; i++) {
+    for (int j = i + 1; j < limitedCount; j++) {
+      if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
+        int temp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = temp;
+      }
+    }
+  }
+
+  String scannedNetworks = "";
+  for (int i = 0; i < limitedCount; i++) {
+    int idx = indices[i];
+    String ssid = WiFi.SSID(idx);
+    int rssi = WiFi.RSSI(idx);
+
+    scannedNetworks += "<div class='network-item'>";
+    scannedNetworks += "<label>" + ssid + "</label>";
+    scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
+    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\"" + disableAttr + ">Usar</button>";
+    scannedNetworks += "</div>";
+  }
+
+  scannedNetworksCache = scannedNetworks;
+  delete[] indices;
+  WiFi.scanDelete();
 }
 
 String getCheckedStatus(bool active) {
@@ -1036,105 +1218,89 @@ String getCheckedStatus(bool active) {
 
 void handleRoot() {
 
-  // Si no hay un ID guardado, mostrar SOLO el formulario para capturar el ID
-  if (userID.isEmpty()) {
-    String html = R"=====(
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Configuración ID - NUUP</title>
-  <meta name='viewport' content='width=device-width, initial-scale=1'>
-  <style>
-    body {
-      background-color: #121212;
-      color: #FFD700;
-      font-family: Arial, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      padding: 20px;
-    }
-    .container {
-      background-color: #1E1E1E;
-      border: 2px solid #FFD700;
-      border-radius: 10px;
-      padding: 30px;
-      width: 90%;
-      max-width: 500px;
-      box-shadow: 0 0 20px rgba(255, 215, 0, 0.3);
-    }
-    h1 {
-      color: #FFD700;
-      text-align: center;
-      margin-bottom: 25px;
-      font-size: 24px;
-    }
-    form {
-      display: flex;
-      flex-direction: column;
-    }
-    input {
-      background-color: #333;
-      color: #FFD700;
-      border: 2px solid #FFD700;
-      border-radius: 5px;
-      padding: 12px;
-      margin-bottom: 15px;
-      font-size: 16px;
-    }
-    button {
-      background-color: #FFD700;
-      color: #121212;
-      border: none;
-      border-radius: 5px;
-      padding: 12px;
-      font-size: 16px;
-      font-weight: bold;
-      cursor: pointer;
-      transition: background-color 0.3s;
-    }
-    button:hover {
-      background-color: #FFA500;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Configurar ID de Usuario</h1>
-    <form action='/setid' method='POST'>
-      <input type='text' name='newid' placeholder='Ingresa tu ID' maxlength=')" + String(USER_ID_MAX_LEN) + R"=====(' required>
-      <button type='submit'>Guardar ID</button>
-    </form>
-  </div>
-</body>
-</html>
-)=====";
-    server.send(200, "text/html", html);
-    return; // Salir de la función después de enviar esta página
+  // Al servir la página, congela la animación y dedica el ciclo al portal
+  portalEnUso = true;
+  // Mantener bandera de configuración activa mientras el portal esté en uso
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
+  if (animandoWifi) {
+    detenerAnimacionWifi();
+  }
+  // Evitar nuevas exploraciones y mantener la pantalla fija mientras el usuario navega
+  if (scanInProgress) {
+    WiFi.scanDelete();
+    scanInProgress = false;
+  }
+  lastNetworkScan = millis();
+  if (!portalPantallaFija) {
+    mostrarConexionWifi();
+    portalPantallaFija = true;
   }
 
-  
+  bool idMissing = userID.isEmpty();
+  String disableAttr = idMissing ? " disabled" : "";
+  String disableMessage = idMissing ? "<div class='alert'>Debes capturar el User ID para guardar redes o modificar dispositivos.</div>" : "";
+
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
+      String safeSsid = escapeForJS(savedNetworks[i].ssid);
+      String safePass = escapeForJS(savedNetworks[i].password);
       networksList += "<div class='network-item'>";
-      networksList += "<input type='radio' name='selectedNetwork' id='net" + String(i) + "' value='" + String(i) + "'";
-      networksList += getCheckedStatus(savedNetworks[i].active) + ">";
-      networksList += "<label for='net" + String(i) + "'>" + savedNetworks[i].ssid + "</label>";
-      networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
+      networksList += "<div class='network-info'><strong>" + savedNetworks[i].ssid + "</strong></div>";
+      networksList += "<div class='network-actions'>";
+      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\"" + disableAttr + ">Usar/editar</button>";
+      networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'" + disableAttr + ">Borrar</button>";
+      networksList += "</div>";
       networksList += "</div>";
     }
   }
 
+  // Actualizar escaneo en segundo plano para no bloquear la carga
+  procesarEscaneoRedes();
+  if (!scanInProgress && (millis() - lastNetworkScan > SCAN_INTERVAL_MS || scannedNetworksCache.isEmpty())) {
+    iniciarEscaneoRedes();
+  }
 
-String idSection = "<h3>ID de usuario actual:</h3>";
-idSection += "<p><strong>" + userID + "</strong></p>";
-idSection += "<form action='/setid' method='POST'>";
-idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required>";
-idSection += "<button type='submit'>Actualizar ID</button>";
-idSection += "</form><hr>";
+  String scannedNetworks = scannedNetworksCache;
+  if (scannedNetworks.isEmpty()) {
+    scannedNetworks = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
+  }
+
+  String devicesList = "";
+  int deviceCount = 0;
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    String mac = String(configDispositivos[i].mac);
+    mac.trim();
+    if (mac.length() > 0) {
+      deviceCount++;
+      String nombre = String(configDispositivos[i].nombre);
+      nombre.trim();
+      if (nombre.length() == 0) {
+        nombre = "Dispositivo";
+      }
+      devicesList += "<div class='network-item device-item'>";
+      devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
+      devicesList += "<button type='button' onclick=\"deleteDevice('" + mac + "')\"" + disableAttr + ">Eliminar</button>";
+      devicesList += "</div>";
+    }
+  }
+
+  if (deviceCount == 0) {
+    devicesList = "<p>No hay dispositivos dados de alta.</p>";
+  }
+
+
+String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
+  String idValueAttr = userID.length() > 0 ? " value='" + userID + "'" : "";
+  String idSection = "<h3>ID de usuario actual:</h3>";
+  idSection += "<p><strong>" + currentIDDisplay + "</strong></p>";
+  idSection += "<form action='/setid' method='POST'>";
+  idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required" + idValueAttr + ">";
+  idSection += "<button type='submit'>Actualizar ID</button>";
+  idSection += "</form><hr>";
+
 
   String html = R"=====(
 <!DOCTYPE html>
@@ -1147,12 +1313,10 @@ idSection += "</form><hr>";
       background-color: #121212;
       color: #FFD700;
       font-family: Arial, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
       margin: 0;
       padding: 20px;
+      min-height: 100vh;
+      display: block;
     }
     .container {
       background-color: #1E1E1E;
@@ -1206,6 +1370,10 @@ idSection += "</form><hr>";
       transition: background-color 0.3s;
       margin: 5px 0;
     }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     button:hover {
       background-color: #FFA500;
     }
@@ -1220,9 +1388,22 @@ idSection += "</form><hr>";
       background-color: #333;
       border-radius: 5px;
     }
+    .network-info {
+      flex-grow: 1;
+    }
+    .network-actions {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
     .network-item label {
       flex-grow: 1;
       margin-left: 10px;
+    }
+    .network-item .signal {
+      margin-left: 10px;
+      margin-right: 10px;
+      font-size: 14px;
     }
     .network-item button {
       padding: 8px 12px;
@@ -1230,6 +1411,29 @@ idSection += "</form><hr>";
     }
     .network-item button:hover {
       background-color: #cc0000;
+    }
+    .device-item {
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .device-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .section-title {
+      margin-top: 25px;
+      margin-bottom: 10px;
+      font-size: 18px;
+      color: #FFD700;
+    }
+    .alert {
+      background-color: #331f00;
+      border: 1px solid #FFD700;
+      border-radius: 6px;
+      padding: 10px;
+      margin: 10px 0;
+      font-weight: bold;
     }
     ::placeholder {
       color: #888;
@@ -1248,75 +1452,160 @@ idSection += "</form><hr>";
         });
       }
     }
+
+    function deleteDevice(mac) {
+      if(confirm('¿Eliminar este dispositivo?')) {
+        fetch('/delete_device', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'mac=' + encodeURIComponent(mac)
+        }).then(response => {
+          if(response.ok) location.reload();
+        });
+      }
+    }
+
+    function prefillNetwork(ssid) {
+      const ssidInput = document.getElementById('ssidInput');
+      const passInput = document.getElementById('passInput');
+      const editIndex = document.getElementById('editIndex');
+      if (ssidInput && passInput) {
+        ssidInput.value = ssid;
+        passInput.value = '';
+        passInput.focus();
+      }
+      if (editIndex) {
+        editIndex.value = '';
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function editNetwork(idx, ssid, pass) {
+      const ssidInput = document.getElementById('ssidInput');
+      const passInput = document.getElementById('passInput');
+      const editIndex = document.getElementById('editIndex');
+      if (ssidInput && passInput && editIndex) {
+        ssidInput.value = ssid;
+        passInput.value = pass;
+        editIndex.value = idx;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+
+    function rescanNetworks() {
+      fetch('/rescan', { method: 'POST' }).then(() => {
+        setTimeout(() => { location.reload(); }, 800);
+      });
+    }
   </script>
 </head>
 <body>
   <div class="container">
     <div class="device-title">Dispositivo NUUP</div>
     <h1>Configurar WiFi</h1>
-    )=====" + idSection + R"=====(   <!-- ← AÑADIDO AQUÍ -->
+)=====";
+
+  html += disableMessage;
+  html += idSection;
+  html += R"=====(
     <div class="network-list">
-      <h3>Redes guardadas:</h3>
-      <form id="networksForm">
-        )=====" + networksList + R"=====(
-        <button type="button" onclick="submitSelection()">Conectar a red seleccionada</button>
+      <h3 class="section-title">Redes guardadas:</h3>
+      <p>Usa/editar para rellenar la red seleccionada y actualizar la contraseña si es necesario.</p>
+)=====";
+  html += networksList;
+  html += R"=====(
+    </div>
+
+    <div class="network-list">
+      <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
+      <p>Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
+)=====";
+  html += scannedNetworks;
+  html += R"=====(
+      <button type="button" onclick="rescanNetworks()">Actualizar redes</button>
+    </div>
+
+    <h3 class="section-title">Agregar nueva red:</h3>
+    <p>Por seguridad el navegador no puede leer la red/contraseña de tu teléfono. Selecciona una red de la lista o escríbela aquí.</p>
+    <form action='/save' method='POST'>
+      <input type='hidden' id='editIndex' name='index' value=''>
+      <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>
+      <input id='passInput' type='password' name='pass' placeholder='Contraseña' required
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>
+      <button type='submit'
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>Guardar Configuración</button>
+    </form>
+
+    <div class="network-list">
+      <h3 class="section-title">Dispositivos registrados:</h3>
+)=====";
+  html += devicesList;
+  html += R"=====(
+    </div>
+
+    <div class="network-list">
+      <h3 class="section-title">Finalizar configuración:</h3>
+      <p>Al presionar se cerrará la página, se guardarán los datos y el equipo reiniciará al modo normal.</p>
+      <form action='/finalizar' method='POST'>
+        <button type='submit'
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>Configurar y reiniciar</button>
       </form>
     </div>
-    
-    <h3>Agregar nueva red:</h3>
-    <form action='/save' method='POST'>
-      <input type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
-      <input type='password' name='pass' placeholder='Contraseña' required>
-      <button type='submit'>Guardar Configuración</button>
-    </form>
   </div>
-  
-  <script>
-    function submitSelection() {
-      const form = document.getElementById('networksForm');
-      const selected = form.querySelector('input[name="selectedNetwork"]:checked');
-      if(selected) {
-        fetch('/select', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'index=' + selected.value
-        }).then(response => {
-          if(response.ok) {
-            alert('Red seleccionada. Reconectando...');
-            setTimeout(() => { location.reload(); }, 1000);
-          }
-        });
-      } else {
-        alert('Selecciona una red primero');
-      }
-    }
-  </script>
+
 </body>
 </html>
 )=====";
-  
+
   server.send(200, "text/html", html);
 }
 
 void handleSaveCredentials() {
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Configura el User ID antes de guardar redes");
+    return;
+  }
   if(server.hasArg("ssid") && server.hasArg("pass")) {
     String ssid = server.arg("ssid");
     String pass = server.arg("pass");
-    
-    // Buscar espacio vacío o red más antigua
-    int indexToSave = -1;
-    for(int i = 0; i < MAX_NETWORKS; i++) {
-      if(savedNetworks[i].ssid.length() == 0) {
-        indexToSave = i;
-        break;
+    int requestedIndex = -1;
+    if (server.hasArg("index")) {
+      String idxStr = server.arg("index");
+      idxStr.trim();
+      if (idxStr.length() > 0) {
+        requestedIndex = idxStr.toInt();
       }
     }
-    
+
+    // Usar índice solicitado para editar o buscar espacio libre
+    int indexToSave = (requestedIndex >= 0 && requestedIndex < MAX_NETWORKS) ? requestedIndex : -1;
+    if (indexToSave == -1) {
+      for(int i = 0; i < MAX_NETWORKS; i++) {
+        if(savedNetworks[i].ssid.length() == 0) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
+
     // Si no hay espacio, reemplazar la primera (podría mejorarse con timestamp)
     if(indexToSave == -1) {
       indexToSave = 0;
     }
-    
+
     savedNetworks[indexToSave].ssid = ssid;
     savedNetworks[indexToSave].password = pass;
     savedNetworks[indexToSave].active = true;
@@ -1327,17 +1616,64 @@ void handleSaveCredentials() {
         savedNetworks[i].active = false;
       }
     }
-    
+
     saveNetworksToEEPROM();
-    server.send(200, "text/html", "<html><body><h2>Credenciales guardadas! Reconectando...</h2></body></html>");
-    delay(1000);
-    ESP.restart();
+    server.send(200, "text/html", "<html><body><h2>Credenciales guardadas. El equipo reiniciará para aplicarlas.</h2><script>setTimeout(()=>window.location='/',600);</script></body></html>");
+
+    forceAPMode = true;
+    wifiConfigInProgress = true;
+    apMode = true;
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    unsigned long inicioConexion = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - inicioConexion < WIFI_TIMEOUT) {
+      delay(200);
+    }
+
+    bool conectado = WiFi.status() == WL_CONNECTED;
+    forceAPMode = false;
+    wifiConfigInProgress = false;
+    mostrarMensajeRedConectada(ssid, conectado);
+    reinicioSolicitado = true;
+    reinicioProgramado = millis() + 5000;
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
 }
 
+void handleFinalizeConfig() {
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Configura el User ID antes de finalizar");
+    return;
+  }
+
+  portalEnUso = true;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
+  portalPantallaFija = true;
+
+  String redActual = WiFi.SSID();
+  if (redActual.length() == 0 && ultimaRedConfigurada.length() > 0) {
+    redActual = ultimaRedConfigurada;
+  }
+
+  bool conectada = WiFi.status() == WL_CONNECTED || conexionExitosa;
+  mostrarMensajeRedConectada(redActual.length() > 0 ? redActual : "Sin red", conectada);
+
+  server.send(200, "text/html",
+              "<html><body><h2>Configuración finalizada</h2><p>El equipo se reiniciará y cerrará el portal.</p><script>setTimeout(() => { window.close(); }, 1500);</script></body></html>");
+
+  detenerConfiguracionWiFi();
+  reinicioSolicitado = true;
+  reinicioProgramado = millis() + 3000;
+}
+
 void handleDeleteNetwork() {
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Configura el User ID antes de borrar redes");
+    return;
+  }
   if(server.hasArg("index")) {
     int index = server.arg("index").toInt();
     if(index >= 0 && index < MAX_NETWORKS) {
@@ -1354,7 +1690,36 @@ void handleDeleteNetwork() {
   }
 }
 
+void handleDeleteDevice() {
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Configura el User ID antes de borrar dispositivos");
+    return;
+  }
+  if (server.hasArg("mac")) {
+    String mac = server.arg("mac");
+    mac.trim();
+
+    if (mac.length() == 0) {
+      server.send(400, "text/plain", "MAC vacía");
+      return;
+    }
+
+    bool eliminado = eliminarDispositivo(mac);
+    if (eliminado) {
+      server.send(200, "text/plain", "OK");
+    } else {
+      server.send(404, "text/plain", "Dispositivo no encontrado");
+    }
+  } else {
+    server.send(400, "text/plain", "Falta parámetro mac");
+  }
+}
+
 void handleSelectNetwork() {
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Configura el User ID antes de seleccionar una red");
+    return;
+  }
   if(server.hasArg("index")) {
     int index = server.arg("index").toInt();
     if(index >= 0 && index < MAX_NETWORKS && savedNetworks[index].ssid.length() > 0) {
@@ -1376,6 +1741,12 @@ void handleSelectNetwork() {
   }
 }
 
+void handleRescanNetworks() {
+  scannedNetworksCache = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
+  iniciarEscaneoRedes();
+  server.send(200, "text/plain", "Escaneo reiniciado");
+}
+
 void handleSetID() {
   if (server.hasArg("newid")) {
     String newID = server.arg("newid");
@@ -1384,10 +1755,13 @@ void handleSetID() {
     if (newID.length() > 0 && newID.length() <= USER_ID_MAX_LEN) {
       saveUserIDToEEPROM(newID);
       userID = newID;
-      
-      // Redirigir a la página principal (que ahora mostrará la interfaz completa)
-      server.send(200, "text/html", 
-        "<html><body><script>window.location.href='/';</script></body></html>");
+
+      // Mantener activo el portal y recargar la vista completa con redes/dispositivos
+      wifiConfigInProgress = true;
+      forceAPMode = true;
+      apMode = true;
+      handleRoot();
+      return;
     } else {
       server.send(400, "text/plain", "ID inválido");
     }
@@ -1621,6 +1995,11 @@ void saveUserIDToEEPROM(const String& id) {
 bool loadUserIDFromEEPROM() {
   bool success = true;
   int len = EEPROM.read(USER_ID_ADDR);
+  if (len == 0xFF || len < 0 || len > USER_ID_MAX_LEN) {
+    Serial.printf("⚠️  Longitud de UserID inválida (%d). Se limpia y se devuelve false.\n", len);
+    saveUserIDToEEPROM("");
+    return false;
+  }
   if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
 
   char buffer[USER_ID_MAX_LEN + 1] = {0};
@@ -2366,6 +2745,9 @@ void dibujarWifiAnimado(int centroX, int centroY, int frame) {
 
 // Función para mostrar conexión WiFi
 void mostrarConexionWifi() {
+  if (!displayReady) {
+    return;
+  }
   display.clearDisplay();
   
   // Centro de la pantalla
@@ -2392,8 +2774,31 @@ void mostrarConexionWifi() {
   for(int i = 0; i < numPuntos; i++) {
     display.print(".");
   }
-  
+
   display.display();
+}
+
+// Aviso breve de WiFi al inicio sin activar el portal
+void mostrarWifiInicioTemporal() {
+  iniciarAnimacionWifi();
+  unsigned long inicioAviso = millis();
+
+  while (millis() - inicioAviso < 2000) { // solo 2 segundos
+    if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+      frameWifi = (frameWifi + 1) % 4;
+      ultimoCambioWifi = millis();
+    }
+    mostrarConexionWifi();
+    delay(50);
+  }
+
+  detenerAnimacionWifi();
+
+  // Limpiar pantalla después del aviso
+  if (displayReady) {
+    display.clearDisplay();
+    display.display();
+  }
 }
 
 // Función para iniciar animación WiFi
@@ -2409,6 +2814,38 @@ void detenerAnimacionWifi() {
   animandoWifi = false;
   wifiConectado = true; // Marcar como conectado
   Serial.println("Animación WiFi completada");
+}
+
+void dibujarMensajeConexion() {
+  if (!displayReady) {
+    return;
+  }
+  display.clearDisplay();
+
+  int centroX = SCREEN_WIDTH / 2;
+  int centroY = 20;
+
+  if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+    frameWifi = (frameWifi + 1) % 4;
+    ultimoCambioWifi = millis();
+  }
+
+  dibujarWifiAnimado(centroX, centroY, frameWifi);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(conexionExitosa ? "WiFi conectado" : "Error WiFi");
+
+  display.setCursor(0, 45);
+  if (ultimaRedConfigurada.length() > 0) {
+    display.print(conexionExitosa ? "Red: " : "Red fallida: ");
+    display.print(ultimaRedConfigurada);
+  } else {
+    display.print("Esperando red...");
+  }
+
+  display.display();
 }
 
 // Función para conectar WiFi (desde otras partes del código)
@@ -2755,6 +3192,16 @@ void setup() {
   Serial.begin(115200);
     delay(1000);
 
+  // Inicializar OLED lo antes posible para evitar llamadas sobre puntero nulo
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("Fallo inicializacion OLED");
+    while(true);
+  }
+
+  displayReady = true;
+  Serial.println("OLED inicializado correctamente");
+  display.setTextColor(SSD1306_WHITE);
+
     // 11. Inicializar BLE
     iniciarBLE();
     
@@ -2780,15 +3227,20 @@ delay(1000);
   Serial.println("\n💾 ===========================================");
   Serial.println("🔍 DEBUG EEPROM AL INICIAR");
   Serial.println("💾 ===========================================");
-  
+
   EEPROM.begin(EEPROM_SIZE);
-  
+
   // Leer flag de registro
   byte registroFlag = EEPROM.read(0);
   Serial.printf("📋 Flag de registro en addr 0: %d\n", registroFlag);
-  
+
   // Leer userID
   int userIDLen = EEPROM.read(USER_ID_ADDR);
+  if (userIDLen == 0xFF || userIDLen < 0 || userIDLen > USER_ID_MAX_LEN) {
+    Serial.printf("📋 UserID corrupto: longitud leída %d, se restablece a 0\n", userIDLen);
+    userIDLen = 0;
+  }
+
   char userIDBuffer[USER_ID_MAX_LEN + 1] = {0};
   for (int i = 0; i < userIDLen; i++) {
     userIDBuffer[i] = EEPROM.read(USER_ID_ADDR + 1 + i);
@@ -2881,13 +3333,18 @@ delay(1000);
     // VERIFICACIÓN EXTRA
     verificarEstadoConfigDispositivos();
 
-    //Wiffi 
- //8. attemptReconnectToAllNetworks();  
+ //Wiffi
+ //8. attemptReconnectToAllNetworks();
  if (WiFi.status() != WL_CONNECTED) {
-  attemptReconnectToAllNetworks();     
+  attemptReconnectToAllNetworks();
 }
 
-// 9. Configuración MQTT con parámetros mejorados
+ // Aviso breve de WiFi solo si seguimos desconectados
+ if (WiFi.status() != WL_CONNECTED) {
+   mostrarWifiInicioTemporal();
+ }
+
+ // 9. Configuración MQTT con parámetros mejorados
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   client.setBufferSize(512);  // Buffer aumentado para mensajes grandes
@@ -2906,24 +3363,52 @@ if(mqttConfirmed) {
 
 Serial.println("Setup completado");
 
-  //Configuracion TFT   
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Fallo inicializacion OLED");
-    while(true);
-  }
-  
-  Serial.println("OLED inicializado correctamente");
-  display.setTextColor(SSD1306_WHITE);
-
 //testWiFiConnection();
 
- 
+
 }
 
 
 
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
+
+  manejarBotonWifi();
+
+  if (reinicioSolicitado && millis() >= reinicioProgramado) {
+    ESP.restart();
+  }
+
+  // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitar que se cierre
+  bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
+  if (apActivo) {
+    dnsServer.processNextRequest();
+    // Atender varias peticiones HTTP por ciclo para mantener la página siempre disponible
+    for (int i = 0; i < 3; i++) {
+      server.handleClient();
+    }
+    // Si el usuario ya abrió la página evitamos reactivar animaciones y reescaneos agresivos
+    if (!portalEnUso) {
+      procesarEscaneoRedes();
+      if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
+        iniciarEscaneoRedes();
+      }
+      if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+        frameWifi = (frameWifi + 1) % 4;
+        ultimoCambioWifi = millis();
+      }
+      mostrarConexionWifi();
+    }
+    return;
+  }
+
+  if (mostrarMensajeConexion) {
+    dibujarMensajeConexion();
+    if (millis() - inicioMensajeConexion >= 5000) {
+      ESP.restart();
+    }
+    return;
+  }
 
 // Debug periódico de nombres
 static unsigned long lastDebugNombres = 0;
@@ -2998,22 +3483,7 @@ testLoRaPeriodico();
     }
 
 
-    // 3. Comportamiento en recepción continua 
-    // 4. Si estamos en modo AP, manejar eso y salir
-    if (boton_w) { //mientras no exista comando en pantalla
-        if(una_APmode){
-            startAPMode();
-            una_APmode = false;
-            forceAPMode = true;
-        }
-    }
-
-    if (forceAPMode) {
-        dnsServer.processNextRequest();
-        server.handleClient();
-        return;
-    }
-
+    // 3. Comportamiento en recepción continua
     // 5. VERIFICACIÓN MÁS ROBUSTA DE CONEXIÓN WIFI
     static unsigned long lastWifiCheck = 0;
     if (millis() - lastWifiCheck > 10000) { // Cada 10 segundos
