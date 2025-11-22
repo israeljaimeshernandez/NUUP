@@ -1398,6 +1398,11 @@ void handleSetID() {
 
 
 void saveNetworksToEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("Error al inicializar EEPROM para guardar redes");
+    return;
+  }
+
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
 
   for(int i = 0; i < MAX_NETWORKS; i++) {
@@ -1432,10 +1437,16 @@ void saveNetworksToEEPROM() {
   }
 
   EEPROM.commit();
+  EEPROM.end();
 }
 
 
 bool loadNetworksFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("Error al inicializar EEPROM para redes guardadas");
+    return false;
+  }
+
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
   bool success = true;
 
@@ -1514,6 +1525,7 @@ bool loadNetworksFromEEPROM() {
     success = false;
   }
 
+  EEPROM.end();
   return success;
 }
 
@@ -1600,6 +1612,11 @@ void debugNetworks() {
 
 
 void saveUserIDToEEPROM(const String& id) {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("Error al inicializar EEPROM para guardar UserID");
+    return;
+  }
+
   int len = id.length();
   if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
 
@@ -1615,10 +1632,16 @@ void saveUserIDToEEPROM(const String& id) {
   }
 
   EEPROM.commit();
+  EEPROM.end();
   Serial.println("📝 ID guardado en EEPROM: " + id);
 }
 
 bool loadUserIDFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("Error al inicializar EEPROM para leer UserID");
+    return false;
+  }
+
   bool success = true;
   int len = EEPROM.read(USER_ID_ADDR);
 
@@ -1637,6 +1660,7 @@ bool loadUserIDFromEEPROM() {
   buffer[len] = '\0';
   userID = String(buffer);
   Serial.println("🔄 ID cargado desde EEPROM: " + userID);
+  EEPROM.end();
   return success;
 }
 
