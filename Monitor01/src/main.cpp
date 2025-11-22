@@ -1621,6 +1621,11 @@ void saveUserIDToEEPROM(const String& id) {
 bool loadUserIDFromEEPROM() {
   bool success = true;
   int len = EEPROM.read(USER_ID_ADDR);
+  if (len == 0xFF || len < 0 || len > USER_ID_MAX_LEN) {
+    Serial.printf("⚠️  Longitud de UserID inválida (%d). Se limpia y se devuelve false.\n", len);
+    saveUserIDToEEPROM("");
+    return false;
+  }
   if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
 
   char buffer[USER_ID_MAX_LEN + 1] = {0};
@@ -2780,15 +2785,20 @@ delay(1000);
   Serial.println("\n💾 ===========================================");
   Serial.println("🔍 DEBUG EEPROM AL INICIAR");
   Serial.println("💾 ===========================================");
-  
+
   EEPROM.begin(EEPROM_SIZE);
-  
+
   // Leer flag de registro
   byte registroFlag = EEPROM.read(0);
   Serial.printf("📋 Flag de registro en addr 0: %d\n", registroFlag);
-  
+
   // Leer userID
   int userIDLen = EEPROM.read(USER_ID_ADDR);
+  if (userIDLen == 0xFF || userIDLen < 0 || userIDLen > USER_ID_MAX_LEN) {
+    Serial.printf("📋 UserID corrupto: longitud leída %d, se restablece a 0\n", userIDLen);
+    userIDLen = 0;
+  }
+
   char userIDBuffer[USER_ID_MAX_LEN + 1] = {0};
   for (int i = 0; i < userIDLen; i++) {
     userIDBuffer[i] = EEPROM.read(USER_ID_ADDR + 1 + i);
