@@ -1,3 +1,4 @@
+// 13 - Corrección: congelar animación WiFi y dedicar el ciclo solo al portal cuando el usuario ya abrió la página
 // 12 - Corrección: dedicar ciclo a portal WiFi cuando está activo y permitir scroll completo en la página
 // 11 - Corrección: registrar rutas de portal cautivo para todos los probes y atenderlas de inmediato al activar AP
 // 10 - Corrección: cachear el escaneo de redes y mantener el portal accesible mientras se completa para evitar cortes al abrir la página
@@ -143,6 +144,8 @@ WebServer server(80);
 DNSServer dnsServer;
 bool apMode = false;
 bool forceAPMode = false;
+bool portalEnUso = false;           // Se activa al servir la página para congelar la animación
+bool portalPantallaFija = false;    // Evita reescribir la pantalla en cada loop
 //intento de reconectar
 unsigned long lastReconnectAttempt = 0;
 const unsigned long reconnectInterval = 2 * 60 * 1000; ; // 5 minutos
@@ -1024,6 +1027,8 @@ void reiniciarConfiguracionWiFi() {
   inicioMensajeConexion = 0;
   conexionExitosa = false;
   wifiConfigInProgress = true;
+  portalEnUso = false;
+  portalPantallaFija = false;
   forceAPMode = true;
   apMode = true;
   iniciarAnimacionWifi();
@@ -1036,6 +1041,8 @@ void detenerConfiguracionWiFi() {
   inicioMensajeConexion = 0;
   conexionExitosa = false;
   wifiConfigInProgress = false;
+  portalEnUso = false;
+  portalPantallaFija = false;
   forceAPMode = false;
   apMode = false;
   detenerAnimacionWifi();
@@ -1080,6 +1087,8 @@ void startAPMode() {
   apMode = true;
   wifiConfigInProgress = true;
   forceAPMode = true;
+  portalEnUso = false;
+  portalPantallaFija = false;
   mostrarMensajeConexion = false;
 
   registrarRutasPortal();
@@ -1182,6 +1191,16 @@ String getCheckedStatus(bool active) {
 }
 
 void handleRoot() {
+
+  // Al servir la página, congela la animación y dedica el ciclo al portal
+  portalEnUso = true;
+  if (animandoWifi) {
+    detenerAnimacionWifi();
+  }
+  if (!portalPantallaFija) {
+    mostrarConexionWifi();
+    portalPantallaFija = true;
+  }
 
   bool idMissing = userID.isEmpty();
   String disableAttr = idMissing ? " disabled" : "";
@@ -3255,15 +3274,21 @@ void loop() {
   if (apActivo) {
     dnsServer.processNextRequest();
     server.handleClient();
-    procesarEscaneoRedes();
-    if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
-      iniciarEscaneoRedes();
+    // Si el usuario ya abrió la página evitamos reactivar animaciones y reescaneos agresivos
+    if (!portalEnUso) {
+      procesarEscaneoRedes();
+      if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
+        iniciarEscaneoRedes();
+      }
+      if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+        frameWifi = (frameWifi + 1) % 4;
+        ultimoCambioWifi = millis();
+      }
+      mostrarConexionWifi();
+    } else {
+      // Solo finalizar un escaneo pendiente y mantener la pantalla fija
+      procesarEscaneoRedes();
     }
-    if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
-      frameWifi = (frameWifi + 1) % 4;
-      ultimoCambioWifi = millis();
-    }
-    mostrarConexionWifi();
     return;
   }
 
