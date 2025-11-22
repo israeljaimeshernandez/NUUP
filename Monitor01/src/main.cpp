@@ -1,3 +1,4 @@
+// 12 - Corrección: dedicar ciclo a portal WiFi cuando está activo y permitir scroll completo en la página
 // 11 - Corrección: registrar rutas de portal cautivo para todos los probes y atenderlas de inmediato al activar AP
 // 10 - Corrección: cachear el escaneo de redes y mantener el portal accesible mientras se completa para evitar cortes al abrir la página
 // 09 - Corrección: el portal se atiende antes de cualquier animación (BLE/WiFi) para evitar cuelgues y "request handler not found"
@@ -1253,12 +1254,10 @@ String currentID = userID.length() > 0 ? userID : "Sin ID configurado";
       background-color: #121212;
       color: #FFD700;
       font-family: Arial, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
       margin: 0;
       padding: 20px;
+      min-height: 100vh;
+      display: block;
     }
     .container {
       background-color: #1E1E1E;
@@ -3249,15 +3248,24 @@ Serial.println("Setup completado");
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
 
-  // Atender siempre el portal cautivo si el modo AP está activo, incluso durante animaciones BLE/WiFi
-  bool apActivo = (WiFi.getMode() & WIFI_MODE_AP);
+  manejarBotonWifi();
+
+  // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitar que se cierre
+  bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
   if (apActivo) {
     dnsServer.processNextRequest();
     server.handleClient();
     procesarEscaneoRedes();
+    if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
+      iniciarEscaneoRedes();
+    }
+    if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+      frameWifi = (frameWifi + 1) % 4;
+      ultimoCambioWifi = millis();
+    }
+    mostrarConexionWifi();
+    return;
   }
-
-  manejarBotonWifi();
 
   if (mostrarMensajeConexion) {
     dibujarMensajeConexion();
@@ -3341,22 +3349,6 @@ testLoRaPeriodico();
 
 
     // 3. Comportamiento en recepción continua
-    // 4. Si estamos en modo AP (portal activo), atender peticiones HTTP/DNS
-    if (apMode) {
-        if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
-            frameWifi = (frameWifi + 1) % 4;
-            ultimoCambioWifi = millis();
-        }
-        mostrarConexionWifi();
-        procesarEscaneoRedes();
-        if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
-            iniciarEscaneoRedes();
-        }
-        dnsServer.processNextRequest();
-        server.handleClient();
-        return;
-    }
-
     // 5. VERIFICACIÓN MÁS ROBUSTA DE CONEXIÓN WIFI
     static unsigned long lastWifiCheck = 0;
     if (millis() - lastWifiCheck > 10000) { // Cada 10 segundos
