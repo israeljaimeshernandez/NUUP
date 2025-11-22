@@ -1,3 +1,4 @@
+// Corrección: validar y limpiar UserID corrupto en EEPROM para evitar reinicios (Guru Meditation)
 //Bersion BLE
 
 #include <SPI.h>
