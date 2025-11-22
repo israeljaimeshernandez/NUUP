@@ -1,3 +1,4 @@
+// 14 - Corrección: mantener pantalla fija y dedicar todo el ciclo al portal mientras el usuario navega hasta cerrar/manual
 // 13 - Corrección: congelar animación WiFi y dedicar el ciclo solo al portal cuando el usuario ya abrió la página
 // 12 - Corrección: dedicar ciclo a portal WiFi cuando está activo y permitir scroll completo en la página
 // 11 - Corrección: registrar rutas de portal cautivo para todos los probes y atenderlas de inmediato al activar AP
@@ -1194,9 +1195,19 @@ void handleRoot() {
 
   // Al servir la página, congela la animación y dedica el ciclo al portal
   portalEnUso = true;
+  // Mantener bandera de configuración activa mientras el portal esté en uso
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
   if (animandoWifi) {
     detenerAnimacionWifi();
   }
+  // Evitar nuevas exploraciones y mantener la pantalla fija mientras el usuario navega
+  if (scanInProgress) {
+    WiFi.scanDelete();
+    scanInProgress = false;
+  }
+  lastNetworkScan = millis();
   if (!portalPantallaFija) {
     mostrarConexionWifi();
     portalPantallaFija = true;
@@ -3273,7 +3284,10 @@ void loop() {
   bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
   if (apActivo) {
     dnsServer.processNextRequest();
-    server.handleClient();
+    // Atender varias peticiones HTTP por ciclo para mantener la página siempre disponible
+    for (int i = 0; i < 3; i++) {
+      server.handleClient();
+    }
     // Si el usuario ya abrió la página evitamos reactivar animaciones y reescaneos agresivos
     if (!portalEnUso) {
       procesarEscaneoRedes();
@@ -3285,9 +3299,6 @@ void loop() {
         ultimoCambioWifi = millis();
       }
       mostrarConexionWifi();
-    } else {
-      // Solo finalizar un escaneo pendiente y mantener la pantalla fija
-      procesarEscaneoRedes();
     }
     return;
   }
