@@ -152,6 +152,7 @@ void handleDeleteNetwork();
 void handleSelectNetwork();
 void handleDeleteDevice();
 void reiniciarConfiguracionWiFi();
+void detenerConfiguracionWiFi();
 void saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
 void attemptReconnectToAllNetworks();
@@ -985,10 +986,16 @@ void manejarBotonWifi() {
   }
 
   if (wifiButtonPressed && (millis() - wifiButtonPressStart >= TIEMPO_BOTON)) {
-    Serial.println("Presionando boton WiFi - reiniciando modo AP...");
     wifiButtonPressed = false;
     wifiButtonPressStart = 0;
-    reiniciarConfiguracionWiFi();
+
+    if (forceAPMode) {
+      Serial.println("Presionando boton WiFi - cancelando portal y regresando a modo normal...");
+      detenerConfiguracionWiFi();
+    } else {
+      Serial.println("Presionando boton WiFi - reiniciando modo AP...");
+      reiniciarConfiguracionWiFi();
+    }
   }
 }
 
@@ -1002,10 +1009,26 @@ void reiniciarConfiguracionWiFi() {
   conexionExitosa = false;
   wifiConfigInProgress = true;
   forceAPMode = true;
+  apMode = true;
   iniciarAnimacionWifi();
   mostrarConexionWifi();
   startAPMode();
   una_APmode = false;
+}
+
+void detenerConfiguracionWiFi() {
+  mostrarMensajeConexion = false;
+  inicioMensajeConexion = 0;
+  conexionExitosa = false;
+  wifiConfigInProgress = false;
+  forceAPMode = false;
+  apMode = false;
+  detenerAnimacionWifi();
+
+  dnsServer.stop();
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
 }
 
 void startAPMode() {
@@ -1017,6 +1040,7 @@ void startAPMode() {
   WiFi.softAP(AP_SSID, AP_PASS);
   dnsServer.start(53, "*", WiFi.softAPIP());
 
+  apMode = true;
   wifiConfigInProgress = true;
   forceAPMode = true;
   mostrarMensajeConexion = false;
@@ -1554,10 +1578,13 @@ void handleSetID() {
     if (newID.length() > 0 && newID.length() <= USER_ID_MAX_LEN) {
       saveUserIDToEEPROM(newID);
       userID = newID;
-      
-      // Redirigir a la página principal (que ahora mostrará la interfaz completa)
-      server.send(200, "text/html", 
-        "<html><body><script>window.location.href='/';</script></body></html>");
+
+      // Mantener activo el portal y recargar la vista completa con redes/dispositivos
+      wifiConfigInProgress = true;
+      forceAPMode = true;
+      apMode = true;
+      server.send(200, "text/html",
+        "<html><body><h2>ID guardado. Regresando...</h2><script>setTimeout(()=>location.href='/',500);</script></body></html>");
     } else {
       server.send(400, "text/plain", "ID inválido");
     }
