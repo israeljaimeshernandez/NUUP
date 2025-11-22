@@ -1,3 +1,4 @@
+// 08 - Corrección: el portal HTTP se sigue atendiendo mientras el AP esté activo para evitar bloqueos al navegar
 // 07 - Corrección: portal unificado en una sola sesión con UserID, redes y dispositivos, bloqueando guardados si falta el ID
 // 06 - Corrección: ajustar reinicio de portal WiFi quitando bandera inexistente para compilar correctamente
 // 05 - Corrección: esconder WiFi al inicio (solo aviso breve) y mantener el portal activo tras guardar ID sin cerrarlo
@@ -3260,8 +3261,8 @@ testLoRaPeriodico();
 
 
     // 3. Comportamiento en recepción continua
-    // 4. Si estamos en modo AP, manejar eso y salir
-    if (forceAPMode) {
+    // 4. Si estamos en modo AP (portal activo), atender peticiones HTTP/DNS
+    if (apMode) {
         if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
             frameWifi = (frameWifi + 1) % 4;
             ultimoCambioWifi = millis();
