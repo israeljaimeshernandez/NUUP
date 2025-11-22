@@ -1161,12 +1161,13 @@ void handleRoot() {
 
 
 String currentID = userID.length() > 0 ? userID : "Sin ID configurado";
-String idSection = "<h3>ID de usuario actual:</h3>";
-idSection += "<p><strong>" + currentID + "</strong></p>";
-idSection += "<form action='/setid' method='POST'>";
-idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required>";
-idSection += "<button type='submit'>Actualizar ID</button>";
-idSection += "</form><hr>";
+  String idSection = "<h3>ID de usuario actual:</h3>";
+  idSection += "<p><strong>" + currentID + "</strong></p>";
+  idSection += "<form action='/setid' method='POST'>";
+  idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required>";
+  idSection += "<button type='submit'>Actualizar ID</button>";
+  idSection += "</form><hr>";
+
 
   String html = R"=====(
 <!DOCTYPE html>
@@ -1237,6 +1238,10 @@ idSection += "</form><hr>";
       cursor: pointer;
       transition: background-color 0.3s;
       margin: 5px 0;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     button:hover {
       background-color: #FFA500;
@@ -1335,35 +1340,61 @@ idSection += "</form><hr>";
   <div class="container">
     <div class="device-title">Dispositivo NUUP</div>
     <h1>Configurar WiFi</h1>
-    )=====" + disableMessage + idSection + R"=====(
+)=====";
+
+  html += disableMessage;
+  html += idSection;
+  html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
       <form id="networksForm">
-        )=====" + networksList + R"=====(
-        <button type="button" onclick="submitSelection()" )=====" + disableAttr + R"=====>Conectar a red seleccionada</button>
+)=====";
+  html += networksList;
+  html += R"=====(
+        <button type="button" onclick="submitSelection()"
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>Conectar a red seleccionada</button>
       </form>
     </div>
 
     <div class="network-list">
       <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
       <p>Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
-      )=====" + scannedNetworks + R"=====(
+)=====";
+  html += scannedNetworks;
+  html += R"=====(
     </div>
 
     <h3 class="section-title">Agregar nueva red:</h3>
     <p>Por seguridad el navegador no puede leer la red/contraseña de tu teléfono. Selecciona una red de la lista o escríbela aquí.</p>
     <form action='/save' method='POST'>
-      <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required )=====" + disableAttr + R"===== >
-      <input id='passInput' type='password' name='pass' placeholder='Contraseña' required )=====" + disableAttr + R"===== >
-      <button type='submit' )=====" + disableAttr + R"=====>Guardar Configuración</button>
+      <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>
+      <input id='passInput' type='password' name='pass' placeholder='Contraseña' required
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>
+      <button type='submit'
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>Guardar Configuración</button>
     </form>
 
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
-      )=====" + devicesList + R"=====(
+)=====";
+  html += devicesList;
+  html += R"=====(
     </div>
   </div>
-  
+
   <script>
     function submitSelection() {
       const form = document.getElementById('networksForm');
@@ -1387,7 +1418,7 @@ idSection += "</form><hr>";
 </body>
 </html>
 )=====";
-  
+
   server.send(200, "text/html", html);
 }
 
