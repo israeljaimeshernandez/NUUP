@@ -1,3 +1,4 @@
+// 03 - Corrección: reiniciar el portal WiFi con cada pulsación larga, listar/borrar dispositivos y mostrar redes cercanas en el portal
 // 02 - Corrección: validar y limpiar UserID corrupto en EEPROM y activar modo AP con botón WiFi de 1s mostrando icono y reinicio tras conexión
 //Bersion BLE
 
@@ -148,6 +149,8 @@ void handleRoot();
 void handleSaveCredentials();
 void handleDeleteNetwork();
 void handleSelectNetwork();
+void handleDeleteDevice();
+void reiniciarConfiguracionWiFi();
 void saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
 void attemptReconnectToAllNetworks();
@@ -974,20 +977,16 @@ void manejarBotonWifi() {
     wifiButtonPressStart = millis();
   }
 
-  if (!presionado && wifiButtonPressed && !wifiConfigInProgress) {
+  if (!presionado && wifiButtonPressed) {
     wifiButtonPressed = false;
     wifiButtonPressStart = 0;
   }
 
-  if (wifiButtonPressed && !wifiConfigInProgress && (millis() - wifiButtonPressStart >= TIEMPO_BOTON)) {
-    Serial.println("Presionando boton WiFi - activando modo AP...");
-    wifiConfigInProgress = true;
+  if (wifiButtonPressed && (millis() - wifiButtonPressStart >= TIEMPO_BOTON)) {
+    Serial.println("Presionando boton WiFi - reiniciando modo AP...");
     wifiButtonPressed = false;
-    iniciarAnimacionWifi();
-    mostrarConexionWifi();
-    startAPMode();
-    una_APmode = false;
-    forceAPMode = true;
+    wifiButtonPressStart = 0;
+    reiniciarConfiguracionWiFi();
   }
 }
 
@@ -995,15 +994,36 @@ void manejarBotonWifi() {
 
 // Implementación de funciones
 
+void reiniciarConfiguracionWiFi() {
+  mostrarMensajeConexion = false;
+  inicioMensajeConexion = 0;
+  conexionExitosa = false;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  iniciarAnimacionWifi();
+  mostrarConexionWifi();
+  startAPMode();
+  una_APmode = false;
+}
+
 void startAPMode() {
-  WiFi.mode(WIFI_AP);
+  dnsServer.stop();
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASS);
   dnsServer.start(53, "*", WiFi.softAPIP());
-  
+
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  mostrarMensajeConexion = false;
+
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
   server.on("/delete", HTTP_POST, handleDeleteNetwork);
   server.on("/select", HTTP_POST, handleSelectNetwork);
+  server.on("/delete_device", HTTP_POST, handleDeleteDevice);
   server.on("/setid", HTTP_POST, handleSetID);  // 👉 Aquí se agrega la ruta nueva
   server.onNotFound(handleRoot);
   server.begin();
@@ -1111,7 +1131,7 @@ void handleRoot() {
     return; // Salir de la función después de enviar esta página
   }
 
-  
+
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
@@ -1122,6 +1142,71 @@ void handleRoot() {
       networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
       networksList += "</div>";
     }
+  }
+
+  String scannedNetworks = "";
+  int networkCount = WiFi.scanNetworks();
+
+  if (networkCount > 0) {
+    int limitedCount = networkCount;
+    const int MAX_SCAN_RESULTS = 20;
+    if (limitedCount > MAX_SCAN_RESULTS) {
+      limitedCount = MAX_SCAN_RESULTS;
+    }
+
+    int *indices = new int[limitedCount];
+    for (int i = 0; i < limitedCount; i++) {
+      indices[i] = i;
+    }
+
+    for (int i = 0; i < limitedCount - 1; i++) {
+      for (int j = i + 1; j < limitedCount; j++) {
+        if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
+          int temp = indices[i];
+          indices[i] = indices[j];
+          indices[j] = temp;
+        }
+      }
+    }
+
+    for (int i = 0; i < limitedCount; i++) {
+      int idx = indices[i];
+      String ssid = WiFi.SSID(idx);
+      int rssi = WiFi.RSSI(idx);
+
+      scannedNetworks += "<div class='network-item'>";
+      scannedNetworks += "<label>" + ssid + "</label>";
+      scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
+      scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\">Usar</button>";
+      scannedNetworks += "</div>";
+    }
+
+    delete[] indices;
+  } else {
+    scannedNetworks = "<p>No se encontraron redes cercanas. Intenta nuevamente.</p>";
+  }
+
+  String devicesList = "";
+  int deviceCount = 0;
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    String mac = String(configDispositivos[i].mac);
+    mac.trim();
+    if (mac.length() > 0) {
+      deviceCount++;
+      String nombre = String(configDispositivos[i].nombre);
+      nombre.trim();
+      if (nombre.length() == 0) {
+        nombre = "Dispositivo";
+      }
+      devicesList += "<div class='network-item device-item'>";
+      devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
+      devicesList += "<button type='button' onclick=\"deleteDevice('" + mac + "')\">Eliminar</button>";
+      devicesList += "</div>";
+    }
+  }
+
+  if (deviceCount == 0) {
+    devicesList = "<p>No hay dispositivos dados de alta.</p>";
   }
 
 
@@ -1220,12 +1305,32 @@ idSection += "</form><hr>";
       flex-grow: 1;
       margin-left: 10px;
     }
+    .network-item .signal {
+      margin-left: 10px;
+      margin-right: 10px;
+      font-size: 14px;
+    }
     .network-item button {
       padding: 8px 12px;
       background-color: #ff3333;
     }
     .network-item button:hover {
       background-color: #cc0000;
+    }
+    .device-item {
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .device-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .section-title {
+      margin-top: 25px;
+      margin-bottom: 10px;
+      font-size: 18px;
+      color: #FFD700;
     }
     ::placeholder {
       color: #888;
@@ -1244,6 +1349,27 @@ idSection += "</form><hr>";
         });
       }
     }
+
+    function deleteDevice(mac) {
+      if(confirm('¿Eliminar este dispositivo?')) {
+        fetch('/delete_device', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'mac=' + encodeURIComponent(mac)
+        }).then(response => {
+          if(response.ok) location.reload();
+        });
+      }
+    }
+
+    function prefillNetwork(ssid) {
+      const ssidInput = document.getElementById('ssidInput');
+      const passInput = document.getElementById('passInput');
+      if (ssidInput && passInput) {
+        ssidInput.value = ssid;
+        passInput.focus();
+      }
+    }
   </script>
 </head>
 <body>
@@ -1252,19 +1378,31 @@ idSection += "</form><hr>";
     <h1>Configurar WiFi</h1>
     )=====" + idSection + R"=====(   <!-- ← AÑADIDO AQUÍ -->
     <div class="network-list">
-      <h3>Redes guardadas:</h3>
+      <h3 class="section-title">Redes guardadas:</h3>
       <form id="networksForm">
         )=====" + networksList + R"=====(
         <button type="button" onclick="submitSelection()">Conectar a red seleccionada</button>
       </form>
     </div>
-    
-    <h3>Agregar nueva red:</h3>
+
+    <div class="network-list">
+      <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
+      <p>Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
+      )=====" + scannedNetworks + R"=====(
+    </div>
+
+    <h3 class="section-title">Agregar nueva red:</h3>
+    <p>Por seguridad el navegador no puede leer la red/contraseña de tu teléfono. Selecciona una red de la lista o escríbela aquí.</p>
     <form action='/save' method='POST'>
-      <input type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
-      <input type='password' name='pass' placeholder='Contraseña' required>
+      <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
+      <input id='passInput' type='password' name='pass' placeholder='Contraseña' required>
       <button type='submit'>Guardar Configuración</button>
     </form>
+
+    <div class="network-list">
+      <h3 class="section-title">Dispositivos registrados:</h3>
+      )=====" + devicesList + R"=====(
+    </div>
   </div>
   
   <script>
@@ -1360,6 +1498,27 @@ void handleDeleteNetwork() {
     }
   } else {
     server.send(400, "text/plain", "Falta parámetro index");
+  }
+}
+
+void handleDeleteDevice() {
+  if (server.hasArg("mac")) {
+    String mac = server.arg("mac");
+    mac.trim();
+
+    if (mac.length() == 0) {
+      server.send(400, "text/plain", "MAC vacía");
+      return;
+    }
+
+    bool eliminado = eliminarDispositivo(mac);
+    if (eliminado) {
+      server.send(200, "text/plain", "OK");
+    } else {
+      server.send(404, "text/plain", "Dispositivo no encontrado");
+    }
+  } else {
+    server.send(400, "text/plain", "Falta parámetro mac");
   }
 }
 
