@@ -1,3 +1,4 @@
+// 15 - Corrección: mantener portal abierto hasta que el usuario termine; mostrar ID guardado y reiniciar al finalizar
 // 14 - Corrección: mantener pantalla fija y dedicar todo el ciclo al portal mientras el usuario navega hasta cerrar/manual
 // 13 - Corrección: congelar animación WiFi y dedicar el ciclo solo al portal cuando el usuario ya abrió la página
 // 12 - Corrección: dedicar ciclo a portal WiFi cuando está activo y permitir scroll completo en la página
@@ -147,6 +148,8 @@ bool apMode = false;
 bool forceAPMode = false;
 bool portalEnUso = false;           // Se activa al servir la página para congelar la animación
 bool portalPantallaFija = false;    // Evita reescribir la pantalla en cada loop
+bool reinicioSolicitado = false;    // Permite reiniciar tras finalizar configuración
+unsigned long reinicioProgramado = 0;
 //intento de reconectar
 unsigned long lastReconnectAttempt = 0;
 const unsigned long reconnectInterval = 2 * 60 * 1000; ; // 5 minutos
@@ -167,6 +170,7 @@ void startAPMode();
 void registrarRutasPortal();
 void handleRoot();
 void handleSaveCredentials();
+void handleFinalizeConfig();
 void handleDeleteNetwork();
 void handleSelectNetwork();
 void handleDeleteDevice();
@@ -1030,6 +1034,8 @@ void reiniciarConfiguracionWiFi() {
   wifiConfigInProgress = true;
   portalEnUso = false;
   portalPantallaFija = false;
+  reinicioSolicitado = false;
+  reinicioProgramado = 0;
   forceAPMode = true;
   apMode = true;
   iniciarAnimacionWifi();
@@ -1044,6 +1050,7 @@ void detenerConfiguracionWiFi() {
   wifiConfigInProgress = false;
   portalEnUso = false;
   portalPantallaFija = false;
+  reinicioSolicitado = false;
   forceAPMode = false;
   apMode = false;
   detenerAnimacionWifi();
@@ -1060,6 +1067,7 @@ void detenerConfiguracionWiFi() {
 void registrarRutasPortal() {
   server.on("/", HTTP_ANY, handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
+  server.on("/finalizar", HTTP_POST, handleFinalizeConfig);
   server.on("/delete", HTTP_POST, handleDeleteNetwork);
   server.on("/select", HTTP_POST, handleSelectNetwork);
   server.on("/delete_device", HTTP_POST, handleDeleteDevice);
@@ -1090,6 +1098,8 @@ void startAPMode() {
   forceAPMode = true;
   portalEnUso = false;
   portalPantallaFija = false;
+  reinicioSolicitado = false;
+  reinicioProgramado = 0;
   mostrarMensajeConexion = false;
 
   registrarRutasPortal();
@@ -1264,11 +1274,12 @@ void handleRoot() {
   }
 
 
-String currentID = userID.length() > 0 ? userID : "Sin ID configurado";
+String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
+  String idValueAttr = userID.length() > 0 ? " value='" + userID + "'" : "";
   String idSection = "<h3>ID de usuario actual:</h3>";
-  idSection += "<p><strong>" + currentID + "</strong></p>";
+  idSection += "<p><strong>" + currentIDDisplay + "</strong></p>";
   idSection += "<form action='/setid' method='POST'>";
-  idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required>";
+  idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required" + idValueAttr + ">";
   idSection += "<button type='submit'>Actualizar ID</button>";
   idSection += "</form><hr>";
 
@@ -1495,6 +1506,18 @@ String currentID = userID.length() > 0 ? userID : "Sin ID configurado";
   html += devicesList;
   html += R"=====(
     </div>
+
+    <div class="network-list">
+      <h3 class="section-title">Finalizar configuración:</h3>
+      <p>Al presionar se cerrará la página, se guardarán los datos y el equipo reiniciará al modo normal.</p>
+      <form action='/finalizar' method='POST'>
+        <button type='submit'
+)=====";
+  html += disableAttr;
+  html += R"=====(
+>Configurar y reiniciar</button>
+      </form>
+    </div>
   </div>
 
   <script>
@@ -1578,6 +1601,34 @@ void handleSaveCredentials() {
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
+}
+
+void handleFinalizeConfig() {
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Configura el User ID antes de finalizar");
+    return;
+  }
+
+  portalEnUso = true;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
+  portalPantallaFija = true;
+
+  String redActual = WiFi.SSID();
+  if (redActual.length() == 0 && ultimaRedConfigurada.length() > 0) {
+    redActual = ultimaRedConfigurada;
+  }
+
+  bool conectada = WiFi.status() == WL_CONNECTED || conexionExitosa;
+  mostrarMensajeRedConectada(redActual.length() > 0 ? redActual : "Sin red", conectada);
+
+  server.send(200, "text/html",
+              "<html><body><h2>Configuración finalizada</h2><p>El equipo se reiniciará y cerrará el portal.</p><script>setTimeout(() => { window.close(); }, 1500);</script></body></html>");
+
+  detenerConfiguracionWiFi();
+  reinicioSolicitado = true;
+  reinicioProgramado = millis() + 3000;
 }
 
 void handleDeleteNetwork() {
@@ -3279,6 +3330,10 @@ Serial.println("Setup completado");
 void loop() {
 
   manejarBotonWifi();
+
+  if (reinicioSolicitado && millis() >= reinicioProgramado) {
+    ESP.restart();
+  }
 
   // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitar que se cierre
   bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
