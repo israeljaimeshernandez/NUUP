@@ -1,4 +1,4 @@
-// Corrección: validar y limpiar UserID corrupto en EEPROM para evitar reinicios (Guru Meditation)
+// 02 - Corrección: validar y limpiar UserID corrupto en EEPROM y activar modo AP con botón WiFi de 1s mostrando icono y reinicio tras conexión
 //Bersion BLE
 
 #include <SPI.h>
@@ -346,18 +346,26 @@ void verificarEstadoConfigDispositivos();
 void debugEstadoDispositivos();
 
 void debugNombreProblema();
+void manejarBotonWifi();
+void mostrarMensajeRedConectada(const String &ssid, bool conectado);
+void dibujarMensajeConexion();
 
 // --- Pines para los botones---
-#define BOTON_S 33  
-#define BOTON_W 4  
-#define TIEMPO_BOTON 3000
+#define BOTON_S 33
+#define BOTON_W 4
+#define TIEMPO_BOTON 1000
 
 bool boton_s=false;
-bool boton_w=false;
 unsigned long tiempoInicioPresion = 0;
+bool wifiButtonPressed = false;
+unsigned long wifiButtonPressStart = 0;
+bool wifiConfigInProgress = false;
+bool mostrarMensajeConexion = false;
+unsigned long inicioMensajeConexion = 0;
+String ultimaRedConfigurada = "";
+bool conexionExitosa = false;
 
 //void manejarBoton_S();
-void manejarBoton_W();
 
 
 // Variables BLE
@@ -958,54 +966,29 @@ void testWiFiConnection() {
   Serial.println("=== FIN PRUEBA MANUAL ===");
 }
 
-void manejarBoton_W() {
-  tiempoInicioPresion = millis();
-  while(!digitalRead(BOTON_W)){
-  if (millis() - tiempoInicioPresion >= TIEMPO_BOTON) {
-  Serial.println("Presionando boton Wiffi  dispositivo..");  // Para detener después de 10 segundos (en producción lo controlarías con el estado real del WiFi)
+void manejarBotonWifi() {
+  bool presionado = digitalRead(BOTON_W) == LOW;
 
-    // Animación de conexión WiFi
-    if (millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
-      frameWifi++;
-      ultimoCambioWifi = millis();
-      
-      // Reiniciar animación cuando llega al final
-      if (frameWifi > 3) {
-        frameWifi = 0;
-      }
-    }
+  if (presionado && !wifiButtonPressed) {
+    wifiButtonPressed = true;
+    wifiButtonPressStart = millis();
+  }
+
+  if (!presionado && wifiButtonPressed && !wifiConfigInProgress) {
+    wifiButtonPressed = false;
+    wifiButtonPressStart = 0;
+  }
+
+  if (wifiButtonPressed && !wifiConfigInProgress && (millis() - wifiButtonPressStart >= TIEMPO_BOTON)) {
+    Serial.println("Presionando boton WiFi - activando modo AP...");
+    wifiConfigInProgress = true;
+    wifiButtonPressed = false;
+    iniciarAnimacionWifi();
     mostrarConexionWifi();
- boton_w=true;
-}
-
- // 2. Si estamos en modo AP, manejar eso y salir
-if (boton_w) { //mientras no exista comando en pantalla
-    if(una_APmode){
-  startAPMode();
-una_APmode = false;
-forceAPMode = true;
-}
+    startAPMode();
+    una_APmode = false;
+    forceAPMode = true;
   }
-
-if (forceAPMode) {
-    dnsServer.processNextRequest();
-    server.handleClient();
-    static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 300) {
-        lastBlink = millis();
-    }
-    return;
-  }
-
-    
- }
-
-if(boton_w){
- boton_w=false;
-  detenerAnimacionWifi();
-  delay(3000);}
-
-
 }
 
 
@@ -1028,7 +1011,19 @@ void startAPMode() {
   Serial.println("\nModo AP activado");
   Serial.print("SSID: "); Serial.println(AP_SSID);
   Serial.print("IP: "); Serial.println(WiFi.softAPIP());
-  
+
+}
+
+void mostrarMensajeRedConectada(const String &ssid, bool conectado) {
+  ultimaRedConfigurada = ssid;
+  conexionExitosa = conectado;
+  inicioMensajeConexion = millis();
+  mostrarMensajeConexion = true;
+  animandoWifi = true;
+  frameWifi = 0;
+  ultimoCambioWifi = millis();
+  Serial.printf("\n📶 %s a la red '%s'\n", conectado ? "Conectado" : "Fallo de conexión", ssid.c_str());
+  dibujarMensajeConexion();
 }
 
 String getCheckedStatus(bool active) {
@@ -1328,11 +1323,24 @@ void handleSaveCredentials() {
         savedNetworks[i].active = false;
       }
     }
-    
+
     saveNetworksToEEPROM();
-    server.send(200, "text/html", "<html><body><h2>Credenciales guardadas! Reconectando...</h2></body></html>");
-    delay(1000);
-    ESP.restart();
+    server.send(200, "text/html", "<html><body><h2>Credenciales guardadas! Conectando...</h2></body></html>");
+
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    unsigned long inicioConexion = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - inicioConexion < WIFI_TIMEOUT) {
+      delay(200);
+    }
+
+    bool conectado = WiFi.status() == WL_CONNECTED;
+    forceAPMode = false;
+    wifiConfigInProgress = false;
+    mostrarMensajeRedConectada(ssid, conectado);
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
@@ -2417,6 +2425,35 @@ void detenerAnimacionWifi() {
   Serial.println("Animación WiFi completada");
 }
 
+void dibujarMensajeConexion() {
+  display.clearDisplay();
+
+  int centroX = SCREEN_WIDTH / 2;
+  int centroY = 20;
+
+  if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+    frameWifi = (frameWifi + 1) % 4;
+    ultimoCambioWifi = millis();
+  }
+
+  dibujarWifiAnimado(centroX, centroY, frameWifi);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(conexionExitosa ? "WiFi conectado" : "Error WiFi");
+
+  display.setCursor(0, 45);
+  if (ultimaRedConfigurada.length() > 0) {
+    display.print(conexionExitosa ? "Red: " : "Red fallida: ");
+    display.print(ultimaRedConfigurada);
+  } else {
+    display.print("Esperando red...");
+  }
+
+  display.display();
+}
+
 // Función para conectar WiFi (desde otras partes del código)
 void conectarWifi() {
   iniciarAnimacionWifi();
@@ -2936,6 +2973,16 @@ Serial.println("Setup completado");
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
 
+  manejarBotonWifi();
+
+  if (mostrarMensajeConexion) {
+    dibujarMensajeConexion();
+    if (millis() - inicioMensajeConexion >= 5000) {
+      ESP.restart();
+    }
+    return;
+  }
+
 // Debug periódico de nombres
 static unsigned long lastDebugNombres = 0;
 if (millis() - lastDebugNombres > 15000) {
@@ -3009,17 +3056,14 @@ testLoRaPeriodico();
     }
 
 
-    // 3. Comportamiento en recepción continua 
+    // 3. Comportamiento en recepción continua
     // 4. Si estamos en modo AP, manejar eso y salir
-    if (boton_w) { //mientras no exista comando en pantalla
-        if(una_APmode){
-            startAPMode();
-            una_APmode = false;
-            forceAPMode = true;
-        }
-    }
-
     if (forceAPMode) {
+        if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
+            frameWifi = (frameWifi + 1) % 4;
+            ultimoCambioWifi = millis();
+        }
+        mostrarConexionWifi();
         dnsServer.processNextRequest();
         server.handleClient();
         return;
