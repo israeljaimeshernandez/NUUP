@@ -1,3 +1,4 @@
+// 04 - Corrección: iniciar portal WiFi si falta ID o conexión, proteger OLED antes de inicializarla y mantener reinicios seguros del AP
 // 03 - Corrección: reiniciar el portal WiFi con cada pulsación larga, listar/borrar dispositivos y mostrar redes cercanas en el portal
 // 02 - Corrección: validar y limpiar UserID corrupto en EEPROM y activar modo AP con botón WiFi de 1s mostrando icono y reinicio tras conexión
 //Bersion BLE
@@ -203,6 +204,7 @@ bool una_APmode=true;
 #define OLED_RESET -1
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool displayReady = false;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -2539,6 +2541,9 @@ void dibujarWifiAnimado(int centroX, int centroY, int frame) {
 
 // Función para mostrar conexión WiFi
 void mostrarConexionWifi() {
+  if (!displayReady) {
+    return;
+  }
   display.clearDisplay();
   
   // Centro de la pantalla
@@ -2585,6 +2590,9 @@ void detenerAnimacionWifi() {
 }
 
 void dibujarMensajeConexion() {
+  if (!displayReady) {
+    return;
+  }
   display.clearDisplay();
 
   int centroX = SCREEN_WIDTH / 2;
@@ -2957,6 +2965,16 @@ void setup() {
   Serial.begin(115200);
     delay(1000);
 
+  // Inicializar OLED lo antes posible para evitar llamadas sobre puntero nulo
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("Fallo inicializacion OLED");
+    while(true);
+  }
+
+  displayReady = true;
+  Serial.println("OLED inicializado correctamente");
+  display.setTextColor(SSD1306_WHITE);
+
     // 11. Inicializar BLE
     iniciarBLE();
     
@@ -3094,13 +3112,18 @@ delay(1000);
   attemptReconnectToAllNetworks();     
 }
 
-// 9. Configuración MQTT con parámetros mejorados
+ // 9. Configuración MQTT con parámetros mejorados
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   client.setBufferSize(512);  // Buffer aumentado para mensajes grandes
   client.setKeepAlive(60);    // Keepalive de 60 segundos
   client.setSocketTimeout(30); // Timeout de 30 segundos
 delay(1000);
+
+ // Si no hay ID configurado o seguimos sin WiFi, lanzar el portal de inmediato
+ if (una_APmode && (userID.isEmpty() || WiFi.status() != WL_CONNECTED)) {
+   reiniciarConfiguracionWiFi();
+ }
 
 // 10. Alta de monitor
 mqttConfirmed = loadMQTTConfirmationState(); // Cargar estado persistente
@@ -3113,18 +3136,9 @@ if(mqttConfirmed) {
 
 Serial.println("Setup completado");
 
-  //Configuracion TFT   
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Fallo inicializacion OLED");
-    while(true);
-  }
-  
-  Serial.println("OLED inicializado correctamente");
-  display.setTextColor(SSD1306_WHITE);
-
 //testWiFiConnection();
 
- 
+
 }
 
 
