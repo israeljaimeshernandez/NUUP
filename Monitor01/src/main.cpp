@@ -1,3 +1,4 @@
+// 31 - Corrección: mantener el portal abierto sin reinicios mientras se navega y simplificar refrescos
 // 30 - Corrección: evitar reinicios mientras el portal está activo para que la página no se cierre sola
 // 29 - Corrección: mantener el portal abierto tras refrescar redes evitando cierres por recarga temprana
 // 28 - Corrección: evitar reinicios inmediatos al seleccionar una red guardada para que el portal no se cierre
@@ -394,7 +395,6 @@ void debugNombreProblema();
 void manejarBotonWifi();
 void mostrarMensajeRedConectada(const String &ssid, bool conectado);
 void dibujarMensajeConexion();
-void handleRescanNetworks();
 String escapeForJS(const String &input);
 
 // --- Pines para los botones---
@@ -1084,7 +1084,6 @@ void detenerConfiguracionWiFi() {
 void registrarRutasPortal() {
   server.on("/", HTTP_ANY, handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
-  server.on("/rescan", HTTP_POST, handleRescanNetworks);
   server.on("/finalizar", HTTP_POST, handleFinalizeConfig);
   server.on("/delete", HTTP_POST, handleDeleteNetwork);
   server.on("/select", HTTP_POST, handleSelectNetwork);
@@ -1266,7 +1265,7 @@ void handleRoot() {
 
   // Actualizar escaneo en segundo plano para no bloquear la carga
   procesarEscaneoRedes();
-  if (!scanInProgress && (millis() - lastNetworkScan > SCAN_INTERVAL_MS || scannedNetworksCache.isEmpty())) {
+  if (!scanInProgress && scannedNetworksCache.isEmpty()) {
     iniciarEscaneoRedes();
   }
 
@@ -1497,43 +1496,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
     }
 
-    function refreshNetworks() {
-      const scanStatus = document.getElementById('scanStatus');
-      const refreshButton = document.getElementById('refreshButton');
-
-      if (scanStatus) {
-        scanStatus.textContent = 'Escaneando redes...';
-      }
-
-      if (refreshButton) {
-        refreshButton.disabled = true;
-        refreshButton.textContent = 'Actualizando...';
-      }
-
-      fetch('/rescan', { method: 'POST' })
-        .then(() => {
-          if (scanStatus) {
-            scanStatus.textContent = 'Reescaneando redes, recargando en breve...';
-          }
-          setTimeout(() => {
-            if (refreshButton) {
-              refreshButton.disabled = false;
-              refreshButton.textContent = 'Refrescar redes';
-            }
-            window.location.reload();
-          }, 4500);
-        })
-        .catch(() => {
-          if (scanStatus) {
-            scanStatus.textContent = 'No se pudo refrescar, intenta de nuevo.';
-          }
-          if (refreshButton) {
-            refreshButton.disabled = false;
-            refreshButton.textContent = 'Refrescar redes';
-          }
-        });
-    }
-
   </script>
 </head>
 <body>
@@ -1554,8 +1516,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
     <div class="network-list">
       <h3 class="section-title">Redes cercanas:</h3>
-      <p id="scanStatus"></p>
-      <button id="refreshButton" type="button" onclick="refreshNetworks()">Refrescar redes</button>
 )=====";
   html += scannedNetworks;
   html += R"=====(
@@ -1650,6 +1610,8 @@ void handleSaveCredentials() {
     forceAPMode = false;
     wifiConfigInProgress = false;
     mostrarMensajeRedConectada(ssid, conectado);
+    portalEnUso = false;
+    portalPantallaFija = false;
     reinicioSolicitado = true;
     reinicioProgramado = millis() + 5000;
   } else {
@@ -1752,10 +1714,11 @@ void handleFinalizeConfig() {
               "<html><body><h2>Configuración finalizada</h2><p>El equipo aplicará los cambios y reiniciará en unos segundos. Puedes dejar esta pestaña abierta hasta que el equipo vuelva a estar en línea.</p></body></html>");
 
   // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
-  portalEnUso = true;
-  portalPantallaFija = true;
+  portalEnUso = false;
+  portalPantallaFija = false;
   apMode = true;
   forceAPMode = true;
+  wifiConfigInProgress = false;
 
   reinicioSolicitado = true;
   reinicioProgramado = millis() + 5000;
@@ -1831,19 +1794,6 @@ void handleSelectNetwork() {
   }
 }
 
-void handleRescanNetworks() {
-  // Mantener el portal activo durante el reescaneo para evitar cierres por recarga
-  portalEnUso = true;
-  wifiConfigInProgress = true;
-  forceAPMode = true;
-  apMode = true;
-  reinicioSolicitado = false;
-  reinicioProgramado = 0;
-
-  scannedNetworksCache = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
-  iniciarEscaneoRedes();
-  server.send(200, "text/plain", "Escaneo reiniciado");
-}
 
 void handleSetID() {
   if (server.hasArg("newid")) {
@@ -2933,15 +2883,19 @@ void dibujarMensajeConexion() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.print(conexionExitosa ? "WiFi conectado" : "Error WiFi");
+  display.print(conexionExitosa ? "Configuración guardada" : "Error WiFi");
 
-  display.setCursor(0, 45);
+  display.setCursor(0, 20);
+  display.print("Red: ");
   if (ultimaRedConfigurada.length() > 0) {
-    display.print(conexionExitosa ? "Red: " : "Red fallida: ");
     display.print(ultimaRedConfigurada);
   } else {
-    display.print("Esperando red...");
+    display.print("(sin red)");
   }
+
+  display.setCursor(0, 38);
+  display.print("User ID: ");
+  display.print(userID.length() > 0 ? userID : "(vacío)");
 
   display.display();
 }
@@ -3473,31 +3427,16 @@ void loop() {
 
   manejarBotonWifi();
 
-  if (reinicioSolicitado && millis() >= reinicioProgramado) {
-    // Permitir el reinicio incluso si el portal sigue activo, para no dejar la pestaña sin respuesta
-    forceAPMode = false;
-    wifiConfigInProgress = false;
-    ESP.restart();
-  }
-
   // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitamos reinicios
   bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
   if (apActivo) {
-    // Cancelar cualquier reinicio programado mientras el usuario navega en el portal
-    if (reinicioSolicitado) {
-      reinicioSolicitado = false;
-      reinicioProgramado = 0;
-    }
-
     dnsServer.processNextRequest();
     // Atender varias peticiones HTTP por ciclo para mantener la página siempre disponible
     for (int i = 0; i < 3; i++) {
       server.handleClient();
     }
     procesarEscaneoRedes();
-    if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
-      iniciarEscaneoRedes();
-    }
+    // Mantener la página fija: sin reescaneos automáticos que puedan interrumpir la sesión
     // Si el usuario ya abrió la página evitamos reactivar animaciones agresivas
     if (!portalEnUso) {
       if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
@@ -3506,7 +3445,18 @@ void loop() {
       }
       mostrarConexionWifi();
     }
+    if (reinicioSolicitado && !portalEnUso && millis() >= reinicioProgramado) {
+      dnsServer.stop();
+      server.stop();
+      ESP.restart();
+    }
     return;
+  }
+
+  if (reinicioSolicitado && millis() >= reinicioProgramado) {
+    forceAPMode = false;
+    wifiConfigInProgress = false;
+    ESP.restart();
   }
 
   if (mostrarMensajeConexion) {
