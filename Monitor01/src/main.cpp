@@ -1,3 +1,4 @@
+// 19 - Corrección: permitir que el reescaneo WiFi concluya y refresque la lista en el portal
 // 18 - Actualización: se agrega la leyenda inicial de actualizaciones con su consecutivo
 // 17 - Corrección: simplificar el portal mostrando el User ID guardado y permitir usar/editar redes sin botones extra
 // 16 - Corrección: permitir refrescar/editar redes, persistir UserID visible y reiniciar solo cuando cambian redes
@@ -1228,12 +1229,6 @@ void handleRoot() {
   if (animandoWifi) {
     detenerAnimacionWifi();
   }
-  // Evitar nuevas exploraciones y mantener la pantalla fija mientras el usuario navega
-  if (scanInProgress) {
-    WiFi.scanDelete();
-    scanInProgress = false;
-  }
-  lastNetworkScan = millis();
   if (!portalPantallaFija) {
     mostrarConexionWifi();
     portalPantallaFija = true;
@@ -1489,16 +1484,19 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
     function refreshNetworks() {
       const scanStatus = document.getElementById('scanStatus');
+      const refreshButton = document.getElementById('refreshButton');
+
       if (scanStatus) {
         scanStatus.textContent = 'Escaneando redes...';
       }
-      fetch('/rescan', {
-        method: 'POST'
-      }).then(() => {
-        setTimeout(() => window.location.reload(), 1200);
-      }).catch(() => {
-        setTimeout(() => window.location.reload(), 1200);
-      });
+
+      if (refreshButton) {
+        refreshButton.disabled = true;
+        refreshButton.textContent = 'Actualizando...';
+      }
+
+      fetch('/rescan', { method: 'POST' })
+        .finally(() => setTimeout(() => window.location.reload(), 2000));
     }
 
   </script>
@@ -1523,7 +1521,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <div class="network-list">
       <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
       <p id="scanStatus">Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
-      <button type="button" onclick="refreshNetworks()">Refrescar redes</button>
+      <button id="refreshButton" type="button" onclick="refreshNetworks()">Refrescar redes</button>
 )=====";
   html += scannedNetworks;
   html += R"=====(
