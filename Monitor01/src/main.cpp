@@ -1,3 +1,4 @@
+// 23 - Corrección: consolidar el escape de comillas en botones HTML para compilar sin errores
 // 22 - Corrección: escapar atributos onclick con comillas y evitar errores de compilación en botones del portal
 // 21 - Corrección: escapar las comillas de botones HTML para compilar sin errores y mantener las acciones del portal
 // 20 - Corrección: procesar los escaneos WiFi incluso con el portal abierto para que el refresco muestre redes reales
@@ -1209,7 +1210,9 @@ void procesarEscaneoRedes() {
     scannedNetworks += "<div class='network-item'>";
     scannedNetworks += "<label>" + ssid + "</label>";
     scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
-    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + safeSsid + "')\"">Usar</button>";
+    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('";
+    scannedNetworks += safeSsid;
+    scannedNetworks += "')\"">Usar</button>";
     scannedNetworks += "</div>";
   }
 
@@ -1278,7 +1281,9 @@ void handleRoot() {
       }
       devicesList += "<div class='network-item device-item'>";
       devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
-      devicesList += "<button type='button' onclick=\"deleteDevice('" + escapeForJS(mac) + "')\"">Eliminar</button>";
+      devicesList += "<button type='button' onclick=\"deleteDevice('";
+      devicesList += escapeForJS(mac);
+      devicesList += "')\"">Eliminar</button>";
       devicesList += "</div>";
     }
   }
