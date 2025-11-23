@@ -1,3 +1,33 @@
+// 47 - Corrección: mostrar en pantalla SSID/contraseña/ID final por 5s antes de reiniciar
+// 46 - Corrección: limpiar valor de contraseña mostrado, apilar botones Modificar/Borrar y resaltar contraseñas en amarillo
+// 45 - Corrección: permitir finalizar sin SSID al borrar redes, limpiar valores vacíos y soportar ñ en contraseñas
+// 44 - Corrección: portal vacío al abrir, renombrar/editar redes sin duplicar y borrar redes persiste en EEPROM
+// 43 - Corrección: reparar el HTML del portal para que no muestre artefactos de las cadenas crudas
+// 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
+// 40 - Corrección: mantener SSID editable al abrir, bloquearlo al elegir "Usar" y guardar SSID+pass en EEPROM
+// 41 - Corrección: resaltar la red elegida, mover la selección a un indicador compacto y garantizar que "Usar" llene el SSID
+// 42 - Corrección: simplificar la selección quitando el chip, eliminar diagonales invertidas y mostrar/editar SSID y contraseña
+// 38 - Corrección: validar guardado de red en EEPROM al finalizar configuración y abortar si falla
+// 37 - Corrección: fijar mensaje final 3s, reinicio automático y SSID seleccionado visible/guardado en portal
+// 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
+// 35 - Corrección: evitar bloqueos al guardar, resaltar red elegida y asegurar persistencia de red en EEPROM
+// 34 - Corrección: fijar mensaje en display antes de reiniciar, persistir credenciales en EEPROM y reflejar red seleccionada al usarla
+// 33 - Corrección: portal muestra UserID y red guardados, formulario centrado en contraseña y mensaje fijo antes de reiniciar
+// 32 - Corrección: mantener portal estático, limpiar leyendas y mostrar credenciales en pantalla antes de reiniciar
+// 31 - Corrección: desactivar reescaneos manuales para mantener la página fija mientras se configura
+// 30 - Corrección: cancelar reinicios mientras el portal está activo para evitar cierres inesperados
+// 29 - Corrección: mantener el portal abierto tras refrescar redes evitando cierres por recarga temprana
+// 28 - Corrección: evitar reinicios inmediatos al seleccionar una red guardada para que el portal no se cierre
+// 27 - Corrección: mantener el portal abierto al finalizar sin cerrar la pestaña, evitando errores al usuario
+// 26 - Corrección: retirar leyendas de relleno en listas de redes y títulos para simplificar la interfaz
+// 25 - Corrección: mantener el portal abierto cancelando reinicios mientras el usuario configura
+// 24 - Corrección: reescribir botones HTML con escape doble para compilar sin errores
+// 23 - Corrección: consolidar el escape de comillas en botones HTML para compilar sin errores
+// 22 - Corrección: escapar atributos onclick con comillas y evitar errores de compilación en botones del portal
+// 21 - Corrección: escapar las comillas de botones HTML para compilar sin errores y mantener las acciones del portal
+// 20 - Corrección: procesar los escaneos WiFi incluso con el portal abierto para que el refresco muestre redes reales
+// 19 - Corrección: permitir que el reescaneo WiFi concluya y refresque la lista en el portal
+// 18 - Actualización: se agrega la leyenda inicial de actualizaciones con su consecutivo
 // 17 - Corrección: simplificar el portal mostrando el User ID guardado y permitir usar/editar redes sin botones extra
 // 16 - Corrección: permitir refrescar/editar redes, persistir UserID visible y reiniciar solo cuando cambian redes
 // 15 - Corrección: mantener portal abierto hasta que el usuario termine; mostrar ID guardado y reiniciar al finalizar
@@ -178,7 +208,7 @@ void handleSelectNetwork();
 void handleDeleteDevice();
 void reiniciarConfiguracionWiFi();
 void detenerConfiguracionWiFi();
-void saveNetworksToEEPROM();
+bool saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
 void attemptReconnectToAllNetworks();
 void handleSetID();
@@ -379,9 +409,8 @@ void debugEstadoDispositivos();
 
 void debugNombreProblema();
 void manejarBotonWifi();
-void mostrarMensajeRedConectada(const String &ssid, bool conectado);
+void mostrarMensajeRedConectada(const String &ssid, bool conectado, const String &password = "", unsigned long retrasoMs = 0, unsigned long duracionMs = 5000);
 void dibujarMensajeConexion();
-void handleRescanNetworks();
 String escapeForJS(const String &input);
 
 // --- Pines para los botones---
@@ -397,7 +426,10 @@ bool wifiConfigInProgress = false;
 bool mostrarMensajeConexion = false;
 unsigned long inicioMensajeConexion = 0;
 String ultimaRedConfigurada = "";
+String ultimaContrasenaConfigurada = "";
 bool conexionExitosa = false;
+unsigned long retrasoMensajeConexion = 0;
+unsigned long duracionMensajeConexion = 5000;
 
 //void manejarBoton_S();
 
@@ -1071,7 +1103,6 @@ void detenerConfiguracionWiFi() {
 void registrarRutasPortal() {
   server.on("/", HTTP_ANY, handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
-  server.on("/rescan", HTTP_POST, handleRescanNetworks);
   server.on("/finalizar", HTTP_POST, handleFinalizeConfig);
   server.on("/delete", HTTP_POST, handleDeleteNetwork);
   server.on("/select", HTTP_POST, handleSelectNetwork);
@@ -1129,16 +1160,22 @@ void startAPMode() {
 
 }
 
-void mostrarMensajeRedConectada(const String &ssid, bool conectado) {
+void mostrarMensajeRedConectada(const String &ssid, bool conectado, const String &password, unsigned long retrasoMs, unsigned long duracionMs) {
   ultimaRedConfigurada = ssid;
+  ultimaContrasenaConfigurada = password;
   conexionExitosa = conectado;
   inicioMensajeConexion = millis();
+  retrasoMensajeConexion = retrasoMs;
+  duracionMensajeConexion = duracionMs;
   mostrarMensajeConexion = true;
-  animandoWifi = true;
+  detenerAnimacionWifi();
+  animandoWifi = false;
   frameWifi = 0;
   ultimoCambioWifi = millis();
   Serial.printf("\n📶 %s a la red '%s'\n", conectado ? "Conectado" : "Fallo de conexión", ssid.c_str());
-  dibujarMensajeConexion();
+  if (retrasoMensajeConexion == 0) {
+    dibujarMensajeConexion();
+  }
 }
 
 String escapeForJS(const String &input) {
@@ -1148,6 +1185,16 @@ String escapeForJS(const String &input) {
   out.replace("\"", "\\\"");
   out.replace("\n", " ");
   out.replace("\r", " ");
+  return out;
+}
+
+String escapeForHTMLAttr(const String &input) {
+  String out = input;
+  out.replace("&", "&amp;");
+  out.replace("\"", "&quot;");
+  out.replace("'", "&#39;");
+  out.replace("<", "&lt;");
+  out.replace(">", "&gt;");
   return out;
 }
 
@@ -1199,11 +1246,12 @@ void procesarEscaneoRedes() {
     int idx = indices[i];
     String ssid = WiFi.SSID(idx);
     int rssi = WiFi.RSSI(idx);
+    String safeSsidAttr = escapeForHTMLAttr(ssid);
 
     scannedNetworks += "<div class='network-item'>";
     scannedNetworks += "<label>" + ssid + "</label>";
     scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
-    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\"" + disableAttr + ">Usar</button>";
+    scannedNetworks += "<button class='use-button' data-ssid='" + safeSsidAttr + "' type='button' onclick=\"prefillNetwork(this.dataset.ssid, this)\">Usar</button>";
     scannedNetworks += "</div>";
   }
 
@@ -1219,39 +1267,51 @@ String getCheckedStatus(bool active) {
 void handleRoot() {
 
   // Al servir la página, congela la animación y dedica el ciclo al portal
-  portalEnUso = true;
+  portalEnUso = !reinicioSolicitado;
   // Mantener bandera de configuración activa mientras el portal esté en uso
   wifiConfigInProgress = true;
   forceAPMode = true;
   apMode = true;
+  if (!reinicioSolicitado) {
+    reinicioProgramado = 0;
+  }
+  mostrarMensajeConexion = false;
   if (animandoWifi) {
     detenerAnimacionWifi();
   }
-  // Evitar nuevas exploraciones y mantener la pantalla fija mientras el usuario navega
-  if (scanInProgress) {
-    WiFi.scanDelete();
-    scanInProgress = false;
-  }
-  lastNetworkScan = millis();
   if (!portalPantallaFija) {
     mostrarConexionWifi();
     portalPantallaFija = true;
   }
 
-  bool idMissing = userID.isEmpty();
-  String disableAttr = idMissing ? " disabled" : "";
-  String disableMessage = idMissing ? "<div class='alert'>Debes capturar el User ID para guardar redes o modificar dispositivos.</div>" : "";
+  loadUserIDFromEEPROM();
+  loadNetworksFromEEPROM();
+
+  // Mantener el formulario vacío al cargar la página; se llenará al elegir “Modificar” o “Usar”
+  String selectedSsid = "";
+  String selectedPass = "";
+  String selectedSsidEscaped = escapeForHTMLAttr(selectedSsid);
+  String selectedSsidJs = escapeForJS(selectedSsid);
+  String selectedPassEscaped = escapeForHTMLAttr(selectedPass);
+
+  String ssidOptions = "<datalist id='ssidOptions'>";
+  for (int i = 0; i < MAX_NETWORKS; i++) {
+    if (savedNetworks[i].ssid.length() > 0) {
+      ssidOptions += "<option value='" + escapeForHTMLAttr(savedNetworks[i].ssid) + "'></option>";
+    }
+  }
+  ssidOptions += "</datalist>";
 
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
-      String safeSsid = escapeForJS(savedNetworks[i].ssid);
-      String safePass = escapeForJS(savedNetworks[i].password);
+      String safeSsidAttr = escapeForHTMLAttr(savedNetworks[i].ssid);
+      String safePassAttr = escapeForHTMLAttr(savedNetworks[i].password);
       networksList += "<div class='network-item'>";
-      networksList += "<div class='network-info'><strong>" + savedNetworks[i].ssid + "</strong></div>";
+      networksList += "<div class='network-info'><strong>" + safeSsidAttr + "</strong><div class='password-label'>Contraseña: " + safePassAttr + "</div></div>";
       networksList += "<div class='network-actions'>";
-      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\"" + disableAttr + ">Usar/editar</button>";
-      networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'" + disableAttr + ">Borrar</button>";
+      networksList += "<button class='use-button' data-ssid='" + safeSsidAttr + "' data-pass='" + safePassAttr + "' type='button' onclick=\"editNetwork(" + String(i) + ", this)\">Modificar</button>";
+      networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
       networksList += "</div>";
       networksList += "</div>";
     }
@@ -1259,14 +1319,11 @@ void handleRoot() {
 
   // Actualizar escaneo en segundo plano para no bloquear la carga
   procesarEscaneoRedes();
-  if (!scanInProgress && (millis() - lastNetworkScan > SCAN_INTERVAL_MS || scannedNetworksCache.isEmpty())) {
+  if (!scanInProgress && scannedNetworksCache.isEmpty()) {
     iniciarEscaneoRedes();
   }
 
   String scannedNetworks = scannedNetworksCache;
-  if (scannedNetworks.isEmpty()) {
-    scannedNetworks = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
-  }
 
   String devicesList = "";
   int deviceCount = 0;
@@ -1282,7 +1339,7 @@ void handleRoot() {
       }
       devicesList += "<div class='network-item device-item'>";
       devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
-      devicesList += "<button type='button' onclick=\"deleteDevice('" + mac + "')\"" + disableAttr + ">Eliminar</button>";
+      devicesList += "<button type=\\\"button\\\" onclick=\\\"deleteDevice('" + escapeForJS(mac) + "')\\\">Eliminar</button>";
       devicesList += "</div>";
     }
   }
@@ -1296,16 +1353,16 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   String idValueAttr = userID.length() > 0 ? " value='" + userID + "'" : "";
   String idSection = "<h3>ID de usuario actual:</h3>";
   idSection += "<p><strong>" + currentIDDisplay + "</strong></p>";
-  idSection += "<form action='/setid' method='POST'>";
   idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required" + idValueAttr + ">";
-  idSection += "<button type='submit'>Actualizar ID</button>";
-  idSection += "</form><hr>";
+  idSection += "<hr>";
 
 
+  
   String html = R"=====(
 <!DOCTYPE html>
 <html>
-<head>
+  <head>
+  <meta charset='UTF-8'>
   <title>Configuración WiFi - NUUP</title>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <style>
@@ -1353,6 +1410,10 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       margin-bottom: 15px;
       font-size: 16px;
     }
+    input.locked {
+      background-color: #222;
+      color: #bbb;
+    }
     input:focus {
       outline: none;
       border-color: #FFA500;
@@ -1367,7 +1428,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       font-size: 16px;
       font-weight: bold;
       cursor: pointer;
-      transition: background-color 0.3s;
+      transition: background-color 0.3s, border-color 0.3s, color 0.3s;
       margin: 5px 0;
     }
     button:disabled {
@@ -1376,6 +1437,19 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
     button:hover {
       background-color: #FFA500;
+    }
+    button.use-button {
+      background-color: rgba(255, 215, 0, 0.28);
+      color: #FFD700;
+      border: 1px solid #FFD700;
+    }
+    button.use-button:hover {
+      background-color: rgba(255, 215, 0, 0.45);
+    }
+    .use-button.selected {
+      background-color: #2ecc71;
+      color: #121212;
+      border-color: #2ecc71;
     }
     .network-list {
       margin: 20px 0;
@@ -1391,10 +1465,16 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     .network-info {
       flex-grow: 1;
     }
+    .network-info .password-label {
+      font-size: 11px;
+      color: #FFD700;
+    }
     .network-actions {
       display: flex;
+      flex-direction: column;
       gap: 8px;
       margin-left: auto;
+      align-items: flex-end;
     }
     .network-item label {
       flex-grow: 1;
@@ -1411,6 +1491,14 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
     .network-item button:hover {
       background-color: #cc0000;
+    }
+    .selected-ssid {
+      background-color: #333;
+      border: 1px solid #FFD700;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 10px;
+      font-weight: bold;
     }
     .device-item {
       justify-content: space-between;
@@ -1442,60 +1530,85 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   </style>
   <script>
     function deleteNetwork(index) {
-      if(confirm('¿Borrar esta red WiFi?')) {
-        fetch('/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'index=' + index
-        }).then(response => {
-          if(response.ok) location.reload();
-        });
+      if (confirm('¿Borrar esta red WiFi?')) {
+        fetch('/delete', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'index=' + index })
+          .then(response => { if (response.ok) location.reload(); });
       }
     }
 
     function deleteDevice(mac) {
-      if(confirm('¿Eliminar este dispositivo?')) {
-        fetch('/delete_device', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'mac=' + encodeURIComponent(mac)
-        }).then(response => {
-          if(response.ok) location.reload();
-        });
+      if (confirm('¿Eliminar este dispositivo?')) {
+        fetch('/delete_device', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'mac=' + encodeURIComponent(mac) })
+          .then(response => { if (response.ok) location.reload(); });
       }
     }
 
-    function prefillNetwork(ssid) {
+    let ssidLocked = false;
+
+    function clearSelections() {
+      document.querySelectorAll('.use-button').forEach(btn => btn.classList.remove('selected'));
+    }
+
+    function setSsidLock(locked) {
       const ssidInput = document.getElementById('ssidInput');
+      ssidLocked = locked;
+      if (ssidInput) {
+        ssidInput.readOnly = locked;
+        ssidInput.classList.toggle('locked', locked);
+      }
+    }
+
+    function updateSelected(ssid, lockField = false) {
+      const ssidInput = document.getElementById('ssidInput');
+      clearSelections();
+      document.querySelectorAll('.use-button').forEach(btn => {
+        if (btn.dataset && btn.dataset.ssid === ssid) {
+          btn.classList.add('selected');
+        }
+      });
+      if (ssidInput) {
+        ssidInput.value = ssid || '';
+        setSsidLock(lockField && ssid && ssid.length > 0);
+      }
+    }
+
+    function handleManualSsidInput() {
+      const ssidInput = document.getElementById('ssidInput');
+      if (!ssidInput) return;
+      if (ssidLocked) {
+        setSsidLock(false);
+      }
+      clearSelections();
+    }
+
+    function prefillNetwork(ssid, btn) {
+      const chosenSsid = (btn && btn.dataset && btn.dataset.ssid) ? btn.dataset.ssid : ssid;
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
-      if (ssidInput && passInput) {
-        ssidInput.value = ssid;
+      if (passInput) {
         passInput.value = '';
         passInput.focus();
       }
       if (editIndex) {
         editIndex.value = '';
       }
+      updateSelected(chosenSsid, false);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function editNetwork(idx, ssid, pass) {
-      const ssidInput = document.getElementById('ssidInput');
+    function editNetwork(idx, btn) {
+      if (!btn || !btn.dataset) return;
+      const chosenSsid = btn.dataset.ssid || '';
+      const chosenPass = btn.dataset.pass || '';
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
-      if (ssidInput && passInput && editIndex) {
-        ssidInput.value = ssid;
-        passInput.value = pass;
+      if (passInput && editIndex) {
+        passInput.value = chosenPass;
         editIndex.value = idx;
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        passInput.focus();
       }
-    }
-
-    function rescanNetworks() {
-      fetch('/rescan', { method: 'POST' }).then(() => {
-        setTimeout(() => { location.reload(); }, 800);
-      });
+      updateSelected(chosenSsid, false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   </script>
 </head>
@@ -1505,47 +1618,35 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += disableMessage;
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } });</script>";
+
+
+  html += "<form action='/finalizar' method='POST'>";
   html += idSection;
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
-      <p>Usa/editar para rellenar la red seleccionada y actualizar la contraseña si es necesario.</p>
 )=====";
   html += networksList;
   html += R"=====(
     </div>
 
     <div class="network-list">
-      <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
-      <p>Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
+      <h3 class="section-title">Redes cercanas:</h3>
 )=====";
   html += scannedNetworks;
   html += R"=====(
-      <button type="button" onclick="rescanNetworks()">Actualizar redes</button>
     </div>
 
-    <h3 class="section-title">Agregar nueva red:</h3>
-    <p>Por seguridad el navegador no puede leer la red/contraseña de tu teléfono. Selecciona una red de la lista o escríbela aquí.</p>
-    <form action='/save' method='POST'>
-      <input type='hidden' id='editIndex' name='index' value=''>
-      <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required
+    <h3 class="section-title">Red a configurar:</h3>
+    <input type='hidden' id='editIndex' name='index' value=''>
 )=====";
-  html += disableAttr;
+    html += "    <label for='ssidInput'>Nombre de la red (SSID)</label>";
+    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value='" + selectedSsidEscaped + "' oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
+    html += ssidOptions;
+  html += "    <label for='passInput'>Contraseña</label>";
+  html += "    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value='" + selectedPassEscaped + "'>";
   html += R"=====(
->
-      <input id='passInput' type='password' name='pass' placeholder='Contraseña' required
-)=====";
-  html += disableAttr;
-  html += R"=====(
->
-      <button type='submit'
-)=====";
-  html += disableAttr;
-  html += R"=====(
->Guardar Configuración</button>
-    </form>
-
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
 )=====";
@@ -1554,16 +1655,9 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     </div>
 
     <div class="network-list">
-      <h3 class="section-title">Finalizar configuración:</h3>
-      <p>Al presionar se cerrará la página, se guardarán los datos y el equipo reiniciará al modo normal.</p>
-      <form action='/finalizar' method='POST'>
-        <button type='submit'
-)=====";
-  html += disableAttr;
-  html += R"=====(
->Configurar y reiniciar</button>
-      </form>
+      <button type='submit'>Configurar y reiniciar</button>
     </div>
+  </form>
   </div>
 
 </body>
@@ -1581,6 +1675,12 @@ void handleSaveCredentials() {
   if(server.hasArg("ssid") && server.hasArg("pass")) {
     String ssid = server.arg("ssid");
     String pass = server.arg("pass");
+    ssid.trim();
+
+    if (ssid.length() == 0) {
+      server.send(400, "text/plain", "SSID vacío");
+      return;
+    }
     int requestedIndex = -1;
     if (server.hasArg("index")) {
       String idxStr = server.arg("index");
@@ -1590,8 +1690,16 @@ void handleSaveCredentials() {
       }
     }
 
-    // Usar índice solicitado para editar o buscar espacio libre
+    // Usar índice solicitado para editar, sobrescribir duplicados o buscar espacio libre
     int indexToSave = (requestedIndex >= 0 && requestedIndex < MAX_NETWORKS) ? requestedIndex : -1;
+    if (indexToSave == -1) {
+      for (int i = 0; i < MAX_NETWORKS; i++) {
+        if (savedNetworks[i].ssid == ssid) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
     if (indexToSave == -1) {
       for(int i = 0; i < MAX_NETWORKS; i++) {
         if(savedNetworks[i].ssid.length() == 0) {
@@ -1617,56 +1725,157 @@ void handleSaveCredentials() {
       }
     }
 
-    saveNetworksToEEPROM();
+    if (!saveNetworksToEEPROM()) {
+      Serial.println("❌ Error al guardar redes en EEPROM");
+      server.send(500, "text/plain", "No se pudo guardar la red");
+      return;
+    }
+    ultimaRedConfigurada = ssid;
+    ultimaContrasenaConfigurada = pass;
     server.send(200, "text/html", "<html><body><h2>Credenciales guardadas. El equipo reiniciará para aplicarlas.</h2><script>setTimeout(()=>window.location='/',600);</script></body></html>");
 
     forceAPMode = true;
     wifiConfigInProgress = true;
     apMode = true;
-    WiFi.begin(ssid.c_str(), pass.c_str());
-
-    unsigned long inicioConexion = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - inicioConexion < WIFI_TIMEOUT) {
-      delay(200);
-    }
-
-    bool conectado = WiFi.status() == WL_CONNECTED;
-    forceAPMode = false;
-    wifiConfigInProgress = false;
-    mostrarMensajeRedConectada(ssid, conectado);
+    mostrarMensajeRedConectada(ssid, false, pass, 0, 5000);
+    portalEnUso = false;
+    portalPantallaFija = false;
     reinicioSolicitado = true;
-    reinicioProgramado = millis() + 5000;
+    reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion;
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
 }
 
 void handleFinalizeConfig() {
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Configura el User ID antes de finalizar");
-    return;
-  }
-
   portalEnUso = true;
   wifiConfigInProgress = true;
   forceAPMode = true;
   apMode = true;
   portalPantallaFija = true;
 
-  String redActual = WiFi.SSID();
+  auto liberarPortal = []() {
+    portalEnUso = false;
+    wifiConfigInProgress = false;
+  };
+
+  // Actualizar User ID con el valor ingresado o validar el existente
+  if (server.hasArg("newid")) {
+    String newID = server.arg("newid");
+    newID.trim();
+    if (newID.length() > 0 && newID.length() <= USER_ID_MAX_LEN) {
+      saveUserIDToEEPROM(newID);
+      userID = newID;
+    } else {
+      server.send(400, "text/plain", "User ID inválido");
+      liberarPortal();
+      return;
+    }
+  }
+
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Debes capturar un User ID válido para finalizar");
+    liberarPortal();
+    return;
+  }
+
+  // Guardar la red (nueva o modificada) si se proporcionó
+  bool redActualizada = false;
+  String ssid = server.hasArg("ssid") ? server.arg("ssid") : "";
+  String pass = server.hasArg("pass") ? server.arg("pass") : "";
+  ssid.trim();
+  pass.trim();
+
+  bool tieneDatosSsid = ssid.length() > 0;
+  bool tieneDatosPass = pass.length() > 0;
+
+  if (tieneDatosSsid || tieneDatosPass) {
+    if (!tieneDatosSsid || !tieneDatosPass) {
+      server.send(400, "text/plain", "Debes capturar SSID y contraseña para guardar la red");
+      liberarPortal();
+      return;
+    }
+
+    int requestedIndex = -1;
+    if (server.hasArg("index")) {
+      String idxStr = server.arg("index");
+      idxStr.trim();
+      if (idxStr.length() > 0) {
+        requestedIndex = idxStr.toInt();
+      }
+    }
+
+    int indexToSave = (requestedIndex >= 0 && requestedIndex < MAX_NETWORKS) ? requestedIndex : -1;
+    if (indexToSave == -1) {
+      for (int i = 0; i < MAX_NETWORKS; i++) {
+        if (savedNetworks[i].ssid == ssid) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
+    if (indexToSave == -1) {
+      for(int i = 0; i < MAX_NETWORKS; i++) {
+        if(savedNetworks[i].ssid.length() == 0) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
+
+    if(indexToSave == -1) {
+      indexToSave = 0;
+    }
+
+    savedNetworks[indexToSave].ssid = ssid;
+    savedNetworks[indexToSave].password = pass;
+    savedNetworks[indexToSave].active = true;
+
+    for(int i = 0; i < MAX_NETWORKS; i++) {
+      if(i != indexToSave) {
+        savedNetworks[i].active = false;
+      }
+    }
+
+    if (!saveNetworksToEEPROM()) {
+      server.send(500, "text/plain", "No se pudo guardar la red en EEPROM");
+      liberarPortal();
+      return;
+    }
+    ultimaRedConfigurada = ssid;
+    ultimaContrasenaConfigurada = pass;
+    redActualizada = true;
+  }
+
+  String redActual = redActualizada ? ssid : WiFi.SSID();
   if (redActual.length() == 0 && ultimaRedConfigurada.length() > 0) {
     redActual = ultimaRedConfigurada;
   }
 
   bool conectada = WiFi.status() == WL_CONNECTED || conexionExitosa;
-  mostrarMensajeRedConectada(redActual.length() > 0 ? redActual : "Sin red", conectada);
+  String passPantalla = pass;
+  if (passPantalla.isEmpty()) {
+    for (int i = 0; i < MAX_NETWORKS; i++) {
+      if (savedNetworks[i].active || savedNetworks[i].ssid == redActual) {
+        passPantalla = savedNetworks[i].password;
+        break;
+      }
+    }
+  }
+  String redParaMensaje = redActual.length() > 0 ? redActual : "Sin red";
+  mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 0, 5000);
 
-  server.send(200, "text/html",
-              "<html><body><h2>Configuración finalizada</h2><p>El equipo se reiniciará y cerrará el portal.</p><script>setTimeout(() => { window.close(); }, 1500);</script></body></html>");
+  server.send(200, "text/html", "<html><body><h2>Configuración guardada</h2></body></html>");
 
-  detenerConfiguracionWiFi();
+  // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
+  portalEnUso = false;
+  portalPantallaFija = false;
+  apMode = true;
+  forceAPMode = true;
+  wifiConfigInProgress = false;
+
   reinicioSolicitado = true;
-  reinicioProgramado = millis() + 3000;
+  reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion;
 }
 
 void handleDeleteNetwork() {
@@ -1677,10 +1886,22 @@ void handleDeleteNetwork() {
   if(server.hasArg("index")) {
     int index = server.arg("index").toInt();
     if(index >= 0 && index < MAX_NETWORKS) {
+      String removedSsid = savedNetworks[index].ssid;
       savedNetworks[index].ssid = "";
       savedNetworks[index].password = "";
       savedNetworks[index].active = false;
-      saveNetworksToEEPROM();
+      if (!saveNetworksToEEPROM()) {
+        Serial.println("❌ Error al guardar redes en EEPROM");
+        server.send(500, "text/plain", "No se pudo borrar la red");
+        return;
+      }
+      if (ultimaRedConfigurada == removedSsid) {
+        ultimaRedConfigurada = "";
+        ultimaContrasenaConfigurada = "";
+      }
+      if (currentNetwork == index) {
+        currentNetwork = -1;
+      }
       server.send(200, "text/plain", "OK");
     } else {
       server.send(400, "text/plain", "Índice inválido");
@@ -1729,10 +1950,10 @@ void handleSelectNetwork() {
       }
       // Activar la seleccionada
       savedNetworks[index].active = true;
-      saveNetworksToEEPROM();
+      if (!saveNetworksToEEPROM()) {
+        Serial.println("❌ Error al guardar redes en EEPROM");
+      }
       server.send(200, "text/plain", "OK");
-      delay(1000);
-      ESP.restart();
     } else {
       server.send(400, "text/plain", "Índice inválido o red vacía");
     }
@@ -1741,11 +1962,6 @@ void handleSelectNetwork() {
   }
 }
 
-void handleRescanNetworks() {
-  scannedNetworksCache = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
-  iniciarEscaneoRedes();
-  server.send(200, "text/plain", "Escaneo reiniciado");
-}
 
 void handleSetID() {
   if (server.hasArg("newid")) {
@@ -1771,7 +1987,13 @@ void handleSetID() {
 }
 
 
-void saveNetworksToEEPROM() {
+bool saveNetworksToEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para guardar redes");
+    return false;
+  }
+  // Marcar EEPROM inicializada para que las redes persistan tras reinicios
+  EEPROM.write(0, 1);
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
 
   for(int i = 0; i < MAX_NETWORKS; i++) {
@@ -1805,11 +2027,22 @@ void saveNetworksToEEPROM() {
     EEPROM.write(address++, savedNetworks[i].active ? 1 : 0);
   }
 
-  EEPROM.commit();
+  bool commitOk = EEPROM.commit();
+  if (!commitOk) {
+    Serial.println("❌ Error en commit de redes WiFi");
+  }
+
+  EEPROM.end();
+
+  return commitOk;
 }
 
 
 bool loadNetworksFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para leer redes");
+    return false;
+  }
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
   bool success = true;
 
@@ -1825,9 +2058,9 @@ bool loadNetworksFromEEPROM() {
     char ssidData[SSID_LEN + 1] = {0};
     for (int j = 0; j < ssidLen; j++) {
       ssidData[j] = EEPROM.read(address++);
-      // Verificar caracteres no imprimibles
-      if (ssidData[j] < 32 || ssidData[j] > 126) {
-        ssidData[j] = '?'; // Reemplazar caracteres inválidos
+      // Solo descartar caracteres de control; permitir acentos/ñ
+      if (static_cast<unsigned char>(ssidData[j]) < 32) {
+        ssidData[j] = '?';
       }
     }
     // Saltar relleno si es necesario
@@ -1887,6 +2120,8 @@ bool loadNetworksFromEEPROM() {
     Serial.printf("Error: Dirección EEPROM excede tamaño máximo (%d > %d)\n", address, EEPROM_SIZE);
     success = false;
   }
+
+  EEPROM.end();
 
   return success;
 }
@@ -1974,6 +2209,10 @@ void debugNetworks() {
 
 
 void saveUserIDToEEPROM(const String& id) {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para guardar User ID");
+    return;
+  }
   int len = id.length();
   if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
 
@@ -1993,6 +2232,10 @@ void saveUserIDToEEPROM(const String& id) {
 }
 
 bool loadUserIDFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para leer User ID");
+    return false;
+  }
   bool success = true;
   int len = EEPROM.read(USER_ID_ADDR);
   if (len == 0xFF || len < 0 || len > USER_ID_MAX_LEN) {
@@ -2822,28 +3065,30 @@ void dibujarMensajeConexion() {
   }
   display.clearDisplay();
 
-  int centroX = SCREEN_WIDTH / 2;
-  int centroY = 20;
-
-  if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
-    frameWifi = (frameWifi + 1) % 4;
-    ultimoCambioWifi = millis();
-  }
-
-  dibujarWifiAnimado(centroX, centroY, frameWifi);
-
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.print(conexionExitosa ? "WiFi conectado" : "Error WiFi");
+  display.print(conexionExitosa ? "Configuración guardada" : "Error WiFi");
 
-  display.setCursor(0, 45);
+  display.setCursor(0, 20);
+  display.print("Red: ");
   if (ultimaRedConfigurada.length() > 0) {
-    display.print(conexionExitosa ? "Red: " : "Red fallida: ");
     display.print(ultimaRedConfigurada);
   } else {
-    display.print("Esperando red...");
+    display.print("(sin red)");
   }
+
+  display.setCursor(0, 32);
+  display.print("Pass: ");
+  if (ultimaContrasenaConfigurada.length() > 0) {
+    display.print(ultimaContrasenaConfigurada);
+  } else {
+    display.print("(vacía)");
+  }
+
+  display.setCursor(0, 44);
+  display.print("User ID: ");
+  display.print(userID.length() > 0 ? userID : "(vacío)");
 
   display.display();
 }
@@ -3375,11 +3620,7 @@ void loop() {
 
   manejarBotonWifi();
 
-  if (reinicioSolicitado && millis() >= reinicioProgramado) {
-    ESP.restart();
-  }
-
-  // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitar que se cierre
+  // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitamos reinicios
   bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
   if (apActivo) {
     dnsServer.processNextRequest();
@@ -3387,24 +3628,47 @@ void loop() {
     for (int i = 0; i < 3; i++) {
       server.handleClient();
     }
-    // Si el usuario ya abrió la página evitamos reactivar animaciones y reescaneos agresivos
+    procesarEscaneoRedes();
+    // Mantener la página fija: sin reescaneos automáticos que puedan interrumpir la sesión
+    // Si el usuario ya abrió la página evitamos reactivar animaciones agresivas
     if (!portalEnUso) {
-      procesarEscaneoRedes();
-      if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
-        iniciarEscaneoRedes();
-      }
       if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
         frameWifi = (frameWifi + 1) % 4;
         ultimoCambioWifi = millis();
       }
       mostrarConexionWifi();
     }
+    if (mostrarMensajeConexion) {
+      unsigned long elapsed = millis() - inicioMensajeConexion;
+      if (elapsed >= retrasoMensajeConexion) {
+        dibujarMensajeConexion();
+      }
+      if (elapsed >= retrasoMensajeConexion + duracionMensajeConexion) {
+        dnsServer.stop();
+        server.stop();
+        ESP.restart();
+      }
+    }
+    if (reinicioSolicitado && !portalEnUso && millis() >= reinicioProgramado) {
+      dnsServer.stop();
+      server.stop();
+      ESP.restart();
+    }
     return;
   }
 
+  if (reinicioSolicitado && millis() >= reinicioProgramado) {
+    forceAPMode = false;
+    wifiConfigInProgress = false;
+    ESP.restart();
+  }
+
   if (mostrarMensajeConexion) {
-    dibujarMensajeConexion();
-    if (millis() - inicioMensajeConexion >= 5000) {
+    unsigned long elapsed = millis() - inicioMensajeConexion;
+    if (elapsed >= retrasoMensajeConexion) {
+      dibujarMensajeConexion();
+    }
+    if (elapsed >= retrasoMensajeConexion + duracionMensajeConexion) {
       ESP.restart();
     }
     return;
