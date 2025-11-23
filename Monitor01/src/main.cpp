@@ -1,3 +1,4 @@
+// 20 - Corrección: procesar los escaneos WiFi incluso con el portal abierto para que el refresco muestre redes reales
 // 19 - Corrección: permitir que el reescaneo WiFi concluya y refresque la lista en el portal
 // 18 - Actualización: se agrega la leyenda inicial de actualizaciones con su consecutivo
 // 17 - Corrección: simplificar el portal mostrando el User ID guardado y permitir usar/editar redes sin botones extra
@@ -3440,12 +3441,12 @@ void loop() {
     for (int i = 0; i < 3; i++) {
       server.handleClient();
     }
-    // Si el usuario ya abrió la página evitamos reactivar animaciones y reescaneos agresivos
+    procesarEscaneoRedes();
+    if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
+      iniciarEscaneoRedes();
+    }
+    // Si el usuario ya abrió la página evitamos reactivar animaciones agresivas
     if (!portalEnUso) {
-      procesarEscaneoRedes();
-      if (!scanInProgress && millis() - lastNetworkScan > SCAN_INTERVAL_MS) {
-        iniciarEscaneoRedes();
-      }
       if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
         frameWifi = (frameWifi + 1) % 4;
         ultimoCambioWifi = millis();
