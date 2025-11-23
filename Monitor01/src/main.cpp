@@ -1,3 +1,4 @@
+// 38 - Corrección: validar guardado de red en EEPROM al finalizar configuración y abortar si falla
 // 37 - Corrección: fijar mensaje final 3s, reinicio automático y SSID seleccionado visible/guardado en portal
 // 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
 // 35 - Corrección: evitar bloqueos al guardar, resaltar red elegida y asegurar persistencia de red en EEPROM
@@ -198,7 +199,7 @@ void handleSelectNetwork();
 void handleDeleteDevice();
 void reiniciarConfiguracionWiFi();
 void detenerConfiguracionWiFi();
-void saveNetworksToEEPROM();
+bool saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
 void attemptReconnectToAllNetworks();
 void handleSetID();
@@ -1671,7 +1672,9 @@ void handleSaveCredentials() {
       }
     }
 
-    saveNetworksToEEPROM();
+    if (!saveNetworksToEEPROM()) {
+      Serial.println("❌ Error al guardar redes en EEPROM");
+    }
     ultimaRedConfigurada = ssid;
     server.send(200, "text/html", "<html><body><h2>Credenciales guardadas. El equipo reiniciará para aplicarlas.</h2><script>setTimeout(()=>window.location='/',600);</script></body></html>");
 
@@ -1768,7 +1771,11 @@ void handleFinalizeConfig() {
       }
     }
 
-    saveNetworksToEEPROM();
+    if (!saveNetworksToEEPROM()) {
+      server.send(500, "text/plain", "No se pudo guardar la red en EEPROM");
+      liberarPortal();
+      return;
+    }
     ultimaRedConfigurada = ssid;
     redActualizada = true;
   }
@@ -1815,7 +1822,9 @@ void handleDeleteNetwork() {
       savedNetworks[index].ssid = "";
       savedNetworks[index].password = "";
       savedNetworks[index].active = false;
-      saveNetworksToEEPROM();
+      if (!saveNetworksToEEPROM()) {
+        Serial.println("❌ Error al guardar redes en EEPROM");
+      }
       server.send(200, "text/plain", "OK");
     } else {
       server.send(400, "text/plain", "Índice inválido");
@@ -1864,7 +1873,9 @@ void handleSelectNetwork() {
       }
       // Activar la seleccionada
       savedNetworks[index].active = true;
-      saveNetworksToEEPROM();
+      if (!saveNetworksToEEPROM()) {
+        Serial.println("❌ Error al guardar redes en EEPROM");
+      }
       server.send(200, "text/plain", "OK");
     } else {
       server.send(400, "text/plain", "Índice inválido o red vacía");
@@ -1899,10 +1910,10 @@ void handleSetID() {
 }
 
 
-void saveNetworksToEEPROM() {
+bool saveNetworksToEEPROM() {
   if (!EEPROM.begin(EEPROM_SIZE)) {
     Serial.println("❌ No se pudo iniciar EEPROM para guardar redes");
-    return;
+    return false;
   }
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
 
@@ -1937,7 +1948,12 @@ void saveNetworksToEEPROM() {
     EEPROM.write(address++, savedNetworks[i].active ? 1 : 0);
   }
 
-  EEPROM.commit();
+  bool commitOk = EEPROM.commit();
+  if (!commitOk) {
+    Serial.println("❌ Error en commit de redes WiFi");
+  }
+
+  return commitOk;
 }
 
 
