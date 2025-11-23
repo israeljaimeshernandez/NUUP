@@ -1,3 +1,4 @@
+// 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
 // 35 - Corrección: evitar bloqueos al guardar, resaltar red elegida y asegurar persistencia de red en EEPROM
 // 34 - Corrección: fijar mensaje en display antes de reiniciar, persistir credenciales en EEPROM y reflejar red seleccionada al usarla
 // 33 - Corrección: portal muestra UserID y red guardados, formulario centrado en contraseña y mensaje fijo antes de reiniciar
@@ -1256,13 +1257,14 @@ String getCheckedStatus(bool active) {
 void handleRoot() {
 
   // Al servir la página, congela la animación y dedica el ciclo al portal
-  portalEnUso = true;
+  portalEnUso = !reinicioSolicitado;
   // Mantener bandera de configuración activa mientras el portal esté en uso
   wifiConfigInProgress = true;
   forceAPMode = true;
   apMode = true;
-  reinicioSolicitado = false;
-  reinicioProgramado = 0;
+  if (!reinicioSolicitado) {
+    reinicioProgramado = 0;
+  }
   mostrarMensajeConexion = false;
   if (animandoWifi) {
     detenerAnimacionWifi();
@@ -1344,6 +1346,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   idSection += "<hr>";
 
 
+  
   String html = R"=====(
 <!DOCTYPE html>
 <html>
@@ -1496,26 +1499,16 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   </style>
   <script>
     function deleteNetwork(index) {
-      if(confirm('¿Borrar esta red WiFi?')) {
-        fetch('/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'index=' + index
-        }).then(response => {
-          if(response.ok) location.reload();
-        });
+      if (confirm('¿Borrar esta red WiFi?')) {
+        fetch('/delete', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'index=' + index })
+          .then(response => { if (response.ok) location.reload(); });
       }
     }
 
     function deleteDevice(mac) {
-      if(confirm('¿Eliminar este dispositivo?')) {
-        fetch('/delete_device', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'mac=' + encodeURIComponent(mac)
-        }).then(response => {
-          if(response.ok) location.reload();
-        });
+      if (confirm('¿Eliminar este dispositivo?')) {
+        fetch('/delete_device', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'mac=' + encodeURIComponent(mac) })
+          .then(response => { if (response.ok) location.reload(); });
       }
     }
 
@@ -1523,56 +1516,57 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       document.querySelectorAll('.use-button').forEach(btn => btn.classList.remove('selected'));
     }
 
-    function prefillNetwork(ssid, btn) {
-      const ssidInput = document.getElementById('ssidInput');
-      const passInput = document.getElementById('passInput');
-      const editIndex = document.getElementById('editIndex');
-      if (ssidInput && passInput) {
-        ssidInput.value = ssid;
-        passInput.value = '';
-        passInput.focus();
-        updateSelected(ssid);
-      }
-      if (editIndex) {
-        editIndex.value = '';
-      }
-      clearSelections();
-      if (btn) btn.classList.add('selected');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    function editNetwork(idx, ssid, pass, btn) {
-      const ssidInput = document.getElementById('ssidInput');
-      const passInput = document.getElementById('passInput');
-      const editIndex = document.getElementById('editIndex');
-      if (ssidInput && passInput && editIndex) {
-        ssidInput.value = ssid;
-        passInput.value = pass;
-        editIndex.value = idx;
-        updateSelected(ssid);
-        clearSelections();
-        if (btn) btn.classList.add('selected');
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }
-    }
-
     function updateSelected(ssid) {
       const selected = document.getElementById('selectedSsid');
       const info = document.getElementById('infoStatus');
+      const ssidInput = document.getElementById('ssidInput');
       clearSelections();
       document.querySelectorAll('.use-button').forEach(btn => {
         if (btn.dataset && btn.dataset.ssid === ssid) {
           btn.classList.add('selected');
         }
       });
+      if (ssidInput) {
+        ssidInput.value = ssid || '';
+      }
       if (selected) {
-        selected.textContent = ssid && ssid.length > 0 ? 'Red seleccionada: ' + ssid : 'Red seleccionada: (ninguna)';
+        selected.textContent = ssid && ssid.length > 0 ? "Red seleccionada: " + ssid : "Red seleccionada: (ninguna)";
       }
       if (info) {
         info.textContent = 'Información: lista para configurar';
       }
     }
 
+    function prefillNetwork(ssid, btn) {
+      const passInput = document.getElementById('passInput');
+      const editIndex = document.getElementById('editIndex');
+      if (passInput) {
+        passInput.value = '';
+        passInput.focus();
+      }
+      if (editIndex) {
+        editIndex.value = '';
+      }
+      updateSelected(ssid);
+      if (btn) {
+        btn.classList.add('selected');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function editNetwork(idx, ssid, pass, btn) {
+      const passInput = document.getElementById('passInput');
+      const editIndex = document.getElementById('editIndex');
+      if (passInput && editIndex) {
+        passInput.value = pass;
+        editIndex.value = idx;
+      }
+      updateSelected(ssid);
+      if (btn) {
+        btn.classList.add('selected');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   </script>
 </head>
 <body>
@@ -1581,9 +1575,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \\\"";
-  html += selectedSsidJs;
-  html += "\\\"; updateSelected(initialSsid); });</script>";
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid); });</script>";
+
 
   html += "<form action='/finalizar' method='POST'>";
   html += "<div class=\\\"alert\\\" id=\\\"infoStatus\\\">Información: lista para configurar</div>";
