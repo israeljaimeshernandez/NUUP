@@ -1305,7 +1305,7 @@ void handleRoot() {
       String safeSsidAttr = escapeForHTMLAttr(savedNetworks[i].ssid);
       String safePassAttr = escapeForHTMLAttr(savedNetworks[i].password);
       networksList += "<div class='network-item'>";
-      networksList += "<div class='network-info'><strong>" + safeSsidAttr + "</strong><div>Contraseña: " + safePassAttr + "</div></div>";
+      networksList += "<div class='network-info'><strong>" + safeSsidAttr + "</strong><div class='password-label'>Contraseña: " + safePassAttr + "</div></div>";
       networksList += "<div class='network-actions'>";
       networksList += "<button class='use-button' data-ssid='" + safeSsidAttr + "' data-pass='" + safePassAttr + "' type='button' onclick=\"editNetwork(" + String(i) + ", this)\">Modificar</button>";
       networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
@@ -1460,6 +1460,10 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
     .network-info {
       flex-grow: 1;
+    }
+    .network-info .password-label {
+      font-size: 13px;
+      color: #e0e0e0;
     }
     .network-actions {
       display: flex;
@@ -1632,11 +1636,11 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <input type='hidden' id='editIndex' name='index' value=''>
 )=====";
     html += "    <label for='ssidInput'>Nombre de la red (SSID)</label>";
-    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\"" + selectedSsidEscaped + "\" oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
+    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\\\"" + selectedSsidEscaped + "\\\" oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
     html += ssidOptions;
   html += R"=====(
     <label for='passInput'>Contraseña</label>
-    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value=\"" + selectedPassEscaped + "\" >
+    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value=\\\"" + selectedPassEscaped + "\\\" >
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
 )=====";
@@ -2053,9 +2057,9 @@ bool loadNetworksFromEEPROM() {
     char ssidData[SSID_LEN + 1] = {0};
     for (int j = 0; j < ssidLen; j++) {
       ssidData[j] = EEPROM.read(address++);
-      // Verificar caracteres no imprimibles
-      if (ssidData[j] < 32 || ssidData[j] > 126) {
-        ssidData[j] = '?'; // Reemplazar caracteres inválidos
+      // Solo descartar caracteres de control; permitir acentos/ñ
+      if (static_cast<unsigned char>(ssidData[j]) < 32) {
+        ssidData[j] = '?';
       }
     }
     // Saltar relleno si es necesario
