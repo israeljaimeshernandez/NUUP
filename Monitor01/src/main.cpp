@@ -1487,6 +1487,20 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
     }
 
+    function refreshNetworks() {
+      const scanStatus = document.getElementById('scanStatus');
+      if (scanStatus) {
+        scanStatus.textContent = 'Escaneando redes...';
+      }
+      fetch('/rescan', {
+        method: 'POST'
+      }).then(() => {
+        setTimeout(() => window.location.reload(), 1200);
+      }).catch(() => {
+        setTimeout(() => window.location.reload(), 1200);
+      });
+    }
+
   </script>
 </head>
 <body>
@@ -1508,7 +1522,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
     <div class="network-list">
       <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
-      <p>Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
+      <p id="scanStatus">Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
+      <button type="button" onclick="refreshNetworks()">Refrescar redes</button>
 )=====";
   html += scannedNetworks;
   html += R"=====(
