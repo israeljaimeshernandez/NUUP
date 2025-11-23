@@ -1,3 +1,4 @@
+// 26 - Corrección: retirar leyendas de relleno en listas de redes y títulos para simplificar la interfaz
 // 25 - Corrección: mantener el portal abierto cancelando reinicios mientras el usuario configura
 // 24 - Corrección: reescribir botones HTML con escape doble para compilar sin errores
 // 23 - Corrección: consolidar el escape de comillas en botones HTML para compilar sin errores
@@ -1522,15 +1523,14 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
-      <p>Usa/editar para rellenar la red seleccionada y actualizar la contraseña si es necesario.</p>
 )=====";
   html += networksList;
   html += R"=====(
     </div>
 
     <div class="network-list">
-      <h3 class="section-title">Redes cercanas (ordenadas por señal):</h3>
-      <p id="scanStatus">Elige una red para rellenar el SSID y solo escribe la contraseña.</p>
+      <h3 class="section-title">Redes cercanas:</h3>
+      <p id="scanStatus"></p>
       <button id="refreshButton" type="button" onclick="refreshNetworks()">Refrescar redes</button>
 )=====";
   html += scannedNetworks;
