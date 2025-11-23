@@ -1,3 +1,4 @@
+// 35 - Corrección: evitar bloqueos al guardar, resaltar red elegida y asegurar persistencia de red en EEPROM
 // 34 - Corrección: fijar mensaje en display antes de reiniciar, persistir credenciales en EEPROM y reflejar red seleccionada al usarla
 // 33 - Corrección: portal muestra UserID y red guardados, formulario centrado en contraseña y mensaje fijo antes de reiniciar
 // 32 - Corrección: mantener portal estático, limpiar leyendas y mostrar credenciales en pantalla antes de reiniciar
@@ -1234,11 +1235,12 @@ void procesarEscaneoRedes() {
     String ssid = WiFi.SSID(idx);
     int rssi = WiFi.RSSI(idx);
     String safeSsid = escapeForJS(ssid);
+    String safeSsidAttr = escapeForHTMLAttr(ssid);
 
     scannedNetworks += "<div class='network-item'>";
     scannedNetworks += "<label>" + ssid + "</label>";
     scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
-      scannedNetworks += "<button type=\\\"button\\\" onclick=\\\"prefillNetwork('" + safeSsid + "')\\\">Usar</button>";
+      scannedNetworks += "<button class='use-button' data-ssid='" + safeSsidAttr + "' type=\\\"button\\\" onclick=\\\"prefillNetwork('" + safeSsid + "', this)\\\">Usar</button>";
     scannedNetworks += "</div>";
   }
 
@@ -1290,11 +1292,12 @@ void handleRoot() {
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
       String safeSsid = escapeForJS(savedNetworks[i].ssid);
+      String safeSsidAttr = escapeForHTMLAttr(savedNetworks[i].ssid);
       String safePass = escapeForJS(savedNetworks[i].password);
       networksList += "<div class='network-item'>";
       networksList += "<div class='network-info'><strong>" + savedNetworks[i].ssid + "</strong></div>";
       networksList += "<div class='network-actions'>";
-      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\">Usar</button>";
+      networksList += "<button class='use-button' data-ssid='" + safeSsidAttr + "' type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "', this)\">Usar</button>";
       networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
       networksList += "</div>";
       networksList += "</div>";
@@ -1416,6 +1419,10 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     button:hover {
       background-color: #FFA500;
     }
+    .use-button.selected {
+      background-color: #2ecc71;
+      color: #121212;
+    }
     .network-list {
       margin: 20px 0;
     }
@@ -1512,7 +1519,11 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
     }
 
-    function prefillNetwork(ssid) {
+    function clearSelections() {
+      document.querySelectorAll('.use-button').forEach(btn => btn.classList.remove('selected'));
+    }
+
+    function prefillNetwork(ssid, btn) {
       const ssidInput = document.getElementById('ssidInput');
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
@@ -1525,10 +1536,12 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       if (editIndex) {
         editIndex.value = '';
       }
+      clearSelections();
+      if (btn) btn.classList.add('selected');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function editNetwork(idx, ssid, pass) {
+    function editNetwork(idx, ssid, pass, btn) {
       const ssidInput = document.getElementById('ssidInput');
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
@@ -1537,6 +1550,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         passInput.value = pass;
         editIndex.value = idx;
         updateSelected(ssid);
+        clearSelections();
+        if (btn) btn.classList.add('selected');
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     }
@@ -1544,6 +1559,12 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     function updateSelected(ssid) {
       const selected = document.getElementById('selectedSsid');
       const info = document.getElementById('infoStatus');
+      clearSelections();
+      document.querySelectorAll('.use-button').forEach(btn => {
+        if (btn.dataset && btn.dataset.ssid === ssid) {
+          btn.classList.add('selected');
+        }
+      });
       if (selected) {
         selected.textContent = ssid && ssid.length > 0 ? 'Red seleccionada: ' + ssid : 'Red seleccionada: (ninguna)';
       }
@@ -1655,22 +1676,13 @@ void handleSaveCredentials() {
     }
 
     saveNetworksToEEPROM();
+    ultimaRedConfigurada = ssid;
     server.send(200, "text/html", "<html><body><h2>Credenciales guardadas. El equipo reiniciará para aplicarlas.</h2><script>setTimeout(()=>window.location='/',600);</script></body></html>");
 
     forceAPMode = true;
     wifiConfigInProgress = true;
     apMode = true;
-    WiFi.begin(ssid.c_str(), pass.c_str());
-
-    unsigned long inicioConexion = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - inicioConexion < WIFI_TIMEOUT) {
-      delay(200);
-    }
-
-    bool conectado = WiFi.status() == WL_CONNECTED;
-    forceAPMode = false;
-    wifiConfigInProgress = false;
-    mostrarMensajeRedConectada(ssid, conectado, pass, 1000, 3000);
+    mostrarMensajeRedConectada(ssid, false, pass, 1000, 3000);
     portalEnUso = false;
     portalPantallaFija = false;
     reinicioSolicitado = true;
@@ -1763,12 +1775,6 @@ void handleFinalizeConfig() {
     saveNetworksToEEPROM();
     ultimaRedConfigurada = ssid;
     redActualizada = true;
-
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    unsigned long inicioConexion = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - inicioConexion < WIFI_TIMEOUT) {
-      delay(200);
-    }
   }
 
   String redActual = redActualizada ? ssid : WiFi.SSID();
