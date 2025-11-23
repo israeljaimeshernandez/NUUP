@@ -1,4 +1,5 @@
 // 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
+// 40 - Corrección: mantener SSID editable al abrir, bloquearlo al elegir "Usar" y guardar SSID+pass en EEPROM
 // 38 - Corrección: validar guardado de red en EEPROM al finalizar configuración y abortar si falla
 // 37 - Corrección: fijar mensaje final 3s, reinicio automático y SSID seleccionado visible/guardado en portal
 // 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
@@ -1293,6 +1294,14 @@ void handleRoot() {
   String selectedSsidEscaped = escapeForHTMLAttr(selectedSsid);
   String selectedSsidJs = escapeForJS(selectedSsid);
 
+  String ssidOptions = "<datalist id='ssidOptions'>";
+  for (int i = 0; i < MAX_NETWORKS; i++) {
+    if (savedNetworks[i].ssid.length() > 0) {
+      ssidOptions += "<option value='" + escapeForHTMLAttr(savedNetworks[i].ssid) + "'></option>";
+    }
+  }
+  ssidOptions += "</datalist>";
+
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
@@ -1400,6 +1409,10 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       padding: 12px;
       margin-bottom: 15px;
       font-size: 16px;
+    }
+    input.locked {
+      background-color: #222;
+      color: #bbb;
     }
     input:focus {
       outline: none;
@@ -1515,11 +1528,22 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
     }
 
+    let ssidLocked = false;
+
     function clearSelections() {
       document.querySelectorAll('.use-button').forEach(btn => btn.classList.remove('selected'));
     }
 
-    function updateSelected(ssid) {
+    function setSsidLock(locked) {
+      const ssidInput = document.getElementById('ssidInput');
+      ssidLocked = locked;
+      if (ssidInput) {
+        ssidInput.readOnly = locked;
+        ssidInput.classList.toggle('locked', locked);
+      }
+    }
+
+    function updateSelected(ssid, lockField = false) {
       const selected = document.getElementById('selectedSsid');
       const ssidInput = document.getElementById('ssidInput');
       clearSelections();
@@ -1530,10 +1554,21 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       });
       if (ssidInput) {
         ssidInput.value = ssid || '';
+        setSsidLock(lockField && ssid && ssid.length > 0);
       }
       if (selected) {
         selected.textContent = ssid && ssid.length > 0 ? "Red seleccionada: " + ssid : "Red seleccionada: (ninguna)";
       }
+    }
+
+    function handleManualSsidInput() {
+      const ssidInput = document.getElementById('ssidInput');
+      if (!ssidInput) return;
+      if (ssidLocked) {
+        setSsidLock(false);
+      }
+      clearSelections();
+      updateSelected(ssidInput.value || '', false);
     }
 
     function prefillNetwork(ssid, btn) {
@@ -1547,7 +1582,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       if (editIndex) {
         editIndex.value = '';
       }
-      updateSelected(chosenSsid);
+      updateSelected(chosenSsid, true);
       if (btn) {
         btn.classList.add('selected');
       }
@@ -1562,7 +1597,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         passInput.value = pass;
         editIndex.value = idx;
       }
-      updateSelected(chosenSsid);
+      updateSelected(chosenSsid, true);
       if (btn) {
         btn.classList.add('selected');
       }
@@ -1576,7 +1611,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid); });</script>";
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \\\"" + selectedSsidJs + "\\\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } });</script>";
 
 
   html += "<form action='/finalizar' method='POST'>";
@@ -1599,7 +1634,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h3 class="section-title">Red a configurar:</h3>
     <input type='hidden' id='editIndex' name='index' value=''>
 )=====";
-  html += "    <input id='ssidInput' type='hidden' name='ssid' value=\"" + selectedSsidEscaped + "\" required>";
+    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\\\"" + selectedSsidEscaped + "\\\" required oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
+    html += ssidOptions;
   html += "    <div class='selected-ssid' id='selectedSsid'>Red seleccionada: " + (selectedSsid.length() > 0 ? selectedSsid : "(ninguna)") + "</div>";
   html += R"=====(
     <input id='passInput' type='password' name='pass' placeholder='Contraseña de la red seleccionada' required>
