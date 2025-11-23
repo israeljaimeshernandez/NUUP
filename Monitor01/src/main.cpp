@@ -1,3 +1,4 @@
+// 27 - Corrección: mantener el portal abierto al finalizar sin cerrar la pestaña, evitando errores al usuario
 // 26 - Corrección: retirar leyendas de relleno en listas de redes y títulos para simplificar la interfaz
 // 25 - Corrección: mantener el portal abierto cancelando reinicios mientras el usuario configura
 // 24 - Corrección: reescribir botones HTML con escape doble para compilar sin errores
@@ -1725,11 +1726,16 @@ void handleFinalizeConfig() {
   mostrarMensajeRedConectada(redActual.length() > 0 ? redActual : "Sin red", conectada);
 
   server.send(200, "text/html",
-              "<html><body><h2>Configuración finalizada</h2><p>El equipo se reiniciará y cerrará el portal.</p><script>setTimeout(() => { window.close(); }, 1500);</script></body></html>");
+              "<html><body><h2>Configuración finalizada</h2><p>El equipo aplicará los cambios y reiniciará en unos segundos. Puedes dejar esta pestaña abierta hasta que el equipo vuelva a estar en línea.</p></body></html>");
 
-  detenerConfiguracionWiFi();
+  // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
+  portalEnUso = true;
+  portalPantallaFija = true;
+  apMode = true;
+  forceAPMode = true;
+
   reinicioSolicitado = true;
-  reinicioProgramado = millis() + 3000;
+  reinicioProgramado = millis() + 5000;
 }
 
 void handleDeleteNetwork() {
@@ -3438,7 +3444,10 @@ void loop() {
 
   manejarBotonWifi();
 
-  if (!forceAPMode && !wifiConfigInProgress && reinicioSolicitado && millis() >= reinicioProgramado) {
+  if (reinicioSolicitado && millis() >= reinicioProgramado) {
+    // Permitir el reinicio incluso si el portal sigue activo, para no dejar la pestaña sin respuesta
+    forceAPMode = false;
+    wifiConfigInProgress = false;
     ESP.restart();
   }
 
