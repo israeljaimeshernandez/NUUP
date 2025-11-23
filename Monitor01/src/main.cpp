@@ -1,3 +1,4 @@
+// 34 - Corrección: fijar mensaje en display antes de reiniciar, persistir credenciales en EEPROM y reflejar red seleccionada al usarla
 // 33 - Corrección: portal muestra UserID y red guardados, formulario centrado en contraseña y mensaje fijo antes de reiniciar
 // 32 - Corrección: mantener portal estático, limpiar leyendas y mostrar credenciales en pantalla antes de reiniciar
 // 31 - Corrección: desactivar reescaneos manuales para mantener la página fija mientras se configura
@@ -1686,6 +1687,11 @@ void handleFinalizeConfig() {
   apMode = true;
   portalPantallaFija = true;
 
+  auto liberarPortal = []() {
+    portalEnUso = false;
+    wifiConfigInProgress = false;
+  };
+
   // Actualizar User ID con el valor ingresado o validar el existente
   if (server.hasArg("newid")) {
     String newID = server.arg("newid");
@@ -1695,12 +1701,14 @@ void handleFinalizeConfig() {
       userID = newID;
     } else {
       server.send(400, "text/plain", "User ID inválido");
+      liberarPortal();
       return;
     }
   }
 
   if (userID.isEmpty()) {
     server.send(400, "text/plain", "Debes capturar un User ID válido para finalizar");
+    liberarPortal();
     return;
   }
 
@@ -1711,6 +1719,7 @@ void handleFinalizeConfig() {
 
   if ((server.hasArg("ssid") && !server.hasArg("pass")) || (!server.hasArg("ssid") && server.hasArg("pass"))) {
     server.send(400, "text/plain", "Debes capturar SSID y contraseña para guardar la red");
+    liberarPortal();
     return;
   }
 
@@ -1790,7 +1799,7 @@ void handleFinalizeConfig() {
   wifiConfigInProgress = false;
 
   reinicioSolicitado = true;
-  reinicioProgramado = millis() + 4000;
+  reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion + 200;
 }
 
 void handleDeleteNetwork() {
@@ -1889,6 +1898,10 @@ void handleSetID() {
 
 
 void saveNetworksToEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para guardar redes");
+    return;
+  }
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
 
   for(int i = 0; i < MAX_NETWORKS; i++) {
@@ -1927,6 +1940,10 @@ void saveNetworksToEEPROM() {
 
 
 bool loadNetworksFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para leer redes");
+    return false;
+  }
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
   bool success = true;
 
@@ -2091,6 +2108,10 @@ void debugNetworks() {
 
 
 void saveUserIDToEEPROM(const String& id) {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para guardar User ID");
+    return;
+  }
   int len = id.length();
   if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
 
@@ -2110,6 +2131,10 @@ void saveUserIDToEEPROM(const String& id) {
 }
 
 bool loadUserIDFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para leer User ID");
+    return false;
+  }
   bool success = true;
   int len = EEPROM.read(USER_ID_ADDR);
   if (len == 0xFF || len < 0 || len > USER_ID_MAX_LEN) {
@@ -2938,11 +2963,6 @@ void dibujarMensajeConexion() {
     return;
   }
   display.clearDisplay();
-
-  int centroX = SCREEN_WIDTH / 2;
-  int centroY = 20;
-
-  dibujarWifiAnimado(centroX, centroY, 0);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
