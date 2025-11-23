@@ -1,5 +1,6 @@
 // 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
 // 40 - Corrección: mantener SSID editable al abrir, bloquearlo al elegir "Usar" y guardar SSID+pass en EEPROM
+// 41 - Corrección: resaltar la red elegida, mover la selección a un indicador compacto y garantizar que "Usar" llene el SSID
 // 38 - Corrección: validar guardado de red en EEPROM al finalizar configuración y abortar si falla
 // 37 - Corrección: fijar mensaje final 3s, reinicio automático y SSID seleccionado visible/guardado en portal
 // 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
@@ -1428,7 +1429,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       font-size: 16px;
       font-weight: bold;
       cursor: pointer;
-      transition: background-color 0.3s;
+      transition: background-color 0.3s, border-color 0.3s, color 0.3s;
       margin: 5px 0;
     }
     button:disabled {
@@ -1438,9 +1439,18 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     button:hover {
       background-color: #FFA500;
     }
+    button.use-button {
+      background-color: rgba(255, 215, 0, 0.28);
+      color: #FFD700;
+      border: 1px solid #FFD700;
+    }
+    button.use-button:hover {
+      background-color: rgba(255, 215, 0, 0.45);
+    }
     .use-button.selected {
       background-color: #2ecc71;
       color: #121212;
+      border-color: #2ecc71;
     }
     .network-list {
       margin: 20px 0;
@@ -1469,6 +1479,25 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       margin-left: 10px;
       margin-right: 10px;
       font-size: 14px;
+    }
+    .selected-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background-color: #222;
+      border: 1px solid #FFD700;
+      border-radius: 20px;
+      padding: 8px 12px;
+      margin: 8px 0 16px 0;
+      color: #FFD700;
+      font-weight: bold;
+    }
+    .selected-chip .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background-color: #2ecc71;
+      box-shadow: 0 0 8px rgba(46, 204, 113, 0.7);
     }
     .network-item button {
       padding: 8px 12px;
@@ -1544,7 +1573,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
 
     function updateSelected(ssid, lockField = false) {
-      const selected = document.getElementById('selectedSsid');
+      const chip = document.getElementById('selectedChip');
+      const chipText = document.getElementById('selectedChipText');
       const ssidInput = document.getElementById('ssidInput');
       clearSelections();
       document.querySelectorAll('.use-button').forEach(btn => {
@@ -1556,8 +1586,14 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         ssidInput.value = ssid || '';
         setSsidLock(lockField && ssid && ssid.length > 0);
       }
-      if (selected) {
-        selected.textContent = ssid && ssid.length > 0 ? "Red seleccionada: " + ssid : "Red seleccionada: (ninguna)";
+      if (chip && chipText) {
+        if (ssid && ssid.length > 0) {
+          chipText.textContent = ssid;
+          chip.classList.add('active');
+        } else {
+          chipText.textContent = 'Sin red';
+          chip.classList.remove('active');
+        }
       }
     }
 
@@ -1572,7 +1608,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
 
     function prefillNetwork(ssid, btn) {
-      const chosenSsid = btn && btn.dataset ? btn.dataset.ssid : ssid;
+      const chosenSsid = (btn && btn.dataset && btn.dataset.ssid) ? btn.dataset.ssid : ssid;
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
       if (passInput) {
@@ -1583,14 +1619,11 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         editIndex.value = '';
       }
       updateSelected(chosenSsid, true);
-      if (btn) {
-        btn.classList.add('selected');
-      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     function editNetwork(idx, ssid, pass, btn) {
-      const chosenSsid = btn && btn.dataset ? btn.dataset.ssid : ssid;
+      const chosenSsid = (btn && btn.dataset && btn.dataset.ssid) ? btn.dataset.ssid : ssid;
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
       if (passInput && editIndex) {
@@ -1598,9 +1631,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         editIndex.value = idx;
       }
       updateSelected(chosenSsid, true);
-      if (btn) {
-        btn.classList.add('selected');
-      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   </script>
@@ -1636,7 +1666,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 )=====";
     html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\\\"" + selectedSsidEscaped + "\\\" required oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
     html += ssidOptions;
-  html += "    <div class='selected-ssid' id='selectedSsid'>Red seleccionada: " + (selectedSsid.length() > 0 ? selectedSsid : "(ninguna)") + "</div>";
+  html += "    <div class='selected-chip' id='selectedChip'><span class='dot'></span><span id='selectedChipText'>" + (selectedSsid.length() > 0 ? selectedSsid : "Sin red") + "</span></div>";
   html += R"=====(
     <input id='passInput' type='password' name='pass' placeholder='Contraseña de la red seleccionada' required>
 
