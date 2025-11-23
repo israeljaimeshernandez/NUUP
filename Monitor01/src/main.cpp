@@ -1559,9 +1559,9 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"";
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \\\"";
   html += selectedSsidJs;
-  html += "\"; updateSelected(initialSsid); });<\/script>";
+  html += "\\\"; updateSelected(initialSsid); });</script>";
 
   html += "<form action='/finalizar' method='POST'>";
   html += "<div class=\\\"alert\\\" id=\\\"infoStatus\\\">Información: lista para configurar</div>";
