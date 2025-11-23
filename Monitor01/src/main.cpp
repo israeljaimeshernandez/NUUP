@@ -1,3 +1,4 @@
+// 21 - Corrección: escapar las comillas de botones HTML para compilar sin errores y mantener las acciones del portal
 // 20 - Corrección: procesar los escaneos WiFi incluso con el portal abierto para que el refresco muestre redes reales
 // 19 - Corrección: permitir que el reescaneo WiFi concluya y refresque la lista en el portal
 // 18 - Actualización: se agrega la leyenda inicial de actualizaciones con su consecutivo
