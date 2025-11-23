@@ -1,3 +1,4 @@
+// 30 - Corrección: evitar reinicios mientras el portal está activo para que la página no se cierre sola
 // 29 - Corrección: mantener el portal abierto tras refrescar redes evitando cierres por recarga temprana
 // 28 - Corrección: evitar reinicios inmediatos al seleccionar una red guardada para que el portal no se cierre
 // 27 - Corrección: mantener el portal abierto al finalizar sin cerrar la pestaña, evitando errores al usuario
@@ -3479,9 +3480,15 @@ void loop() {
     ESP.restart();
   }
 
-  // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitar que se cierre
+  // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitamos reinicios
   bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
   if (apActivo) {
+    // Cancelar cualquier reinicio programado mientras el usuario navega en el portal
+    if (reinicioSolicitado) {
+      reinicioSolicitado = false;
+      reinicioProgramado = 0;
+    }
+
     dnsServer.processNextRequest();
     // Atender varias peticiones HTTP por ciclo para mantener la página siempre disponible
     for (int i = 0; i < 3; i++) {
