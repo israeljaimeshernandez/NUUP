@@ -1,3 +1,4 @@
+// 29 - Corrección: mantener el portal abierto tras refrescar redes evitando cierres por recarga temprana
 // 28 - Corrección: evitar reinicios inmediatos al seleccionar una red guardada para que el portal no se cierre
 // 27 - Corrección: mantener el portal abierto al finalizar sin cerrar la pestaña, evitando errores al usuario
 // 26 - Corrección: retirar leyendas de relleno en listas de redes y títulos para simplificar la interfaz
@@ -1509,7 +1510,27 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
 
       fetch('/rescan', { method: 'POST' })
-        .finally(() => setTimeout(() => window.location.reload(), 2000));
+        .then(() => {
+          if (scanStatus) {
+            scanStatus.textContent = 'Reescaneando redes, recargando en breve...';
+          }
+          setTimeout(() => {
+            if (refreshButton) {
+              refreshButton.disabled = false;
+              refreshButton.textContent = 'Refrescar redes';
+            }
+            window.location.reload();
+          }, 4500);
+        })
+        .catch(() => {
+          if (scanStatus) {
+            scanStatus.textContent = 'No se pudo refrescar, intenta de nuevo.';
+          }
+          if (refreshButton) {
+            refreshButton.disabled = false;
+            refreshButton.textContent = 'Refrescar redes';
+          }
+        });
     }
 
   </script>
@@ -1810,6 +1831,14 @@ void handleSelectNetwork() {
 }
 
 void handleRescanNetworks() {
+  // Mantener el portal activo durante el reescaneo para evitar cierres por recarga
+  portalEnUso = true;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
+  reinicioSolicitado = false;
+  reinicioProgramado = 0;
+
   scannedNetworksCache = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
   iniciarEscaneoRedes();
   server.send(200, "text/plain", "Escaneo reiniciado");
