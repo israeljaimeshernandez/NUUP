@@ -1,3 +1,4 @@
+// 44 - Corrección: portal vacío al abrir, renombrar/editar redes sin duplicar y borrar redes persiste en EEPROM
 // 43 - Corrección: reparar el HTML del portal para que no muestre artefactos de las cadenas crudas
 // 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
 // 40 - Corrección: mantener SSID editable al abrir, bloquearlo al elegir "Usar" y guardar SSID+pass en EEPROM
@@ -1283,19 +1284,9 @@ void handleRoot() {
   loadUserIDFromEEPROM();
   loadNetworksFromEEPROM();
 
-  String selectedSsid = ultimaRedConfigurada;
-  String selectedPass = ultimaContrasenaConfigurada;
-  for (int i = 0; i < MAX_NETWORKS; i++) {
-    if (savedNetworks[i].active && savedNetworks[i].ssid.length() > 0) {
-      selectedSsid = savedNetworks[i].ssid;
-      selectedPass = savedNetworks[i].password;
-      break;
-    }
-    if (selectedSsid.length() == 0 && savedNetworks[i].ssid.length() > 0) {
-      selectedSsid = savedNetworks[i].ssid;
-      selectedPass = savedNetworks[i].password;
-    }
-  }
+  // Mantener el formulario vacío al cargar la página; se llenará al elegir “Modificar” o “Usar”
+  String selectedSsid = "";
+  String selectedPass = "";
   String selectedSsidEscaped = escapeForHTMLAttr(selectedSsid);
   String selectedSsidJs = escapeForJS(selectedSsid);
   String selectedPassEscaped = escapeForHTMLAttr(selectedPass);
@@ -1316,7 +1307,7 @@ void handleRoot() {
       networksList += "<div class='network-item'>";
       networksList += "<div class='network-info'><strong>" + safeSsidAttr + "</strong><div>Contraseña: " + safePassAttr + "</div></div>";
       networksList += "<div class='network-actions'>";
-      networksList += "<button class='use-button' data-ssid='" + safeSsidAttr + "' data-pass='" + safePassAttr + "' type='button' onclick=\"editNetwork(" + String(i) + ", this)\">Usar</button>";
+      networksList += "<button class='use-button' data-ssid='" + safeSsidAttr + "' data-pass='" + safePassAttr + "' type='button' onclick=\"editNetwork(" + String(i) + ", this)\">Modificar</button>";
       networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
       networksList += "</div>";
       networksList += "</div>";
@@ -1591,7 +1582,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       if (editIndex) {
         editIndex.value = '';
       }
-      updateSelected(chosenSsid, true);
+      updateSelected(chosenSsid, false);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -1606,7 +1597,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         editIndex.value = idx;
         passInput.focus();
       }
-      updateSelected(chosenSsid, true);
+      updateSelected(chosenSsid, false);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   </script>
@@ -1640,10 +1631,12 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h3 class="section-title">Red a configurar:</h3>
     <input type='hidden' id='editIndex' name='index' value=''>
 )=====";
-    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\"" + selectedSsidEscaped + "\" required oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
+    html += "    <label for='ssidInput'>Nombre de la red (SSID)</label>";
+    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\"" + selectedSsidEscaped + "\" oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
     html += ssidOptions;
   html += R"=====(
-    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value=\"" + selectedPassEscaped + "\" required>
+    <label for='passInput'>Contraseña</label>
+    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value=\"" + selectedPassEscaped + "\" >
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
 )=====";
@@ -1672,6 +1665,12 @@ void handleSaveCredentials() {
   if(server.hasArg("ssid") && server.hasArg("pass")) {
     String ssid = server.arg("ssid");
     String pass = server.arg("pass");
+    ssid.trim();
+
+    if (ssid.length() == 0) {
+      server.send(400, "text/plain", "SSID vacío");
+      return;
+    }
     int requestedIndex = -1;
     if (server.hasArg("index")) {
       String idxStr = server.arg("index");
@@ -1681,8 +1680,16 @@ void handleSaveCredentials() {
       }
     }
 
-    // Usar índice solicitado para editar o buscar espacio libre
+    // Usar índice solicitado para editar, sobrescribir duplicados o buscar espacio libre
     int indexToSave = (requestedIndex >= 0 && requestedIndex < MAX_NETWORKS) ? requestedIndex : -1;
+    if (indexToSave == -1) {
+      for (int i = 0; i < MAX_NETWORKS; i++) {
+        if (savedNetworks[i].ssid == ssid) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
     if (indexToSave == -1) {
       for(int i = 0; i < MAX_NETWORKS; i++) {
         if(savedNetworks[i].ssid.length() == 0) {
@@ -1710,8 +1717,11 @@ void handleSaveCredentials() {
 
     if (!saveNetworksToEEPROM()) {
       Serial.println("❌ Error al guardar redes en EEPROM");
+      server.send(500, "text/plain", "No se pudo guardar la red");
+      return;
     }
     ultimaRedConfigurada = ssid;
+    ultimaContrasenaConfigurada = pass;
     server.send(200, "text/html", "<html><body><h2>Credenciales guardadas. El equipo reiniciará para aplicarlas.</h2><script>setTimeout(()=>window.location='/',600);</script></body></html>");
 
     forceAPMode = true;
@@ -1773,6 +1783,13 @@ void handleFinalizeConfig() {
   if (server.hasArg("ssid") && server.hasArg("pass")) {
     ssid = server.arg("ssid");
     pass = server.arg("pass");
+    ssid.trim();
+
+    if (ssid.length() == 0) {
+      server.send(400, "text/plain", "SSID vacío");
+      liberarPortal();
+      return;
+    }
 
     int requestedIndex = -1;
     if (server.hasArg("index")) {
@@ -1784,6 +1801,14 @@ void handleFinalizeConfig() {
     }
 
     int indexToSave = (requestedIndex >= 0 && requestedIndex < MAX_NETWORKS) ? requestedIndex : -1;
+    if (indexToSave == -1) {
+      for (int i = 0; i < MAX_NETWORKS; i++) {
+        if (savedNetworks[i].ssid == ssid) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
     if (indexToSave == -1) {
       for(int i = 0; i < MAX_NETWORKS; i++) {
         if(savedNetworks[i].ssid.length() == 0) {
@@ -1813,6 +1838,7 @@ void handleFinalizeConfig() {
       return;
     }
     ultimaRedConfigurada = ssid;
+    ultimaContrasenaConfigurada = pass;
     redActualizada = true;
   }
 
@@ -1855,11 +1881,21 @@ void handleDeleteNetwork() {
   if(server.hasArg("index")) {
     int index = server.arg("index").toInt();
     if(index >= 0 && index < MAX_NETWORKS) {
+      String removedSsid = savedNetworks[index].ssid;
       savedNetworks[index].ssid = "";
       savedNetworks[index].password = "";
       savedNetworks[index].active = false;
       if (!saveNetworksToEEPROM()) {
         Serial.println("❌ Error al guardar redes en EEPROM");
+        server.send(500, "text/plain", "No se pudo borrar la red");
+        return;
+      }
+      if (ultimaRedConfigurada == removedSsid) {
+        ultimaRedConfigurada = "";
+        ultimaContrasenaConfigurada = "";
+      }
+      if (currentNetwork == index) {
+        currentNetwork = -1;
       }
       server.send(200, "text/plain", "OK");
     } else {
