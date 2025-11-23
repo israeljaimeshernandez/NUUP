@@ -1,5 +1,6 @@
-// 31 - Corrección: mantener el portal abierto sin reinicios mientras se navega y simplificar refrescos
-// 30 - Corrección: evitar reinicios mientras el portal está activo para que la página no se cierre sola
+// 32 - Corrección: mantener portal estático, limpiar leyendas y mostrar credenciales en pantalla antes de reiniciar
+// 31 - Corrección: desactivar reescaneos manuales para mantener la página fija mientras se configura
+// 30 - Corrección: cancelar reinicios mientras el portal está activo para evitar cierres inesperados
 // 29 - Corrección: mantener el portal abierto tras refrescar redes evitando cierres por recarga temprana
 // 28 - Corrección: evitar reinicios inmediatos al seleccionar una red guardada para que el portal no se cierre
 // 27 - Corrección: mantener el portal abierto al finalizar sin cerrar la pestaña, evitando errores al usuario
@@ -393,7 +394,7 @@ void debugEstadoDispositivos();
 
 void debugNombreProblema();
 void manejarBotonWifi();
-void mostrarMensajeRedConectada(const String &ssid, bool conectado);
+void mostrarMensajeRedConectada(const String &ssid, bool conectado, const String &password = "", unsigned long retrasoMs = 0, unsigned long duracionMs = 5000);
 void dibujarMensajeConexion();
 String escapeForJS(const String &input);
 
@@ -410,7 +411,10 @@ bool wifiConfigInProgress = false;
 bool mostrarMensajeConexion = false;
 unsigned long inicioMensajeConexion = 0;
 String ultimaRedConfigurada = "";
+String ultimaContrasenaConfigurada = "";
 bool conexionExitosa = false;
+unsigned long retrasoMensajeConexion = 0;
+unsigned long duracionMensajeConexion = 5000;
 
 //void manejarBoton_S();
 
@@ -1141,16 +1145,21 @@ void startAPMode() {
 
 }
 
-void mostrarMensajeRedConectada(const String &ssid, bool conectado) {
+void mostrarMensajeRedConectada(const String &ssid, bool conectado, const String &password, unsigned long retrasoMs, unsigned long duracionMs) {
   ultimaRedConfigurada = ssid;
+  ultimaContrasenaConfigurada = password;
   conexionExitosa = conectado;
   inicioMensajeConexion = millis();
+  retrasoMensajeConexion = retrasoMs;
+  duracionMensajeConexion = duracionMs;
   mostrarMensajeConexion = true;
   animandoWifi = true;
   frameWifi = 0;
   ultimoCambioWifi = millis();
   Serial.printf("\n📶 %s a la red '%s'\n", conectado ? "Conectado" : "Fallo de conexión", ssid.c_str());
-  dibujarMensajeConexion();
+  if (retrasoMensajeConexion == 0) {
+    dibujarMensajeConexion();
+  }
 }
 
 String escapeForJS(const String &input) {
@@ -1248,6 +1257,9 @@ void handleRoot() {
     portalPantallaFija = true;
   }
 
+  loadUserIDFromEEPROM();
+  loadNetworksFromEEPROM();
+
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
@@ -1256,7 +1268,7 @@ void handleRoot() {
       networksList += "<div class='network-item'>";
       networksList += "<div class='network-info'><strong>" + savedNetworks[i].ssid + "</strong></div>";
       networksList += "<div class='network-actions'>";
-      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\">Usar/editar</button>";
+      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\">Usar</button>";
       networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
       networksList += "</div>";
       networksList += "</div>";
@@ -1270,9 +1282,6 @@ void handleRoot() {
   }
 
   String scannedNetworks = scannedNetworksCache;
-  if (scannedNetworks.isEmpty()) {
-    scannedNetworks = "<p>Escaneando redes... espera unos segundos y recarga.</p>";
-  }
 
   String devicesList = "";
   int deviceCount = 0;
@@ -1521,8 +1530,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   html += R"=====(
     </div>
 
-    <h3 class="section-title">Agregar o modificar red:</h3>
-    <p>Selecciona una red de la lista o escribe una nueva. El botón final guardará esta red y el User ID.</p>
+    <h3 class="section-title">Red a configurar:</h3>
     <input type='hidden' id='editIndex' name='index' value=''>
     <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
     <input id='passInput' type='password' name='pass' placeholder='Contraseña' required>
@@ -1535,8 +1543,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     </div>
 
     <div class="network-list">
-      <h3 class="section-title">Finalizar configuración:</h3>
-      <p>Guarda el User ID y la red ingresada. El equipo reiniciará al modo normal.</p>
       <button type='submit'>Configurar y reiniciar</button>
     </div>
   </form>
@@ -1609,11 +1615,11 @@ void handleSaveCredentials() {
     bool conectado = WiFi.status() == WL_CONNECTED;
     forceAPMode = false;
     wifiConfigInProgress = false;
-    mostrarMensajeRedConectada(ssid, conectado);
+    mostrarMensajeRedConectada(ssid, conectado, pass, 1000, 3000);
     portalEnUso = false;
     portalPantallaFija = false;
     reinicioSolicitado = true;
-    reinicioProgramado = millis() + 5000;
+    reinicioProgramado = millis() + 4000;
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
@@ -1708,10 +1714,19 @@ void handleFinalizeConfig() {
   }
 
   bool conectada = WiFi.status() == WL_CONNECTED || conexionExitosa;
-  mostrarMensajeRedConectada(redActual.length() > 0 ? redActual : "Sin red", conectada);
+  String passPantalla = pass;
+  if (passPantalla.isEmpty()) {
+    for (int i = 0; i < MAX_NETWORKS; i++) {
+      if (savedNetworks[i].active || savedNetworks[i].ssid == redActual) {
+        passPantalla = savedNetworks[i].password;
+        break;
+      }
+    }
+  }
+  String redParaMensaje = redActual.length() > 0 ? redActual : "Sin red";
+  mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 1000, 3000);
 
-  server.send(200, "text/html",
-              "<html><body><h2>Configuración finalizada</h2><p>El equipo aplicará los cambios y reiniciará en unos segundos. Puedes dejar esta pestaña abierta hasta que el equipo vuelva a estar en línea.</p></body></html>");
+  server.send(200, "text/html", "<html><body><h2>Configuración guardada</h2></body></html>");
 
   // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
   portalEnUso = false;
@@ -1721,7 +1736,7 @@ void handleFinalizeConfig() {
   wifiConfigInProgress = false;
 
   reinicioSolicitado = true;
-  reinicioProgramado = millis() + 5000;
+  reinicioProgramado = millis() + 4000;
 }
 
 void handleDeleteNetwork() {
@@ -2893,7 +2908,15 @@ void dibujarMensajeConexion() {
     display.print("(sin red)");
   }
 
-  display.setCursor(0, 38);
+  display.setCursor(0, 32);
+  display.print("Pass: ");
+  if (ultimaContrasenaConfigurada.length() > 0) {
+    display.print(ultimaContrasenaConfigurada);
+  } else {
+    display.print("(vacía)");
+  }
+
+  display.setCursor(0, 44);
   display.print("User ID: ");
   display.print(userID.length() > 0 ? userID : "(vacío)");
 
@@ -3445,6 +3468,17 @@ void loop() {
       }
       mostrarConexionWifi();
     }
+    if (mostrarMensajeConexion) {
+      unsigned long elapsed = millis() - inicioMensajeConexion;
+      if (elapsed >= retrasoMensajeConexion) {
+        dibujarMensajeConexion();
+      }
+      if (elapsed >= retrasoMensajeConexion + duracionMensajeConexion) {
+        dnsServer.stop();
+        server.stop();
+        ESP.restart();
+      }
+    }
     if (reinicioSolicitado && !portalEnUso && millis() >= reinicioProgramado) {
       dnsServer.stop();
       server.stop();
@@ -3460,8 +3494,11 @@ void loop() {
   }
 
   if (mostrarMensajeConexion) {
-    dibujarMensajeConexion();
-    if (millis() - inicioMensajeConexion >= 5000) {
+    unsigned long elapsed = millis() - inicioMensajeConexion;
+    if (elapsed >= retrasoMensajeConexion) {
+      dibujarMensajeConexion();
+    }
+    if (elapsed >= retrasoMensajeConexion + duracionMensajeConexion) {
       ESP.restart();
     }
     return;
