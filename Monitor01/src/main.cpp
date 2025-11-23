@@ -1,3 +1,4 @@
+// 28 - Corrección: evitar reinicios inmediatos al seleccionar una red guardada para que el portal no se cierre
 // 27 - Corrección: mantener el portal abierto al finalizar sin cerrar la pestaña, evitando errores al usuario
 // 26 - Corrección: retirar leyendas de relleno en listas de redes y títulos para simplificar la interfaz
 // 25 - Corrección: mantener el portal abierto cancelando reinicios mientras el usuario configura
@@ -1800,8 +1801,6 @@ void handleSelectNetwork() {
       savedNetworks[index].active = true;
       saveNetworksToEEPROM();
       server.send(200, "text/plain", "OK");
-      delay(1000);
-      ESP.restart();
     } else {
       server.send(400, "text/plain", "Índice inválido o red vacía");
     }
