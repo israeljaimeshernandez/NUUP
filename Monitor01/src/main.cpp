@@ -1,3 +1,4 @@
+// 46 - Corrección: limpiar valor de contraseña mostrado, apilar botones Modificar/Borrar y resaltar contraseñas en amarillo
 // 45 - Corrección: permitir finalizar sin SSID al borrar redes, limpiar valores vacíos y soportar ñ en contraseñas
 // 44 - Corrección: portal vacío al abrir, renombrar/editar redes sin duplicar y borrar redes persiste en EEPROM
 // 43 - Corrección: reparar el HTML del portal para que no muestre artefactos de las cadenas crudas
@@ -1464,13 +1465,15 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       flex-grow: 1;
     }
     .network-info .password-label {
-      font-size: 12px;
-      color: #e0e0e0;
+      font-size: 11px;
+      color: #FFD700;
     }
     .network-actions {
       display: flex;
+      flex-direction: column;
       gap: 8px;
       margin-left: auto;
+      align-items: flex-end;
     }
     .network-item label {
       flex-grow: 1;
@@ -1640,9 +1643,9 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     html += "    <label for='ssidInput'>Nombre de la red (SSID)</label>";
     html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value='" + selectedSsidEscaped + "' oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
     html += ssidOptions;
+  html += "    <label for='passInput'>Contraseña</label>";
+  html += "    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value='" + selectedPassEscaped + "'>";
   html += R"=====(
-    <label for='passInput'>Contraseña</label>
-    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value='" + selectedPassEscaped + "'>
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
 )=====";
