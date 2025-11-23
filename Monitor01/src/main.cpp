@@ -1,3 +1,4 @@
+// 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
 // 38 - Corrección: validar guardado de red en EEPROM al finalizar configuración y abortar si falla
 // 37 - Corrección: fijar mensaje final 3s, reinicio automático y SSID seleccionado visible/guardado en portal
 // 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
@@ -1520,7 +1521,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
     function updateSelected(ssid) {
       const selected = document.getElementById('selectedSsid');
-      const info = document.getElementById('infoStatus');
       const ssidInput = document.getElementById('ssidInput');
       clearSelections();
       document.querySelectorAll('.use-button').forEach(btn => {
@@ -1533,9 +1533,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
       if (selected) {
         selected.textContent = ssid && ssid.length > 0 ? "Red seleccionada: " + ssid : "Red seleccionada: (ninguna)";
-      }
-      if (info) {
-        info.textContent = 'Información: lista para configurar';
       }
     }
 
@@ -1583,7 +1580,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
 
   html += "<form action='/finalizar' method='POST'>";
-  html += "<div class=\\\"alert\\\" id=\\\"infoStatus\\\">Información: lista para configurar</div>";
   html += idSection;
   html += R"=====(
     <div class="network-list">
@@ -1681,11 +1677,11 @@ void handleSaveCredentials() {
     forceAPMode = true;
     wifiConfigInProgress = true;
     apMode = true;
-    mostrarMensajeRedConectada(ssid, false, pass, 1000, 3000);
+    mostrarMensajeRedConectada(ssid, false, pass, 1000, 5000);
     portalEnUso = false;
     portalPantallaFija = false;
     reinicioSolicitado = true;
-    reinicioProgramado = millis() + 4000;
+    reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion + 200;
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
@@ -1796,7 +1792,7 @@ void handleFinalizeConfig() {
     }
   }
   String redParaMensaje = redActual.length() > 0 ? redActual : "Sin red";
-  mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 1000, 3000);
+  mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 1000, 5000);
 
   server.send(200, "text/html", "<html><body><h2>Configuración guardada</h2></body></html>");
 
@@ -1915,6 +1911,8 @@ bool saveNetworksToEEPROM() {
     Serial.println("❌ No se pudo iniciar EEPROM para guardar redes");
     return false;
   }
+  // Marcar EEPROM inicializada para que las redes persistan tras reinicios
+  EEPROM.write(0, 1);
   int address = 1; // Empezamos en 1 porque 0 es el flag de inicialización
 
   for(int i = 0; i < MAX_NETWORKS; i++) {
@@ -1952,6 +1950,8 @@ bool saveNetworksToEEPROM() {
   if (!commitOk) {
     Serial.println("❌ Error en commit de redes WiFi");
   }
+
+  EEPROM.end();
 
   return commitOk;
 }
@@ -2039,6 +2039,8 @@ bool loadNetworksFromEEPROM() {
     Serial.printf("Error: Dirección EEPROM excede tamaño máximo (%d > %d)\n", address, EEPROM_SIZE);
     success = false;
   }
+
+  EEPROM.end();
 
   return success;
 }
