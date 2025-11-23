@@ -1,3 +1,4 @@
+// 43 - Corrección: reparar el HTML del portal para que no muestre artefactos de las cadenas crudas
 // 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
 // 40 - Corrección: mantener SSID editable al abrir, bloquearlo al elegir "Usar" y guardar SSID+pass en EEPROM
 // 41 - Corrección: resaltar la red elegida, mover la selección a un indicador compacto y garantizar que "Usar" llene el SSID
@@ -1624,21 +1625,21 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
-)====";
+)=====";
   html += networksList;
   html += R"=====(
     </div>
 
     <div class="network-list">
       <h3 class="section-title">Redes cercanas:</h3>
-)====";
+)=====";
   html += scannedNetworks;
   html += R"=====(
     </div>
 
     <h3 class="section-title">Red a configurar:</h3>
     <input type='hidden' id='editIndex' name='index' value=''>
-)====";
+)=====";
     html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\"" + selectedSsidEscaped + "\" required oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
     html += ssidOptions;
   html += R"=====(
