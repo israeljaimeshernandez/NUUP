@@ -1,3 +1,4 @@
+// 18 - Actualización: se agrega la leyenda inicial de actualizaciones con su consecutivo
 // 17 - Corrección: simplificar el portal mostrando el User ID guardado y permitir usar/editar redes sin botones extra
 // 16 - Corrección: permitir refrescar/editar redes, persistir UserID visible y reiniciar solo cuando cambian redes
 // 15 - Corrección: mantener portal abierto hasta que el usuario termine; mostrar ID guardado y reiniciar al finalizar
@@ -1203,7 +1204,7 @@ void procesarEscaneoRedes() {
     scannedNetworks += "<div class='network-item'>";
     scannedNetworks += "<label>" + ssid + "</label>";
     scannedNetworks += "<span class='signal'>" + String(rssi) + " dBm</span>";
-    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\"" + disableAttr + ">Usar</button>";
+    scannedNetworks += "<button type='button' onclick=\"prefillNetwork('" + ssid + "')\"">Usar</button>";
     scannedNetworks += "</div>";
   }
 
@@ -1238,10 +1239,6 @@ void handleRoot() {
     portalPantallaFija = true;
   }
 
-  bool idMissing = userID.isEmpty();
-  String disableAttr = idMissing ? " disabled" : "";
-  String disableMessage = idMissing ? "<div class='alert'>Debes capturar el User ID para guardar redes o modificar dispositivos.</div>" : "";
-
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
     if(savedNetworks[i].ssid.length() > 0) {
@@ -1250,8 +1247,8 @@ void handleRoot() {
       networksList += "<div class='network-item'>";
       networksList += "<div class='network-info'><strong>" + savedNetworks[i].ssid + "</strong></div>";
       networksList += "<div class='network-actions'>";
-      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\"" + disableAttr + ">Usar/editar</button>";
-      networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'" + disableAttr + ">Borrar</button>";
+      networksList += "<button type='button' onclick=\"editNetwork(" + String(i) + ",'" + safeSsid + "','" + safePass + "')\">Usar/editar</button>";
+      networksList += "<button type='button' onclick='deleteNetwork(" + String(i) + ")'>Borrar</button>";
       networksList += "</div>";
       networksList += "</div>";
     }
@@ -1282,7 +1279,7 @@ void handleRoot() {
       }
       devicesList += "<div class='network-item device-item'>";
       devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
-      devicesList += "<button type='button' onclick=\"deleteDevice('" + mac + "')\"" + disableAttr + ">Eliminar</button>";
+      devicesList += "<button type='button' onclick=\"deleteDevice('" + mac + "')\"">Eliminar</button>";
       devicesList += "</div>";
     }
   }
@@ -1296,10 +1293,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   String idValueAttr = userID.length() > 0 ? " value='" + userID + "'" : "";
   String idSection = "<h3>ID de usuario actual:</h3>";
   idSection += "<p><strong>" + currentIDDisplay + "</strong></p>";
-  idSection += "<form action='/setid' method='POST'>";
   idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required" + idValueAttr + ">";
-  idSection += "<button type='submit'>Actualizar ID</button>";
-  idSection += "</form><hr>";
+  idSection += "<hr>";
 
 
   String html = R"=====(
@@ -1492,11 +1487,6 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
     }
 
-    function rescanNetworks() {
-      fetch('/rescan', { method: 'POST' }).then(() => {
-        setTimeout(() => { location.reload(); }, 800);
-      });
-    }
   </script>
 </head>
 <body>
@@ -1505,7 +1495,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += disableMessage;
+  html += "<form action='/finalizar' method='POST'>";
   html += idSection;
   html += R"=====(
     <div class="network-list">
@@ -1522,29 +1512,13 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 )=====";
   html += scannedNetworks;
   html += R"=====(
-      <button type="button" onclick="rescanNetworks()">Actualizar redes</button>
     </div>
 
-    <h3 class="section-title">Agregar nueva red:</h3>
-    <p>Por seguridad el navegador no puede leer la red/contraseña de tu teléfono. Selecciona una red de la lista o escríbela aquí.</p>
-    <form action='/save' method='POST'>
-      <input type='hidden' id='editIndex' name='index' value=''>
-      <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required
-)=====";
-  html += disableAttr;
-  html += R"=====(
->
-      <input id='passInput' type='password' name='pass' placeholder='Contraseña' required
-)=====";
-  html += disableAttr;
-  html += R"=====(
->
-      <button type='submit'
-)=====";
-  html += disableAttr;
-  html += R"=====(
->Guardar Configuración</button>
-    </form>
+    <h3 class="section-title">Agregar o modificar red:</h3>
+    <p>Selecciona una red de la lista o escribe una nueva. El botón final guardará esta red y el User ID.</p>
+    <input type='hidden' id='editIndex' name='index' value=''>
+    <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
+    <input id='passInput' type='password' name='pass' placeholder='Contraseña' required>
 
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
@@ -1555,15 +1529,10 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
     <div class="network-list">
       <h3 class="section-title">Finalizar configuración:</h3>
-      <p>Al presionar se cerrará la página, se guardarán los datos y el equipo reiniciará al modo normal.</p>
-      <form action='/finalizar' method='POST'>
-        <button type='submit'
-)=====";
-  html += disableAttr;
-  html += R"=====(
->Configurar y reiniciar</button>
-      </form>
+      <p>Guarda el User ID y la red ingresada. El equipo reiniciará al modo normal.</p>
+      <button type='submit'>Configurar y reiniciar</button>
     </div>
+  </form>
   </div>
 
 </body>
@@ -1642,18 +1611,89 @@ void handleSaveCredentials() {
 }
 
 void handleFinalizeConfig() {
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Configura el User ID antes de finalizar");
-    return;
-  }
-
   portalEnUso = true;
   wifiConfigInProgress = true;
   forceAPMode = true;
   apMode = true;
   portalPantallaFija = true;
 
-  String redActual = WiFi.SSID();
+  // Actualizar User ID con el valor ingresado o validar el existente
+  if (server.hasArg("newid")) {
+    String newID = server.arg("newid");
+    newID.trim();
+    if (newID.length() > 0 && newID.length() <= USER_ID_MAX_LEN) {
+      saveUserIDToEEPROM(newID);
+      userID = newID;
+    } else {
+      server.send(400, "text/plain", "User ID inválido");
+      return;
+    }
+  }
+
+  if (userID.isEmpty()) {
+    server.send(400, "text/plain", "Debes capturar un User ID válido para finalizar");
+    return;
+  }
+
+  // Guardar la red (nueva o modificada) si se proporcionó
+  bool redActualizada = false;
+  String ssid = "";
+  String pass = "";
+
+  if ((server.hasArg("ssid") && !server.hasArg("pass")) || (!server.hasArg("ssid") && server.hasArg("pass"))) {
+    server.send(400, "text/plain", "Debes capturar SSID y contraseña para guardar la red");
+    return;
+  }
+
+  if (server.hasArg("ssid") && server.hasArg("pass")) {
+    ssid = server.arg("ssid");
+    pass = server.arg("pass");
+
+    int requestedIndex = -1;
+    if (server.hasArg("index")) {
+      String idxStr = server.arg("index");
+      idxStr.trim();
+      if (idxStr.length() > 0) {
+        requestedIndex = idxStr.toInt();
+      }
+    }
+
+    int indexToSave = (requestedIndex >= 0 && requestedIndex < MAX_NETWORKS) ? requestedIndex : -1;
+    if (indexToSave == -1) {
+      for(int i = 0; i < MAX_NETWORKS; i++) {
+        if(savedNetworks[i].ssid.length() == 0) {
+          indexToSave = i;
+          break;
+        }
+      }
+    }
+
+    if(indexToSave == -1) {
+      indexToSave = 0;
+    }
+
+    savedNetworks[indexToSave].ssid = ssid;
+    savedNetworks[indexToSave].password = pass;
+    savedNetworks[indexToSave].active = true;
+
+    for(int i = 0; i < MAX_NETWORKS; i++) {
+      if(i != indexToSave) {
+        savedNetworks[i].active = false;
+      }
+    }
+
+    saveNetworksToEEPROM();
+    ultimaRedConfigurada = ssid;
+    redActualizada = true;
+
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    unsigned long inicioConexion = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - inicioConexion < WIFI_TIMEOUT) {
+      delay(200);
+    }
+  }
+
+  String redActual = redActualizada ? ssid : WiFi.SSID();
   if (redActual.length() == 0 && ultimaRedConfigurada.length() > 0) {
     redActual = ultimaRedConfigurada;
   }
