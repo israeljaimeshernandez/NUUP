@@ -1,3 +1,4 @@
+// 47 - Corrección: mostrar en pantalla SSID/contraseña/ID final por 5s antes de reiniciar
 // 46 - Corrección: limpiar valor de contraseña mostrado, apilar botones Modificar/Borrar y resaltar contraseñas en amarillo
 // 45 - Corrección: permitir finalizar sin SSID al borrar redes, limpiar valores vacíos y soportar ñ en contraseñas
 // 44 - Corrección: portal vacío al abrir, renombrar/editar redes sin duplicar y borrar redes persiste en EEPROM
@@ -1736,11 +1737,11 @@ void handleSaveCredentials() {
     forceAPMode = true;
     wifiConfigInProgress = true;
     apMode = true;
-    mostrarMensajeRedConectada(ssid, false, pass, 1000, 5000);
+    mostrarMensajeRedConectada(ssid, false, pass, 0, 5000);
     portalEnUso = false;
     portalPantallaFija = false;
     reinicioSolicitado = true;
-    reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion + 200;
+    reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion;
   } else {
     server.send(400, "text/plain", "Faltan parámetros");
   }
@@ -1862,7 +1863,7 @@ void handleFinalizeConfig() {
     }
   }
   String redParaMensaje = redActual.length() > 0 ? redActual : "Sin red";
-  mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 1000, 5000);
+  mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 0, 5000);
 
   server.send(200, "text/html", "<html><body><h2>Configuración guardada</h2></body></html>");
 
@@ -1874,7 +1875,7 @@ void handleFinalizeConfig() {
   wifiConfigInProgress = false;
 
   reinicioSolicitado = true;
-  reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion + 200;
+  reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion;
 }
 
 void handleDeleteNetwork() {
