@@ -1,3 +1,4 @@
+// 25 - Corrección: mantener el portal abierto cancelando reinicios mientras el usuario configura
 // 24 - Corrección: reescribir botones HTML con escape doble para compilar sin errores
 // 23 - Corrección: consolidar el escape de comillas en botones HTML para compilar sin errores
 // 22 - Corrección: escapar atributos onclick con comillas y evitar errores de compilación en botones del portal
@@ -1232,6 +1233,9 @@ void handleRoot() {
   wifiConfigInProgress = true;
   forceAPMode = true;
   apMode = true;
+  reinicioSolicitado = false;
+  reinicioProgramado = 0;
+  mostrarMensajeConexion = false;
   if (animandoWifi) {
     detenerAnimacionWifi();
   }
@@ -3434,7 +3438,7 @@ void loop() {
 
   manejarBotonWifi();
 
-  if (reinicioSolicitado && millis() >= reinicioProgramado) {
+  if (!forceAPMode && !wifiConfigInProgress && reinicioSolicitado && millis() >= reinicioProgramado) {
     ESP.restart();
   }
 
