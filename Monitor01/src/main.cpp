@@ -1,3 +1,4 @@
+// 45 - Corrección: permitir finalizar sin SSID al borrar redes, limpiar valores vacíos y soportar ñ en contraseñas
 // 44 - Corrección: portal vacío al abrir, renombrar/editar redes sin duplicar y borrar redes persiste en EEPROM
 // 43 - Corrección: reparar el HTML del portal para que no muestre artefactos de las cadenas crudas
 // 39 - Corrección: mostrar datos 5s antes de reiniciar, quitar leyenda extra y asegurar persistencia de redes
@@ -1358,7 +1359,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
   String html = R"=====(
 <!DOCTYPE html>
 <html>
-<head>
+  <head>
+  <meta charset='UTF-8'>
   <title>Configuración WiFi - NUUP</title>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <style>
@@ -1462,7 +1464,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       flex-grow: 1;
     }
     .network-info .password-label {
-      font-size: 13px;
+      font-size: 12px;
       color: #e0e0e0;
     }
     .network-actions {
@@ -1636,11 +1638,11 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <input type='hidden' id='editIndex' name='index' value=''>
 )=====";
     html += "    <label for='ssidInput'>Nombre de la red (SSID)</label>";
-    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value=\\\"" + selectedSsidEscaped + "\\\" oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
+    html += "    <input id='ssidInput' type='text' list='ssidOptions' name='ssid' placeholder='Nombre de la red (SSID)' value='" + selectedSsidEscaped + "' oninput='handleManualSsidInput()' onfocus='handleManualSsidInput()'>";
     html += ssidOptions;
   html += R"=====(
     <label for='passInput'>Contraseña</label>
-    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value=\\\"" + selectedPassEscaped + "\\\" >
+    <input id='passInput' type='text' name='pass' placeholder='Contraseña (visible para editar)' value='" + selectedPassEscaped + "'>
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
 )=====";
@@ -1775,22 +1777,17 @@ void handleFinalizeConfig() {
 
   // Guardar la red (nueva o modificada) si se proporcionó
   bool redActualizada = false;
-  String ssid = "";
-  String pass = "";
+  String ssid = server.hasArg("ssid") ? server.arg("ssid") : "";
+  String pass = server.hasArg("pass") ? server.arg("pass") : "";
+  ssid.trim();
+  pass.trim();
 
-  if ((server.hasArg("ssid") && !server.hasArg("pass")) || (!server.hasArg("ssid") && server.hasArg("pass"))) {
-    server.send(400, "text/plain", "Debes capturar SSID y contraseña para guardar la red");
-    liberarPortal();
-    return;
-  }
+  bool tieneDatosSsid = ssid.length() > 0;
+  bool tieneDatosPass = pass.length() > 0;
 
-  if (server.hasArg("ssid") && server.hasArg("pass")) {
-    ssid = server.arg("ssid");
-    pass = server.arg("pass");
-    ssid.trim();
-
-    if (ssid.length() == 0) {
-      server.send(400, "text/plain", "SSID vacío");
+  if (tieneDatosSsid || tieneDatosPass) {
+    if (!tieneDatosSsid || !tieneDatosPass) {
+      server.send(400, "text/plain", "Debes capturar SSID y contraseña para guardar la red");
       liberarPortal();
       return;
     }
