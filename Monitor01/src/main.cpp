@@ -1,3 +1,4 @@
+// 37 - Corrección: fijar mensaje final 3s, reinicio automático y SSID seleccionado visible/guardado en portal
 // 36 - Corrección: mantener reinicio automático tras guardar y limpiar el portal/selección visual de redes
 // 35 - Corrección: evitar bloqueos al guardar, resaltar red elegida y asegurar persistencia de red en EEPROM
 // 34 - Corrección: fijar mensaje en display antes de reiniciar, persistir credenciales en EEPROM y reflejar red seleccionada al usarla
@@ -1538,6 +1539,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
 
     function prefillNetwork(ssid, btn) {
+      const chosenSsid = btn && btn.dataset ? btn.dataset.ssid : ssid;
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
       if (passInput) {
@@ -1547,7 +1549,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       if (editIndex) {
         editIndex.value = '';
       }
-      updateSelected(ssid);
+      updateSelected(chosenSsid);
       if (btn) {
         btn.classList.add('selected');
       }
@@ -1555,13 +1557,14 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     }
 
     function editNetwork(idx, ssid, pass, btn) {
+      const chosenSsid = btn && btn.dataset ? btn.dataset.ssid : ssid;
       const passInput = document.getElementById('passInput');
       const editIndex = document.getElementById('editIndex');
       if (passInput && editIndex) {
         passInput.value = pass;
         editIndex.value = idx;
       }
-      updateSelected(ssid);
+      updateSelected(chosenSsid);
       if (btn) {
         btn.classList.add('selected');
       }
