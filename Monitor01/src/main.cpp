@@ -1,3 +1,4 @@
+// 33 - Corrección: portal muestra UserID y red guardados, formulario centrado en contraseña y mensaje fijo antes de reiniciar
 // 32 - Corrección: mantener portal estático, limpiar leyendas y mostrar credenciales en pantalla antes de reiniciar
 // 31 - Corrección: desactivar reescaneos manuales para mantener la página fija mientras se configura
 // 30 - Corrección: cancelar reinicios mientras el portal está activo para evitar cierres inesperados
@@ -1153,7 +1154,8 @@ void mostrarMensajeRedConectada(const String &ssid, bool conectado, const String
   retrasoMensajeConexion = retrasoMs;
   duracionMensajeConexion = duracionMs;
   mostrarMensajeConexion = true;
-  animandoWifi = true;
+  detenerAnimacionWifi();
+  animandoWifi = false;
   frameWifi = 0;
   ultimoCambioWifi = millis();
   Serial.printf("\n📶 %s a la red '%s'\n", conectado ? "Conectado" : "Fallo de conexión", ssid.c_str());
@@ -1169,6 +1171,16 @@ String escapeForJS(const String &input) {
   out.replace("\"", "\\\"");
   out.replace("\n", " ");
   out.replace("\r", " ");
+  return out;
+}
+
+String escapeForHTMLAttr(const String &input) {
+  String out = input;
+  out.replace("&", "&amp;");
+  out.replace("\"", "&quot;");
+  out.replace("'", "&#39;");
+  out.replace("<", "&lt;");
+  out.replace(">", "&gt;");
   return out;
 }
 
@@ -1259,6 +1271,19 @@ void handleRoot() {
 
   loadUserIDFromEEPROM();
   loadNetworksFromEEPROM();
+
+  String selectedSsid = ultimaRedConfigurada;
+  for (int i = 0; i < MAX_NETWORKS; i++) {
+    if (savedNetworks[i].active && savedNetworks[i].ssid.length() > 0) {
+      selectedSsid = savedNetworks[i].ssid;
+      break;
+    }
+    if (selectedSsid.length() == 0 && savedNetworks[i].ssid.length() > 0) {
+      selectedSsid = savedNetworks[i].ssid;
+    }
+  }
+  String selectedSsidEscaped = escapeForHTMLAttr(selectedSsid);
+  String selectedSsidJs = escapeForJS(selectedSsid);
 
   String networksList = "";
   for(int i = 0; i < MAX_NETWORKS; i++) {
@@ -1425,6 +1450,14 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     .network-item button:hover {
       background-color: #cc0000;
     }
+    .selected-ssid {
+      background-color: #333;
+      border: 1px solid #FFD700;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 10px;
+      font-weight: bold;
+    }
     .device-item {
       justify-content: space-between;
       gap: 10px;
@@ -1486,6 +1519,7 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         ssidInput.value = ssid;
         passInput.value = '';
         passInput.focus();
+        updateSelected(ssid);
       }
       if (editIndex) {
         editIndex.value = '';
@@ -1501,7 +1535,19 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
         ssidInput.value = ssid;
         passInput.value = pass;
         editIndex.value = idx;
+        updateSelected(ssid);
         window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+
+    function updateSelected(ssid) {
+      const selected = document.getElementById('selectedSsid');
+      const info = document.getElementById('infoStatus');
+      if (selected) {
+        selected.textContent = ssid && ssid.length > 0 ? 'Red seleccionada: ' + ssid : 'Red seleccionada: (ninguna)';
+      }
+      if (info) {
+        info.textContent = 'Información: lista para configurar';
       }
     }
 
@@ -1513,7 +1559,12 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"";
+  html += selectedSsidJs;
+  html += "\"; updateSelected(initialSsid); });<\/script>";
+
   html += "<form action='/finalizar' method='POST'>";
+  html += "<div class=\\\"alert\\\" id=\\\"infoStatus\\\">Información: lista para configurar</div>";
   html += idSection;
   html += R"=====(
     <div class="network-list">
@@ -1532,8 +1583,11 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 
     <h3 class="section-title">Red a configurar:</h3>
     <input type='hidden' id='editIndex' name='index' value=''>
-    <input id='ssidInput' type='text' name='ssid' placeholder='Nombre de la red (SSID)' required>
-    <input id='passInput' type='password' name='pass' placeholder='Contraseña' required>
+)=====";
+  html += "    <input id='ssidInput' type='hidden' name='ssid' value=\"" + selectedSsidEscaped + "\" required>";
+  html += "    <div class='selected-ssid' id='selectedSsid'>Red seleccionada: " + (selectedSsid.length() > 0 ? selectedSsid : "(ninguna)") + "</div>";
+  html += R"=====(
+    <input id='passInput' type='password' name='pass' placeholder='Contraseña de la red seleccionada' required>
 
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
@@ -2888,12 +2942,7 @@ void dibujarMensajeConexion() {
   int centroX = SCREEN_WIDTH / 2;
   int centroY = 20;
 
-  if (animandoWifi && millis() - ultimoCambioWifi >= INTERVALO_WIFI) {
-    frameWifi = (frameWifi + 1) % 4;
-    ultimoCambioWifi = millis();
-  }
-
-  dibujarWifiAnimado(centroX, centroY, frameWifi);
+  dibujarWifiAnimado(centroX, centroY, 0);
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
