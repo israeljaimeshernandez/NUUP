@@ -230,6 +230,8 @@ void reconnect();
 void  checkMemory();
 void cargarDispositivos();
 bool eliminarDispositivo(const String &mac);
+ConfigDispositivo* getConfigDispositivo(const String &mac);
+int obtenerIndiceDispositivo(const String &mac);
 
 
 bool registrarDispositivo(const String &mac, byte tipo = 1);
