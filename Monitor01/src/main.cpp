@@ -1,3 +1,6 @@
+// 50 - 2025-05-04 Actualizar siempre datos LoRa y publicar la última versión en MQTT
+// 49 - 2025-05-03 Detalle serial completo, limpieza total en baja y mensaje LoRa guardado por dispositivo
+// 48 - 2025-05-03 Actualización: registro inactivo hasta confirmación MQTT y persistencia del mensaje LoRa completo
 // 47 - Corrección: mostrar en pantalla SSID/contraseña/ID final por 5s antes de reiniciar
 // 46 - Corrección: limpiar valor de contraseña mostrado, apilar botones Modificar/Borrar y resaltar contraseñas en amarillo
 // 45 - Corrección: permitir finalizar sin SSID al borrar redes, limpiar valores vacíos y soportar ñ en contraseñas
@@ -94,6 +97,7 @@
 #define MAX_DISPOSITIVOS 50         // Máximo de dispositivos registrables
 #define MAC_LEN 17                  // Longitud de MAC (ej: "A0:B1:C2:D3:E4:F5")
 #define VALORES_POR_DISPOSITIVO 5    // Máximo de valores por dispositivo
+#define CONFIG_VERSION 0xA5         // Versión del bloque de dispositivos en EEPROM
 
 
 //Redes guardadas
@@ -135,6 +139,9 @@ typedef struct {
 ConfigDispositivo configDispositivos[MAX_DISPOSITIVOS];
 //para asignar un numero de serial al dispositivo lector este viene del LORA pero ahorita lo fijmos aqui
 const String serial_number = "TOPICMYSQL";  //aqui voy a maper la MAC
+
+// Almacenar el último mensaje LoRa completo por dispositivo
+String ultimoMensajeLoRaDispositivo[MAX_DISPOSITIVOS];
 
 // Variables para control de tiempo sin datos
 unsigned long ultimaActualizacionLoRa[MAX_DISPOSITIVOS] = {0};
@@ -221,7 +228,7 @@ void cargarDispositivos();
 bool eliminarDispositivo(const String &mac);
 
 
-bool registrarDispositivo(const String &mac);
+bool registrarDispositivo(const String &mac, byte tipo = 1);
 void MQTT_ALTA();
 bool loadMQTTConfirmationState();
 void imprimirConfigDispositivo(const String &mac);
@@ -252,6 +259,7 @@ void verificarTiemposSinDatos();
 
 void debugMensajeLoRa(const String &mensaje);
 void testDispositivosRapido() ;
+void activarDispositivosTrasConfirmacion();
 
 
 //Definiciones pantalla TFT
@@ -553,7 +561,7 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             configDispositivos[i].litrosConfig = litros;
           configDispositivos[i].litrosActuales = 0; // Inicialmente vacío, se actualizará con LoRa
             nombre.toCharArray(configDispositivos[i].nombre, 20);
-            configDispositivos[i].activo = true;
+            configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
             
             Serial.println("✅ Datos actualizados para dispositivo existente");
@@ -581,7 +589,7 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             configDispositivos[i].voltaje = 0.0; // Inicializar
             configDispositivos[i].temperatura = 0.0; // Inicializar
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
-            configDispositivos[i].activo = true;
+            configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
             configDispositivos[i].tipoDispositivo = 1; // Tipo tanque
             
             Serial.println("✅ Nuevo dispositivo registrado con datos");
@@ -2307,15 +2315,19 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
             for (int i = 0; i < emailLen; i++) {
                 EEPROM.write(USER_EMAIL_ADDR + 1 + i, emailUsuario[i]);
             }
-            
+
+            // Persistir confirmación de alta
+            EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, 1);
+
             EEPROM.commit();
             EEPROM.end();
 
             Serial.println("CONFIRMACION RECIBIDA - Alta validada correctamente");
             Serial.println("Nombre guardado: " + nombreUsuario);
             Serial.println("Email guardado: " + emailUsuario);
-            
+
             mqttConfirmed = true;
+            activarDispositivosTrasConfirmacion();
                  delay(3000); // Espera para evitar conflictos
         } else {
             Serial.println("Formato de mensaje incorrecto. Faltan datos de usuario");
@@ -2387,18 +2399,30 @@ void checkMemory() {
 
 // Función auxiliar para imprimir dispositivos (para debug)
 void imprimirDispositivosRegistrados() {
-  Serial.println("--- Dispositivos Registrados ---");
+  Serial.println("--- Dispositivos Registrados (detalle completo) ---");
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (String(configDispositivos[i].mac) != "") {
-      Serial.print(i);
-      Serial.print(": ");
-      Serial.println(configDispositivos[i].mac);
+      Serial.printf("[%02d] MAC: %s | Nombre: %s | Tipo: %d | Activo: %s\n",
+                    i,
+                    configDispositivos[i].mac,
+                    configDispositivos[i].nombre,
+                    configDispositivos[i].tipoDispositivo,
+                    configDispositivos[i].activo ? "SI" : "NO");
+      Serial.printf("      Litros: %.2f/%.2f | Voltaje: %.2f | Temp: %.2f | Altura: %.2f | %%: %d\n",
+                    configDispositivos[i].litrosActuales,
+                    configDispositivos[i].litrosConfig,
+                    configDispositivos[i].voltaje,
+                    configDispositivos[i].temperatura,
+                    configDispositivos[i].alturaConfig,
+                    configDispositivos[i].porcentaje);
+      Serial.printf("      Último mensaje LoRa (IA incluido): %s\n",
+                    ultimoMensajeLoRaDispositivo[i].c_str());
     }
   }
-  Serial.println("-----------------------------");
+  Serial.println("----------------------------------------------------");
 }
 
-bool registrarDispositivo(const String &mac) {
+bool registrarDispositivo(const String &mac, byte tipo) {
   // Verificar si ya existe
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (String(configDispositivos[i].mac) == mac) {
@@ -2406,16 +2430,26 @@ bool registrarDispositivo(const String &mac) {
       return true;
     }
   }
-  
+
   // Buscar espacio libre
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (strlen(configDispositivos[i].mac) == 0) {
       mac.toCharArray(configDispositivos[i].mac, MAC_LEN + 1); // +1 para '\0'
       configDispositivos[i].activo = false;
-      guardarDispositivos();
-      return true;
-  
+      configDispositivos[i].tipoDispositivo = tipo;
+      configDispositivos[i].litrosActuales = 0;
+      configDispositivos[i].voltaje = 0;
+      configDispositivos[i].temperatura = 0;
+      configDispositivos[i].alturaConfig = 0;
+      configDispositivos[i].litrosConfig = 0;
+      configDispositivos[i].porcentaje = 0;
+      ultimoMensajeLoRaDispositivo[i] = "";
+      ultimaActualizacionLoRa[i] = millis();
+      mostrarSinDatos[i] = false;
+      return guardarDispositivos();
+    }
   }
-  
+
   Serial.println("¡No hay espacio para más dispositivos!");
   return false;
 }
@@ -2435,11 +2469,21 @@ void cargarDispositivos() {
         configDispositivos[i].alturaConfig = 0;
         configDispositivos[i].litrosConfig = 0;
         configDispositivos[i].porcentaje = 0;
+        ultimoMensajeLoRaDispositivo[i] = "";
     }
 
     EEPROM.begin(EEPROM_SIZE);
     int addr = CONFIG_DISPOSITIVOS_ADDR;
     
+    // 0. Detectar versión del bloque
+    byte version = EEPROM.read(addr);
+    bool usaMensajesCompletos = (version == CONFIG_VERSION);
+    if (usaMensajesCompletos) {
+        addr++; // Saltar versión
+    } else {
+        Serial.println("⚠️ Formato previo detectado: se asumirá almacenamiento sin mensaje LoRa");
+    }
+
     // 1. Leer contador (2 bytes)
     int count = (EEPROM.read(addr++) << 8) | EEPROM.read(addr++);
     count = min(count, MAX_DISPOSITIVOS);
@@ -2499,7 +2543,34 @@ void cargarDispositivos() {
             byte activoByte = EEPROM.read(addr++);
             configDispositivos[i].activo = (activoByte == 1);
             Serial.printf("⚡ Activo leído: %d -> %s\n", activoByte, configDispositivos[i].activo ? "true" : "false");
-            
+
+            // Leer mensaje LoRa completo si el formato lo incluye
+            if (usaMensajesCompletos) {
+                if (addr >= EEPROM_SIZE) {
+                    Serial.println("❌ Sin espacio para leer longitud de mensaje LoRa");
+                    ultimoMensajeLoRaDispositivo[i] = "";
+                } else {
+                    uint16_t mensajeLen = EEPROM.read(addr++);
+                    if (addr + mensajeLen <= EEPROM_SIZE) {
+                        char mensajeBuf[256] = {0};
+                        int bytesALeer = min<int>(mensajeLen, 255);
+                        for (int j = 0; j < bytesALeer; j++) {
+                            mensajeBuf[j] = EEPROM.read(addr++);
+                        }
+                        ultimoMensajeLoRaDispositivo[i] = String(mensajeBuf);
+                        // Saltar bytes sobrantes si se truncó
+                        if (mensajeLen > bytesALeer) {
+                            addr += (mensajeLen - bytesALeer);
+                        }
+                        Serial.printf("🛰️ Mensaje LoRa cargado (%d bytes)\n", bytesALeer);
+                    } else {
+                        Serial.println("❌ Longitud de mensaje fuera de rango, se descarta");
+                        addr = EEPROM_SIZE; // Evitar más lecturas inválidas
+                        ultimoMensajeLoRaDispositivo[i] = "";
+                    }
+                }
+            }
+
             // ASIGNAR NOMBRE POR DEFECTO SI ESTÁ VACÍO
             if (strlen(configDispositivos[i].nombre) == 0) {
                 String nombreDefault = "Tanque " + String(i+1);
@@ -2517,6 +2588,10 @@ void cargarDispositivos() {
             addr += 20; // Nombre (20 bytes)
             addr += sizeof(float) * 5; // 5 floats (20 bytes)
             addr += 4; // Porcentaje (2) + Tipo (1) + Activo (1) = 4 bytes
+            if (usaMensajesCompletos && addr < EEPROM_SIZE) {
+                uint16_t mensajeLen = EEPROM.read(addr++);
+                addr += mensajeLen;
+            }
             Serial.println("❌ Saltado dispositivo inválido");
         }
         
@@ -2621,6 +2696,7 @@ void clearEEPROM() {
     configDispositivos[i].mac[0] = '\0';
     configDispositivos[i].activo = false;
     configDispositivos[i].tipoDispositivo = 0;
+    ultimoMensajeLoRaDispositivo[i] = "";
   }
   
   // 5. Limpiar redes WiFi en RAM
@@ -2671,6 +2747,24 @@ String mensajeCompleto = miMac + "," + userID;
 
 bool loadMQTTConfirmationState() {
   return EEPROM.read(MQTT_CONFIRMED_FLAG_ADDR) == 1;
+}
+
+void activarDispositivosTrasConfirmacion() {
+  bool cambios = false;
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (strlen(configDispositivos[i].mac) > 0 && !configDispositivos[i].activo) {
+      configDispositivos[i].activo = true;
+      cambios = true;
+    }
+  }
+
+  if (cambios) {
+    if (guardarDispositivos()) {
+      Serial.println("✅ Dispositivos marcados como activos tras confirmación MQTT");
+    } else {
+      Serial.println("❌ Error al guardar el estado activo tras confirmación MQTT");
+    }
+  }
 }
 
 // Obtener configuración de un dispositivo por MAC
@@ -2779,6 +2873,17 @@ void recepcion_lora() {
         if (firstComma != -1 && secondComma != -1) {
             String mac = received.substring(firstComma + 1, secondComma);
             mac.trim();
+
+            // Determinar tipo de dispositivo (por defecto 1 si no se puede leer)
+            byte tipoDispositivo = 1;
+            if (firstComma > 0) {
+                String tipoStr = received.substring(0, firstComma);
+                tipoStr.trim();
+                int tipoValor = tipoStr.toInt();
+                if (tipoValor > 0) {
+                    tipoDispositivo = (byte)tipoValor;
+                }
+            }
             
             Serial.printf("🔍 MAC extraída: '%s'\n", mac.c_str());
             Serial.printf("🔍 Longitud MAC: %d\n", mac.length());
@@ -2794,16 +2899,25 @@ void recepcion_lora() {
                 if (storedMac == mac) {
                     encontrado = true;
                     Serial.printf("✅ DISPOSITivo ENCONTRADO en índice: %d\n", i);
-                    
+
                     // Procesar datos
                     actualizarDatosDesdeLoRa(mac, received, "");
+                    mensajeLoRa = received;
+                    nuevoMensajeLoRa = true;
                     break;
                 }
             }
-            
+
             if (!encontrado) {
-                Serial.println("❌ DISPOSITIVO NO REGISTRADO - Ignorando mensaje");
-                Serial.println("💡 Sugerencia: Registrar dispositivo via BLE primero");
+                Serial.println("❌ DISPOSITIVO NO REGISTRADO - Intentando registrar con estado inactivo");
+                if (registrarDispositivo(mac, tipoDispositivo)) {
+                    Serial.println("✅ Dispositivo registrado automáticamente desde LoRa (activo=0)");
+                    actualizarDatosDesdeLoRa(mac, received, "");
+                    mensajeLoRa = received;
+                    nuevoMensajeLoRa = true;
+                } else {
+                    Serial.println("❌ No se pudo registrar el dispositivo (sin espacio)");
+                }
             }
         } else {
             Serial.println("❌ ERROR: No se pudieron extraer las comas del mensaje");
@@ -2840,16 +2954,26 @@ bool eliminarDispositivo(const String &mac) {
 
     // Reorganizar el array
     for (int i = posicion; i < MAX_DISPOSITIVOS - 1; i++) {
-        // Copiar manualmente cada campo
-        strncpy(configDispositivos[i].mac, configDispositivos[i+1].mac, MAC_LEN + 1);
-        configDispositivos[i].tipoDispositivo = configDispositivos[i+1].tipoDispositivo;
-        configDispositivos[i].activo = configDispositivos[i+1].activo;
+        configDispositivos[i] = configDispositivos[i + 1];
+        ultimoMensajeLoRaDispositivo[i] = ultimoMensajeLoRaDispositivo[i + 1];
+        ultimaActualizacionLoRa[i] = ultimaActualizacionLoRa[i + 1];
+        mostrarSinDatos[i] = mostrarSinDatos[i + 1];
     }
-    
+
     // Limpiar la última posición
-    configDispositivos[MAX_DISPOSITIVOS-1].mac[0] = '\0';
-    configDispositivos[MAX_DISPOSITIVOS-1].tipoDispositivo = 0;
-    configDispositivos[MAX_DISPOSITIVOS-1].activo = false;
+    configDispositivos[MAX_DISPOSITIVOS - 1].mac[0] = '\0';
+    configDispositivos[MAX_DISPOSITIVOS - 1].nombre[0] = '\0';
+    configDispositivos[MAX_DISPOSITIVOS - 1].tipoDispositivo = 0;
+    configDispositivos[MAX_DISPOSITIVOS - 1].activo = false;
+    configDispositivos[MAX_DISPOSITIVOS - 1].litrosActuales = 0;
+    configDispositivos[MAX_DISPOSITIVOS - 1].voltaje = 0;
+    configDispositivos[MAX_DISPOSITIVOS - 1].temperatura = 0;
+    configDispositivos[MAX_DISPOSITIVOS - 1].alturaConfig = 0;
+    configDispositivos[MAX_DISPOSITIVOS - 1].litrosConfig = 0;
+    configDispositivos[MAX_DISPOSITIVOS - 1].porcentaje = 0;
+    ultimoMensajeLoRaDispositivo[MAX_DISPOSITIVOS - 1] = "";
+    ultimaActualizacionLoRa[MAX_DISPOSITIVOS - 1] = 0;
+    mostrarSinDatos[MAX_DISPOSITIVOS - 1] = false;
 
     // Debug: Mostrar después de eliminar
     Serial.println("Contenido después de eliminar:");
@@ -3275,7 +3399,22 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
         if (String(configDispositivos[i].mac) == mac) {
             Serial.printf("✅ Dispositivo encontrado en índice: %d\n", i);
             Serial.printf("📝 Nombre actual: '%s'\n", configDispositivos[i].nombre);
-            
+
+            // Guardar mensaje completo (incluye valores adicionales de IA)
+            ultimoMensajeLoRaDispositivo[i] = mensaje;
+            mensajeLoRa = mensaje;          // Garantizar que el mensaje más reciente quede listo para MQTT
+            nuevoMensajeLoRa = true;
+
+            // Actualizar tipo de dispositivo en caso de que cambie en un mensaje futuro
+            int primeraComa = mensaje.indexOf(',');
+            if (primeraComa > 0) {
+                byte tipoNuevo = (byte)mensaje.substring(0, primeraComa).toInt();
+                if (tipoNuevo > 0 && tipoNuevo != configDispositivos[i].tipoDispositivo) {
+                    Serial.printf("🔄 TIPO ACTUALIZADO: %d -> %d\n", configDispositivos[i].tipoDispositivo, tipoNuevo);
+                    configDispositivos[i].tipoDispositivo = tipoNuevo;
+                }
+            }
+
             // Parsear mensaje
             int commas[8];
             int commaCount = 0;
@@ -3364,7 +3503,7 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
 bool guardarDispositivos() {
     EEPROM.begin(EEPROM_SIZE);
     int addr = CONFIG_DISPOSITIVOS_ADDR;
-    
+
     // Contar dispositivos válidos
     int count = 0;
     for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
@@ -3373,7 +3512,8 @@ bool guardarDispositivos() {
         }
     }
 
-    // Guardar contador (2 bytes)
+    // Guardar versión y contador (3 bytes)
+    EEPROM.write(addr++, CONFIG_VERSION);
     EEPROM.write(addr++, (count >> 8) & 0xFF);
     EEPROM.write(addr++, count & 0xFF);
 
@@ -3400,10 +3540,28 @@ bool guardarDispositivos() {
             // ⭐ GUARDAR PORCENTAJE (2 bytes)
             EEPROM.write(addr++, (configDispositivos[i].porcentaje >> 8) & 0xFF);
             EEPROM.write(addr++, configDispositivos[i].porcentaje & 0xFF);
-            
+
             // Guardar tipo y estado (2 bytes)
             EEPROM.write(addr++, configDispositivos[i].tipoDispositivo);
             EEPROM.write(addr++, configDispositivos[i].activo ? 1 : 0);
+
+            // Guardar mensaje LoRa completo (longitud + datos)
+            uint16_t mensajeLen = ultimoMensajeLoRaDispositivo[i].length();
+            if (mensajeLen > 255) {
+                Serial.printf("⚠️ Mensaje LoRa truncado a 255 bytes (len=%d)\n", mensajeLen);
+                mensajeLen = 255;
+            }
+
+            if (addr + 1 + mensajeLen > EEPROM_SIZE) {
+                Serial.println("❌ ERROR: No hay espacio en EEPROM para guardar el mensaje LoRa completo");
+                EEPROM.end();
+                return false;
+            }
+
+            EEPROM.write(addr++, mensajeLen);
+            for (int j = 0; j < mensajeLen; j++) {
+                EEPROM.write(addr++, ultimoMensajeLoRaDispositivo[i].charAt(j));
+            }
         }
     }
 
@@ -3602,6 +3760,7 @@ mqttConfirmed = loadMQTTConfirmationState(); // Cargar estado persistente
 // Si ya estaba confirmado, imprimir mensaje
 if(mqttConfirmed) {
   Serial.println("Estado MQTT: Confirmación alta encontrada en EEPROM");
+  activarDispositivosTrasConfirmacion();
 } else {
   Serial.println("Estado MQTT: Esperando configuracion de alta  inicial");
 }
