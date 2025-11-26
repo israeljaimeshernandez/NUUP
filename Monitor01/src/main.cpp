@@ -1,3 +1,4 @@
+// 51 - 2025-05-05 Corrección: solicitar alta por MQTT y publicar solo tras confirmación, texto en español
 // 50 - 2025-05-04 Actualizar siempre datos LoRa y publicar la última versión en MQTT
 // 49 - 2025-05-03 Detalle serial completo, limpieza total en baja y mensaje LoRa guardado por dispositivo
 // 48 - 2025-05-03 Actualización: registro inactivo hasta confirmación MQTT y persistencia del mensaje LoRa completo
@@ -148,6 +149,9 @@ unsigned long ultimaActualizacionLoRa[MAX_DISPOSITIVOS] = {0};
 const unsigned long TIEMPO_SIN_DATOS = 300000; // 60 000 1 minuto (configurable) - puse 5 minutos
 bool mostrarSinDatos[MAX_DISPOSITIVOS] = {false};
 
+// Control de solicitudes de alta por dispositivo
+unsigned long ultimaSolicitudAlta[MAX_DISPOSITIVOS] = {0};
+
 
 // O si quieres hacerlo configurable via BLE/serial:
 unsigned long tiempoSinDatosConfig = 60000; // Puedes cambiar este valor
@@ -234,6 +238,8 @@ bool loadMQTTConfirmationState();
 void imprimirConfigDispositivo(const String &mac);
 void imprimirDispositivosRegistrados();
 void Reintentar_Wiffi();
+String normalizarPayloadParaMQTT(const String &payload);
+void solicitarAltaDispositivo(int indice, const String &mac);
 
 void debugNetworks();
 void checkWiFiStatus();
@@ -2277,65 +2283,81 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   Serial.printf("Mensaje recibido MQTT TOPIC[%s]: message--> %s\n", topic, message);
 
-// ALTA MONITOR Validación estricta para el topic de confirmación
+// ALTA MONITOR / DISPOSITIVOS Validación estricta para el topic de confirmación
 if (strcmp(topic, "alta/1/confirmacion/") == 0) {
-    // Obtener la MAC del dispositivo
-    String miMac = WiFi.macAddress();
-    miMac.replace("-", ":");
-    
-    // Convertir el mensaje a String para procesarlo
     String mensajeRecibido = String(message);
     Serial.println("Recibiendo mensaje de confirmacion: " + mensajeRecibido);
-    
-    // Verificar que el mensaje comience con nuestra MAC y "registrado"
-    if (mensajeRecibido.startsWith(miMac + ",registrado")) {
-        // Separar los componentes del mensaje (formato: MAC,registrado,nombre,email)
-        int primeraComa = mensajeRecibido.indexOf(',');
-        int segundaComa = mensajeRecibido.indexOf(',', primeraComa + 1);
-        int terceraComa = mensajeRecibido.indexOf(',', segundaComa + 1);
 
-        if (segundaComa != -1 && terceraComa != -1) {
+    int primeraComa = mensajeRecibido.indexOf(',');
+    int segundaComa = mensajeRecibido.indexOf(',', primeraComa + 1);
+    int terceraComa = mensajeRecibido.indexOf(',', segundaComa + 1);
+
+    if (primeraComa == -1) {
+        Serial.println("⚠️  Mensaje de confirmación sin MAC");
+        return;
+    }
+
+    String macConfirmada = mensajeRecibido.substring(0, primeraComa);
+    macConfirmada.trim();
+    String estadoConfirmacion = (segundaComa != -1)
+                                   ? mensajeRecibido.substring(primeraComa + 1, segundaComa)
+                                   : mensajeRecibido.substring(primeraComa + 1);
+    estadoConfirmacion.trim();
+
+    String miMac = WiFi.macAddress();
+    miMac.replace("-", ":");
+
+    if (macConfirmada == miMac) {
+        // Confirmación para el monitor
+        if (estadoConfirmacion == "registrado" && segundaComa != -1 && terceraComa != -1) {
             String nombreUsuario = mensajeRecibido.substring(segundaComa + 1, terceraComa);
             String emailUsuario = mensajeRecibido.substring(terceraComa + 1);
 
-            // Guardar en EEPROM usando tus direcciones definidas
             EEPROM.begin(EEPROM_SIZE);
-            
-           
-            // Guardar nombre (primero la longitud)
+
             int nombreLen = nombreUsuario.length();
             EEPROM.write(USER_NAME_ADDR, nombreLen);
             for (int i = 0; i < nombreLen; i++) {
                 EEPROM.write(USER_NAME_ADDR + 1 + i, nombreUsuario[i]);
             }
-            
-            // Guardar email
+
             int emailLen = emailUsuario.length();
             EEPROM.write(USER_EMAIL_ADDR, emailLen);
             for (int i = 0; i < emailLen; i++) {
                 EEPROM.write(USER_EMAIL_ADDR + 1 + i, emailUsuario[i]);
             }
 
-            // Persistir confirmación de alta
             EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, 1);
 
             EEPROM.commit();
             EEPROM.end();
 
-            Serial.println("CONFIRMACION RECIBIDA - Alta validada correctamente");
+            Serial.println("CONFIRMACION RECIBIDA - Alta del monitor validada correctamente");
             Serial.println("Nombre guardado: " + nombreUsuario);
             Serial.println("Email guardado: " + emailUsuario);
 
             mqttConfirmed = true;
             activarDispositivosTrasConfirmacion();
-                 delay(3000); // Espera para evitar conflictos
+            delay(3000); // Espera para evitar conflictos
         } else {
-            Serial.println("Formato de mensaje incorrecto. Faltan datos de usuario");
+            Serial.println("Formato de mensaje incorrecto para el monitor. Faltan datos de usuario");
+        }
+    } else if (estadoConfirmacion == "registrado") {
+        int indice = obtenerIndiceDispositivo(macConfirmada);
+        if (indice >= 0) {
+            configDispositivos[indice].activo = true;
+            ultimaSolicitudAlta[indice] = 0;
+            if (guardarDispositivos()) {
+                Serial.printf("✅ Dispositivo %s confirmado y activado\n", macConfirmada.c_str());
+            } else {
+                Serial.printf("❌ Error al guardar activación de %s\n", macConfirmada.c_str());
+            }
+        } else {
+            Serial.printf("⚠️ Confirmación recibida para MAC desconocida: %s\n", macConfirmada.c_str());
         }
     } else {
         Serial.printf("ADVERTENCIA - Mensaje no reconocido en alta/1/confirmacion/: '%s'\n", message);
-        
-        // Depuración adicional
+
         Serial.println("Contenido hexadecimal del mensaje:");
         for (unsigned int i = 0; i < length; i++) {
             Serial.printf("%02X ", payload[i]);
@@ -2446,6 +2468,7 @@ bool registrarDispositivo(const String &mac, byte tipo) {
       ultimoMensajeLoRaDispositivo[i] = "";
       ultimaActualizacionLoRa[i] = millis();
       mostrarSinDatos[i] = false;
+      ultimaSolicitudAlta[i] = 0;
       return guardarDispositivos();
     }
   }
@@ -2470,6 +2493,7 @@ void cargarDispositivos() {
         configDispositivos[i].litrosConfig = 0;
         configDispositivos[i].porcentaje = 0;
         ultimoMensajeLoRaDispositivo[i] = "";
+        ultimaSolicitudAlta[i] = 0;
     }
 
     EEPROM.begin(EEPROM_SIZE);
@@ -2744,25 +2768,43 @@ String mensajeCompleto = miMac + "," + userID;
   }
 }
 
+void solicitarAltaDispositivo(int indice, const String &mac) {
+  if (indice < 0 || indice >= MAX_DISPOSITIVOS) {
+    return;
+  }
+
+  if (userID.isEmpty()) {
+    Serial.println("⚠️ No se puede solicitar alta: falta userID");
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+    return;
+  }
+
+  unsigned long ahora = millis();
+  if (ahora - ultimaSolicitudAlta[indice] < confirmationRetryInterval) {
+    return;
+  }
+
+  String mensaje = mac + "," + userID;
+  if (client.publish("alta/1/solicitud/", mensaje.c_str())) {
+    ultimaSolicitudAlta[indice] = ahora;
+    Serial.printf("Solicitud de alta enviada para %s\n", mac.c_str());
+  } else {
+    Serial.printf("❌ Error al solicitar alta para %s\n", mac.c_str());
+  }
+}
+
 
 bool loadMQTTConfirmationState() {
   return EEPROM.read(MQTT_CONFIRMED_FLAG_ADDR) == 1;
 }
 
 void activarDispositivosTrasConfirmacion() {
-  bool cambios = false;
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (strlen(configDispositivos[i].mac) > 0 && !configDispositivos[i].activo) {
-      configDispositivos[i].activo = true;
-      cambios = true;
-    }
-  }
-
-  if (cambios) {
-    if (guardarDispositivos()) {
-      Serial.println("✅ Dispositivos marcados como activos tras confirmación MQTT");
-    } else {
-      Serial.println("❌ Error al guardar el estado activo tras confirmación MQTT");
+      solicitarAltaDispositivo(i, String(configDispositivos[i].mac));
     }
   }
 }
@@ -2775,6 +2817,15 @@ ConfigDispositivo* getConfigDispositivo(const String &mac) {
     }
   }
   return nullptr;
+}
+
+int obtenerIndiceDispositivo(const String &mac) {
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (String(configDispositivos[i].mac) == mac) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // Imprimir configuración de un dispositivo
@@ -2794,6 +2845,22 @@ void imprimirConfigDispositivo(const String &mac) {
     } else {
         Serial.println("Dispositivo no encontrado");
     }
+}
+
+String normalizarPayloadParaMQTT(const String &payload) {
+  int primerDelimitador = payload.indexOf(',');
+  if (primerDelimitador <= 0) {
+    return payload;
+  }
+
+  String tipo = payload.substring(0, primerDelimitador);
+  tipo.trim();
+
+  while (tipo.length() > 0 && tipo.length() < 3) {
+    tipo = "0" + tipo;
+  }
+
+  return tipo + payload.substring(primerDelimitador);
 }
 
 void iniciarLoRaConReintentos() {
@@ -2880,7 +2947,9 @@ void recepcion_lora() {
                 String tipoStr = received.substring(0, firstComma);
                 tipoStr.trim();
                 int tipoValor = tipoStr.toInt();
-                if (tipoValor > 0) {
+                if (tipoStr.length() > 0) {
+                    if (tipoValor < 0) tipoValor = 0;
+                    if (tipoValor > 255) tipoValor = 255;
                     tipoDispositivo = (byte)tipoValor;
                 }
             }
@@ -2902,8 +2971,11 @@ void recepcion_lora() {
 
                     // Procesar datos
                     actualizarDatosDesdeLoRa(mac, received, "");
-                    mensajeLoRa = received;
-                    nuevoMensajeLoRa = true;
+                    mensajeLoRa = normalizarPayloadParaMQTT(received);
+                    nuevoMensajeLoRa = configDispositivos[i].activo;
+                    if (!configDispositivos[i].activo) {
+                        solicitarAltaDispositivo(i, mac);
+                    }
                     break;
                 }
             }
@@ -2913,8 +2985,12 @@ void recepcion_lora() {
                 if (registrarDispositivo(mac, tipoDispositivo)) {
                     Serial.println("✅ Dispositivo registrado automáticamente desde LoRa (activo=0)");
                     actualizarDatosDesdeLoRa(mac, received, "");
-                    mensajeLoRa = received;
-                    nuevoMensajeLoRa = true;
+                    int nuevoIndice = obtenerIndiceDispositivo(mac);
+                    if (nuevoIndice >= 0) {
+                        solicitarAltaDispositivo(nuevoIndice, mac);
+                        mensajeLoRa = normalizarPayloadParaMQTT(received);
+                        nuevoMensajeLoRa = configDispositivos[nuevoIndice].activo;
+                    }
                 } else {
                     Serial.println("❌ No se pudo registrar el dispositivo (sin espacio)");
                 }
@@ -2958,6 +3034,7 @@ bool eliminarDispositivo(const String &mac) {
         ultimoMensajeLoRaDispositivo[i] = ultimoMensajeLoRaDispositivo[i + 1];
         ultimaActualizacionLoRa[i] = ultimaActualizacionLoRa[i + 1];
         mostrarSinDatos[i] = mostrarSinDatos[i + 1];
+        ultimaSolicitudAlta[i] = ultimaSolicitudAlta[i + 1];
     }
 
     // Limpiar la última posición
@@ -2974,6 +3051,7 @@ bool eliminarDispositivo(const String &mac) {
     ultimoMensajeLoRaDispositivo[MAX_DISPOSITIVOS - 1] = "";
     ultimaActualizacionLoRa[MAX_DISPOSITIVOS - 1] = 0;
     mostrarSinDatos[MAX_DISPOSITIVOS - 1] = false;
+    ultimaSolicitudAlta[MAX_DISPOSITIVOS - 1] = 0;
 
     // Debug: Mostrar después de eliminar
     Serial.println("Contenido después de eliminar:");
@@ -3924,11 +4002,11 @@ testLoRaPeriodico();
 
     // 6. En caso de que tenga WIFFI conectado a MQTT
     // y este dado de alta envia el dato si envia lo que recibio en LORA
-    if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed && !forceAPMode) {  
+    if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed && !forceAPMode) {
         // Publicar inmediatamente si hay datos y estamos conectados
         if (nuevoMensajeLoRa) {
             String miMac = WiFi.macAddress();
-            miMac.replace(":", "_");
+            miMac.replace("-", ":");
             String topico = "NUUP/" + miMac;
             if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
                 Serial.print("Publicado: ");
