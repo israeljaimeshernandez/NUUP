@@ -85,8 +85,8 @@
 #define CONFIG_DISPOSITIVOS_ADDR 700  // 
 
 // Configuración WiFi
-#define AP_SSID "NUUP_2025"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
-#define AP_PASS "12345678"
+#define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
+#define AP_PASS ""
 #define WIFI_TIMEOUT 5000 // 30 segundos
 #define USER_ID_MAX_LEN 32    // Máximo 32 caracteres para el ID lo puedo cambiar si solo necesito el users.users_id concatenado a la clave NUUP2025
 
