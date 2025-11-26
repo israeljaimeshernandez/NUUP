@@ -1,3 +1,4 @@
+// 52 - 2025-05-07 Corrección: alta MQTT con nombre del dispositivo, tipo forzado y sin duplicados
 // 51 - 2025-05-05 Corrección: solicitar alta por MQTT y publicar solo tras confirmación, texto en español
 // 50 - 2025-05-04 Actualizar siempre datos LoRa y publicar la última versión en MQTT
 // 49 - 2025-05-03 Detalle serial completo, limpieza total en baja y mensaje LoRa guardado por dispositivo
@@ -151,6 +152,7 @@ bool mostrarSinDatos[MAX_DISPOSITIVOS] = {false};
 
 // Control de solicitudes de alta por dispositivo
 unsigned long ultimaSolicitudAlta[MAX_DISPOSITIVOS] = {0};
+bool solicitudAltaEnviada[MAX_DISPOSITIVOS] = {false};
 
 
 // O si quieres hacerlo configurable via BLE/serial:
@@ -2349,6 +2351,7 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
         if (indice >= 0) {
             configDispositivos[indice].activo = true;
             ultimaSolicitudAlta[indice] = 0;
+            solicitudAltaEnviada[indice] = false;
             if (guardarDispositivos()) {
                 Serial.printf("✅ Dispositivo %s confirmado y activado\n", macConfirmada.c_str());
             } else {
@@ -2459,6 +2462,7 @@ bool registrarDispositivo(const String &mac, byte tipo) {
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (strlen(configDispositivos[i].mac) == 0) {
       mac.toCharArray(configDispositivos[i].mac, MAC_LEN + 1); // +1 para '\0'
+      configDispositivos[i].nombre[0] = '\0';
       configDispositivos[i].activo = false;
       configDispositivos[i].tipoDispositivo = tipo;
       configDispositivos[i].litrosActuales = 0;
@@ -2471,6 +2475,7 @@ bool registrarDispositivo(const String &mac, byte tipo) {
       ultimaActualizacionLoRa[i] = millis();
       mostrarSinDatos[i] = false;
       ultimaSolicitudAlta[i] = 0;
+      solicitudAltaEnviada[i] = false;
       return guardarDispositivos();
     }
   }
@@ -2495,7 +2500,10 @@ void cargarDispositivos() {
         configDispositivos[i].litrosConfig = 0;
         configDispositivos[i].porcentaje = 0;
         ultimoMensajeLoRaDispositivo[i] = "";
+        ultimaActualizacionLoRa[i] = 0;
+        mostrarSinDatos[i] = false;
         ultimaSolicitudAlta[i] = 0;
+        solicitudAltaEnviada[i] = false;
     }
 
     EEPROM.begin(EEPROM_SIZE);
@@ -2720,9 +2728,14 @@ void clearEEPROM() {
   // 4. Limpiar estructuras en RAM
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     configDispositivos[i].mac[0] = '\0';
+    configDispositivos[i].nombre[0] = '\0';
     configDispositivos[i].activo = false;
     configDispositivos[i].tipoDispositivo = 0;
     ultimoMensajeLoRaDispositivo[i] = "";
+    ultimaActualizacionLoRa[i] = 0;
+    mostrarSinDatos[i] = false;
+    ultimaSolicitudAlta[i] = 0;
+    solicitudAltaEnviada[i] = false;
   }
   
   // 5. Limpiar redes WiFi en RAM
@@ -2758,9 +2771,9 @@ void MQTT_ALTA() {
       miMac.replace("-", ":");
       // Crear el mensaje completo como String primero
 String mensajeCompleto = miMac + "," + userID;
-        if (client.publish("alta/1/solicitud/",  mensajeCompleto.c_str())) {
+        if (client.publish("alta/0/solicitud/",  mensajeCompleto.c_str())) {
           Serial.println("MQTT ALTA Solicitud de alta enviada correctamente");
-          Serial.println("MQTT ALTA topico: alta/1/solicitud/");
+          Serial.println("MQTT ALTA topico: alta/0/solicitud/");
           Serial.println("MQTT ALTA mensaje: "+mensajeCompleto);
         } else {
           Serial.println("MQTT ALTA Error al publicar solicitud de alta");
@@ -2775,8 +2788,23 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
     return;
   }
 
+  if (configDispositivos[indice].activo) {
+    Serial.printf("ℹ️ Alta ya confirmada para %s, no se reenviará\n", mac.c_str());
+    return;
+  }
+
+  if (solicitudAltaEnviada[indice]) {
+    Serial.printf("⏳ Alta ya solicitada previamente para %s, esperando confirmación\n", mac.c_str());
+    return;
+  }
+
   if (userID.isEmpty()) {
     Serial.println("⚠️ No se puede solicitar alta: falta userID");
+    return;
+  }
+
+  if (!mqttConfirmed) {
+    Serial.println("⚠️ No se puede solicitar alta: el monitor aún no está confirmado en MQTT");
     return;
   }
 
@@ -2789,9 +2817,34 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
     return;
   }
 
-  String mensaje = mac + "," + userID;
+  String nombre = String(configDispositivos[indice].nombre);
+  nombre.trim();
+  bool datosActualizados = false;
+  if (nombre.isEmpty()) {
+    nombre = mac;
+    nombre.toCharArray(configDispositivos[indice].nombre, 20);
+    datosActualizados = true;
+  }
+
+  byte tipo = configDispositivos[indice].tipoDispositivo;
+  if (tipo == 0) {
+    tipo = 1;  // Forzar tipo por defecto
+    configDispositivos[indice].tipoDispositivo = tipo;
+    datosActualizados = true;
+  }
+
+  if (datosActualizados) {
+    if (guardarDispositivos()) {
+      Serial.printf("💾 Datos de alta normalizados para %s (nombre='%s', tipo=%d)\n", mac.c_str(), nombre.c_str(), tipo);
+    } else {
+      Serial.println("❌ No se pudieron guardar los datos normalizados antes del alta MQTT");
+    }
+  }
+
+  String mensaje = mac + "," + userID + "," + nombre + "," + String(tipo);
   if (client.publish("alta/1/solicitud/", mensaje.c_str())) {
     ultimaSolicitudAlta[indice] = ahora;
+    solicitudAltaEnviada[indice] = true;
     Serial.printf("Solicitud de alta enviada para %s\n", mac.c_str());
   } else {
     Serial.printf("❌ Error al solicitar alta para %s\n", mac.c_str());
@@ -3037,6 +3090,7 @@ bool eliminarDispositivo(const String &mac) {
         ultimaActualizacionLoRa[i] = ultimaActualizacionLoRa[i + 1];
         mostrarSinDatos[i] = mostrarSinDatos[i + 1];
         ultimaSolicitudAlta[i] = ultimaSolicitudAlta[i + 1];
+        solicitudAltaEnviada[i] = solicitudAltaEnviada[i + 1];
     }
 
     // Limpiar la última posición
@@ -3054,6 +3108,7 @@ bool eliminarDispositivo(const String &mac) {
     ultimaActualizacionLoRa[MAX_DISPOSITIVOS - 1] = 0;
     mostrarSinDatos[MAX_DISPOSITIVOS - 1] = false;
     ultimaSolicitudAlta[MAX_DISPOSITIVOS - 1] = 0;
+    solicitudAltaEnviada[MAX_DISPOSITIVOS - 1] = false;
 
     // Debug: Mostrar después de eliminar
     Serial.println("Contenido después de eliminar:");
