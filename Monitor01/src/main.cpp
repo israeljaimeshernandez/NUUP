@@ -582,7 +582,7 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             configDispositivos[i].temperatura = 0.0; // Inicializar
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
             configDispositivos[i].activo = true;
-            configDispositivos[i].tipoDispositivo = 2; // Tipo tanque
+            configDispositivos[i].tipoDispositivo = 1; // Tipo tanque
             
             Serial.println("✅ Nuevo dispositivo registrado con datos");
             Serial.println("📝 Nombre guardado: " + String(configDispositivos[i].nombre));

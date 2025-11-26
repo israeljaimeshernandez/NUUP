@@ -2145,7 +2145,7 @@ void enviarDatos(int distancia) {
     String datosIA = obtenerDatosIA();
     
     // Formar mensaje LoRa MEJORADO con IA
-    String mensaje = "002," + macAddress + "," + 
+    String mensaje = "001," + macAddress + "," +
                     String(litrosActuales) + "," + 
                     String(voltageInt) + "," + 
                     String(temperaturaInt) + "," +
