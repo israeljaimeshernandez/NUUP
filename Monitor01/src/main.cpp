@@ -1,3 +1,5 @@
+// 60 - 2025-05-15 Mejora: baja MQTT con espera configurable, reintentos y cancelación al re-registrar
+// 59 - 2025-05-13 Corrección: normalizar y validar MAC LoRa en mayúsculas para evitar duplicados vacíos
 // 58 - 2025-05-13 Corrección: reiniciar bandera de confirmación si EEPROM fue limpiada para evitar falsos positivos
 // 57 - 2025-05-12 Corrección: procesar confirmación MQTT del monitor (alta/0/confirmacion) y frenar reintentos
 // 56 - 2025-05-12 Corrección: asumir confirmación MQTT cuando EEPROM indica registro previo y evitar reintentos
@@ -160,6 +162,9 @@ bool mostrarSinDatos[MAX_DISPOSITIVOS] = {false};
 // Control de solicitudes de alta por dispositivo
 unsigned long ultimaSolicitudAlta[MAX_DISPOSITIVOS] = {0};
 bool solicitudAltaEnviada[MAX_DISPOSITIVOS] = {false};
+bool bajaPendienteMQTT[MAX_DISPOSITIVOS] = {false};
+unsigned long ultimaSolicitudBaja[MAX_DISPOSITIVOS] = {0};
+unsigned long inicioEsperaBaja[MAX_DISPOSITIVOS] = {0};
 
 
 // O si quieres hacerlo configurable via BLE/serial:
@@ -186,6 +191,8 @@ unsigned long lastConfirmationAttempt = 0;
 const unsigned long confirmationTimeout = 30000; // 30 segundos para esperar confirmación
 const unsigned long confirmationRetryInterval = 10000; // segundos entre reintentos de conexion MQTT para el monitor
 const unsigned long altaPendienteInterval = 5UL * 60UL * 1000UL; // 5 minutos entre solicitudes de alta pendientes
+const unsigned long bajaConfirmTimeout = 30000; // Tiempo de espera de confirmación de baja MQTT
+const unsigned long bajaPendienteInterval = 5UL * 60UL * 1000UL; // Reenvío de bajas pendientes
 unsigned long lastAltaPendienteCheck = 0;
 String userID = "";
 bool registroMonitorEEPROM = false;  // Bandera de registro general (no se confunde con activo de dispositivos)
@@ -248,6 +255,8 @@ int obtenerIndiceDispositivo(const String &mac);
 
 
 bool registrarDispositivo(const String &mac, byte tipo = 1);
+bool esMacValida(const String &mac);
+bool mensajeLoRaTieneDatos(const String &mensaje);
 void MQTT_ALTA();
 bool loadMQTTConfirmationState();
 void guardarMQTTConfirmationState(bool estado);
@@ -259,6 +268,11 @@ void Reintentar_Wiffi();
 String normalizarPayloadParaMQTT(const String &payload);
 void solicitarAltaDispositivo(int indice, const String &mac);
 void procesarAltasPendientes();
+String normalizarMac(const String &macRaw);
+bool iniciarBajaDispositivo(const String &mac);
+bool publicarSolicitudBaja(int indice, const String &mac);
+void procesarBajasPendientes();
+void limpiarEstadoBaja(int indice);
 
 void debugNetworks();
 void checkWiFiStatus();
@@ -547,19 +561,19 @@ ultimaAltura = configDispositivos[i].alturaConfig;
         return false;
     }
     
-    // Proceder con la eliminación
-    if (eliminarDispositivo(configDispositivos[indiceEncontrado].mac)) {
-        Serial.println("✅ Baja completada via BLE: " + macCliente);
+    // Proceder con la eliminación protegida por MQTT
+    if (iniciarBajaDispositivo(configDispositivos[indiceEncontrado].mac)) {
+        Serial.println("✅ Baja solicitada para la MAC: " + macCliente);
         imprimirDispositivosRegistrados();
-        
-        Serial.println("✅ BAJA EXITOSA");
+
+        Serial.println("✅ BAJA en curso (esperando confirmación MQTT si aplica)");
         Serial.println("===== FIN BAJA BLE =====\n");
         return true;
-    } else {
-        Serial.println("❌ ERROR en eliminación del dispositivo");
-        Serial.println("===== FIN BAJA BLE =====\n");
-        return false;
     }
+
+    Serial.println("❌ ERROR en la solicitud de baja");
+    Serial.println("===== FIN BAJA BLE =====\n");
+    return false;
 }
 
 
@@ -588,7 +602,8 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             nombre.toCharArray(configDispositivos[i].nombre, 20);
             configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
-            
+            limpiarEstadoBaja(i);
+
             Serial.println("✅ Datos actualizados para dispositivo existente");
             
             if (guardarDispositivos()) {
@@ -616,7 +631,8 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
             configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
             configDispositivos[i].tipoDispositivo = 1; // Tipo tanque
-            
+            limpiarEstadoBaja(i);
+
             Serial.println("✅ Nuevo dispositivo registrado con datos");
             Serial.println("📝 Nombre guardado: " + String(configDispositivos[i].nombre));
             Serial.println("📏 Altura guardada: " + String(configDispositivos[i].alturaConfig));
@@ -1958,7 +1974,7 @@ void handleDeleteDevice() {
       return;
     }
 
-    bool eliminado = eliminarDispositivo(mac);
+    bool eliminado = iniciarBajaDispositivo(mac);
     if (eliminado) {
       server.send(200, "text/plain", "OK");
     } else {
@@ -2340,6 +2356,39 @@ if (strcmp(topic, "alta/0/confirmacion/") == 0) {
     return;
 }
 
+if (strcmp(topic, "baja/1/confirmacion/") == 0) {
+    String mensajeRecibido = String(message);
+    Serial.println("Confirmación de BAJA recibida: " + mensajeRecibido);
+
+    int primeraComa = mensajeRecibido.indexOf(',');
+    if (primeraComa == -1) {
+        Serial.println("⚠️  Mensaje de confirmación de baja sin MAC");
+        return;
+    }
+
+    String macConfirmada = normalizarMac(mensajeRecibido.substring(0, primeraComa));
+    String estado = mensajeRecibido.substring(primeraComa + 1);
+    estado.trim();
+
+    int indice = obtenerIndiceDispositivo(macConfirmada);
+    if (indice == -1) {
+        Serial.printf("ℹ️ Confirmación de baja para MAC no registrada: %s\n", macConfirmada.c_str());
+        return;
+    }
+
+    if (estado == "eliminado" || estado == "baja" || estado == "confirmado") {
+        limpiarEstadoBaja(indice);
+        if (eliminarDispositivo(macConfirmada)) {
+            Serial.printf("✅ Baja confirmada y dispositivo %s eliminado localmente\n", macConfirmada.c_str());
+        } else {
+            Serial.printf("❌ No se pudo eliminar %s tras confirmación de baja\n", macConfirmada.c_str());
+        }
+    } else {
+        Serial.printf("⚠️ Estado de baja no reconocido: %s\n", estado.c_str());
+    }
+    return;
+}
+
 if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
     Serial.println("Recibiendo mensaje de confirmacion: " + mensajeRecibido);
@@ -2456,6 +2505,9 @@ Serial.println("Subscripcion: alta/0/confirmacion/");
     client.subscribe("alta/1/confirmacion/", 1);
 Serial.println("Subscripcion: alta/1/confirmacion/");
     delay(50);
+    client.subscribe("baja/1/confirmacion/", 1);
+Serial.println("Subscripcion: baja/1/confirmacion/");
+    delay(50);
     client.subscribe((String(serial_number) + "/command").c_str(), 1);
 Serial.println("Subscripcion: /command");
    delay(50);
@@ -2507,10 +2559,13 @@ void imprimirDispositivosRegistrados() {
 }
 
 bool registrarDispositivo(const String &mac, byte tipo) {
+  String macNormalizada = normalizarMac(mac);
+
   // Verificar si ya existe
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-    if (String(configDispositivos[i].mac) == mac) {
-      Serial.println("Dispositivo ya registrado: " + mac);
+    if (normalizarMac(String(configDispositivos[i].mac)) == macNormalizada) {
+      Serial.println("Dispositivo ya registrado: " + macNormalizada);
+      limpiarEstadoBaja(i);
       return true;
     }
   }
@@ -2518,7 +2573,7 @@ bool registrarDispositivo(const String &mac, byte tipo) {
   // Buscar espacio libre
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (strlen(configDispositivos[i].mac) == 0) {
-      mac.toCharArray(configDispositivos[i].mac, MAC_LEN + 1); // +1 para '\0'
+      macNormalizada.toCharArray(configDispositivos[i].mac, MAC_LEN + 1); // +1 para '\0'
       configDispositivos[i].nombre[0] = '\0';
       configDispositivos[i].activo = false;
       configDispositivos[i].tipoDispositivo = tipo;
@@ -2533,6 +2588,9 @@ bool registrarDispositivo(const String &mac, byte tipo) {
       mostrarSinDatos[i] = false;
       ultimaSolicitudAlta[i] = 0;
       solicitudAltaEnviada[i] = false;
+      bajaPendienteMQTT[i] = false;
+      ultimaSolicitudBaja[i] = 0;
+      inicioEsperaBaja[i] = 0;
       return guardarDispositivos();
     }
   }
@@ -2561,6 +2619,9 @@ void cargarDispositivos() {
         mostrarSinDatos[i] = false;
         ultimaSolicitudAlta[i] = 0;
         solicitudAltaEnviada[i] = false;
+        bajaPendienteMQTT[i] = false;
+        ultimaSolicitudBaja[i] = 0;
+        inicioEsperaBaja[i] = 0;
     }
 
     EEPROM.begin(EEPROM_SIZE);
@@ -2794,6 +2855,9 @@ void clearEEPROM() {
     mostrarSinDatos[i] = false;
     ultimaSolicitudAlta[i] = 0;
     solicitudAltaEnviada[i] = false;
+    bajaPendienteMQTT[i] = false;
+    ultimaSolicitudBaja[i] = 0;
+    inicioEsperaBaja[i] = 0;
   }
   
   // 5. Limpiar redes WiFi en RAM
@@ -2922,6 +2986,96 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
   }
 }
 
+void limpiarEstadoBaja(int indice) {
+  if (indice < 0 || indice >= MAX_DISPOSITIVOS) return;
+
+  bajaPendienteMQTT[indice] = false;
+  ultimaSolicitudBaja[indice] = 0;
+  inicioEsperaBaja[indice] = 0;
+}
+
+bool publicarSolicitudBaja(int indice, const String &mac) {
+  if (indice < 0 || indice >= MAX_DISPOSITIVOS) return false;
+
+  if (userID.isEmpty()) {
+    Serial.println("⚠️ No se puede solicitar baja: falta userID");
+    return false;
+  }
+
+  if (!mqttConfirmed) {
+    Serial.println("⚠️ No se puede solicitar baja: el monitor no está confirmado en MQTT");
+    return false;
+  }
+
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+    Serial.println("⚠️ No se puede solicitar baja: MQTT desconectado");
+    return false;
+  }
+
+  String mensaje = mac + "," + userID;
+  if (client.publish("baja/1/solicitud/", mensaje.c_str())) {
+    ultimaSolicitudBaja[indice] = millis();
+    inicioEsperaBaja[indice] = (inicioEsperaBaja[indice] == 0) ? ultimaSolicitudBaja[indice] : inicioEsperaBaja[indice];
+    bajaPendienteMQTT[indice] = true;
+    Serial.printf("🗑️ Solicitud de baja MQTT enviada para %s\n", mac.c_str());
+    return true;
+  }
+
+  Serial.printf("❌ Error al solicitar baja MQTT para %s\n", mac.c_str());
+  return false;
+}
+
+bool iniciarBajaDispositivo(const String &mac) {
+  String macNormalizada = normalizarMac(mac);
+  int indice = obtenerIndiceDispositivo(macNormalizada);
+
+  if (indice < 0) {
+    Serial.printf("❌ No se encontró dispositivo para baja: %s\n", macNormalizada.c_str());
+    return false;
+  }
+
+  ConfigDispositivo *config = &configDispositivos[indice];
+
+  // Si nunca estuvo activo en MQTT, eliminar inmediatamente
+  if (!config->activo) {
+    Serial.printf("ℹ️ Dispositivo %s sin alta MQTT previa, se elimina localmente\n", macNormalizada.c_str());
+    return eliminarDispositivo(macNormalizada);
+  }
+
+  // Marcar como pendiente de baja y pausar publicaciones
+  config->activo = false;
+  bajaPendienteMQTT[indice] = true;
+
+  bool enviada = publicarSolicitudBaja(indice, macNormalizada);
+  if (!enviada) {
+    Serial.println("⚠️ Baja encolada para reintento cuando MQTT se reconecte");
+  } else {
+    Serial.println("⏳ Esperando confirmación de baja hasta 30s");
+  }
+
+  return true;
+}
+
+void procesarBajasPendientes() {
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
+
+  unsigned long ahora = millis();
+
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (!bajaPendienteMQTT[i]) continue;
+
+    // Si seguimos dentro del tiempo de espera, no reenviar aún
+    if (inicioEsperaBaja[i] != 0 && (ahora - inicioEsperaBaja[i]) < bajaConfirmTimeout) {
+      continue;
+    }
+
+    // Si ya pasó el timeout, permitir reenvíos cada bajaPendienteInterval
+    if (ultimaSolicitudBaja[i] == 0 || (ahora - ultimaSolicitudBaja[i]) >= bajaPendienteInterval) {
+      publicarSolicitudBaja(i, normalizarMac(String(configDispositivos[i].mac)));
+    }
+  }
+}
+
 
 bool loadMQTTConfirmationState() {
   EEPROM.begin(EEPROM_SIZE);
@@ -2977,8 +3131,9 @@ void procesarAltasPendientes() {
 
 // Obtener configuración de un dispositivo por MAC
 ConfigDispositivo* getConfigDispositivo(const String &mac) {
+  String macNormalizada = normalizarMac(mac);
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-    if (String(configDispositivos[i].mac) == mac) {
+    if (normalizarMac(String(configDispositivos[i].mac)) == macNormalizada) {
       return &configDispositivos[i];
     }
   }
@@ -2986,8 +3141,9 @@ ConfigDispositivo* getConfigDispositivo(const String &mac) {
 }
 
 int obtenerIndiceDispositivo(const String &mac) {
+  String macNormalizada = normalizarMac(mac);
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-    if (String(configDispositivos[i].mac) == mac) {
+    if (normalizarMac(String(configDispositivos[i].mac)) == macNormalizada) {
       return i;
     }
   }
@@ -3076,9 +3232,52 @@ void Reintentar_Wiffi(){
     }
 }
 
+bool esMacValida(const String &mac) {
+  if (mac.length() != 17) {
+    return false;
+  }
+
+  for (int i = 0; i < 17; i++) {
+    char c = mac.charAt(i);
+    if ((i + 1) % 3 == 0) {
+      if (c != ':') return false;
+    } else {
+      bool esHex = (c >= '0' && c <= '9') ||
+                   (c >= 'A' && c <= 'F') ||
+                   (c >= 'a' && c <= 'f');
+      if (!esHex) return false;
+    }
+  }
+
+  return true;
+}
+
+String normalizarMac(const String &macRaw) {
+  String mac = macRaw;
+  mac.trim();
+  mac.toUpperCase();
+  return mac;
+}
+
+bool mensajeLoRaTieneDatos(const String &mensaje) {
+  int commaCount = 0;
+  for (int pos = 0; pos < mensaje.length(); pos++) {
+    if (mensaje.charAt(pos) == ',') {
+      commaCount++;
+    }
+  }
+
+  if (commaCount < 6) {
+    Serial.printf("❌ Mensaje LoRa con campos insuficientes (comas=%d)\n", commaCount);
+    return false;
+  }
+
+  return true;
+}
+
 void recepcion_lora() {
     int packetSize = LoRa.parsePacket();
-    
+
     if (packetSize) {
         Serial.println("\n🎉 ===========================================");
         Serial.println("📡 PAQUETE LoRa DETECTADO - DEBUG COMPLETO");
@@ -3102,16 +3301,26 @@ void recepcion_lora() {
         // Extraer MAC
         int firstComma = received.indexOf(',');
         int secondComma = received.indexOf(',', firstComma + 1);
-        
+
         if (firstComma != -1 && secondComma != -1) {
-            String mac = received.substring(firstComma + 1, secondComma);
-            mac.trim();
+            String mac = normalizarMac(received.substring(firstComma + 1, secondComma));
 
             // Determinar tipo de dispositivo (por defecto 1 si no se puede leer)
             byte tipoDispositivo = 1;
             if (firstComma > 0) {
                 String tipoStr = received.substring(0, firstComma);
                 tipoStr.trim();
+                if (tipoStr.length() == 0) {
+                    Serial.println("⏭️  Mensaje LoRa ignorado: tipo de dispositivo vacío");
+                    return;
+                }
+
+                for (size_t i = 0; i < tipoStr.length(); i++) {
+                    if (!isDigit(tipoStr.charAt(i))) {
+                        Serial.printf("⏭️  Mensaje LoRa ignorado: tipo no numérico '%s'\n", tipoStr.c_str());
+                        return;
+                    }
+                }
                 int tipoValor = tipoStr.toInt();
                 if (tipoStr.length() > 0) {
                     if (tipoValor < 0) tipoValor = 0;
@@ -3119,18 +3328,32 @@ void recepcion_lora() {
                     tipoDispositivo = (byte)tipoValor;
                 }
             }
-            
-            Serial.printf("🔍 MAC extraída: '%s'\n", mac.c_str());
+
+            if (!esMacValida(mac)) {
+                Serial.printf("❌ MAC inválida en mensaje LoRa: '%s'\n", mac.c_str());
+                return;
+            }
+
+            if (tipoDispositivo == 0) {
+                Serial.println("⏭️  Mensaje LoRa ignorado: tipo de dispositivo 0 (reservado)");
+                return;
+            }
+
+            if (!mensajeLoRaTieneDatos(received)) {
+                Serial.println("⏭️  Mensaje LoRa ignorado: no contiene todos los datos de sensado");
+                return;
+            }
+
+            Serial.printf("🔍 MAC extraída (normalizada): '%s'\n", mac.c_str());
             Serial.printf("🔍 Longitud MAC: %d\n", mac.length());
             
             // Buscar dispositivo
             bool encontrado = false;
             for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-                String storedMac = String(configDispositivos[i].mac);
-                storedMac.trim();
-                
+                String storedMac = normalizarMac(String(configDispositivos[i].mac));
+
                 Serial.printf("   🔎 Comparando con [%d]: '%s'\n", i, storedMac.c_str());
-                
+
                 if (storedMac == mac) {
                     encontrado = true;
                     Serial.printf("✅ DISPOSITivo ENCONTRADO en índice: %d\n", i);
@@ -3139,7 +3362,7 @@ void recepcion_lora() {
                     actualizarDatosDesdeLoRa(mac, received, "");
                     mensajeLoRa = normalizarPayloadParaMQTT(received);
                     nuevoMensajeLoRa = configDispositivos[i].activo;
-                    if (!configDispositivos[i].activo) {
+                    if (!configDispositivos[i].activo && !bajaPendienteMQTT[i]) {
                         solicitarAltaDispositivo(i, mac);
                     }
                     break;
@@ -3202,6 +3425,9 @@ bool eliminarDispositivo(const String &mac) {
         mostrarSinDatos[i] = mostrarSinDatos[i + 1];
         ultimaSolicitudAlta[i] = ultimaSolicitudAlta[i + 1];
         solicitudAltaEnviada[i] = solicitudAltaEnviada[i + 1];
+        bajaPendienteMQTT[i] = bajaPendienteMQTT[i + 1];
+        ultimaSolicitudBaja[i] = ultimaSolicitudBaja[i + 1];
+        inicioEsperaBaja[i] = inicioEsperaBaja[i + 1];
     }
 
     // Limpiar la última posición
@@ -3220,6 +3446,9 @@ bool eliminarDispositivo(const String &mac) {
     mostrarSinDatos[MAX_DISPOSITIVOS - 1] = false;
     ultimaSolicitudAlta[MAX_DISPOSITIVOS - 1] = 0;
     solicitudAltaEnviada[MAX_DISPOSITIVOS - 1] = false;
+    bajaPendienteMQTT[MAX_DISPOSITIVOS - 1] = false;
+    ultimaSolicitudBaja[MAX_DISPOSITIVOS - 1] = 0;
+    inicioEsperaBaja[MAX_DISPOSITIVOS - 1] = 0;
 
     // Debug: Mostrar después de eliminar
     Serial.println("Contenido después de eliminar:");
@@ -4213,6 +4442,7 @@ testLoRaPeriodico();
     if (client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
         MQTT_ALTA();  //Para solicitar el alta en broker
         procesarAltasPendientes();
+        procesarBajasPendientes();
     }
 
     // 9. Verificación periódica de memoria (solo para debug)
