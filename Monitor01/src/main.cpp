@@ -1,3 +1,4 @@
+// 57 - 2025-05-12 Corrección: procesar confirmación MQTT del monitor (alta/0/confirmacion) y frenar reintentos
 // 56 - 2025-05-12 Corrección: asumir confirmación MQTT cuando EEPROM indica registro previo y evitar reintentos
 // 55 - 2025-05-11 Corrección: marcar monitor confirmado cuando el registro previo está presente y evitar reenviar alta
 // 54 - 2025-05-10 Corrección: no reenviar alta del monitor confirmado y altas pendientes inmediato + cada 5 minutos
@@ -2301,6 +2302,43 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.printf("Mensaje recibido MQTT TOPIC[%s]: message--> %s\n", topic, message);
 
 // ALTA MONITOR / DISPOSITIVOS Validación estricta para el topic de confirmación
+if (strcmp(topic, "alta/0/confirmacion/") == 0) {
+    String mensajeRecibido = String(message);
+    Serial.println("Confirmación de monitor recibida: " + mensajeRecibido);
+
+    int primeraComa = mensajeRecibido.indexOf(',');
+    int segundaComa = mensajeRecibido.indexOf(',', primeraComa + 1);
+
+    if (primeraComa == -1) {
+        Serial.println("⚠️  Mensaje de confirmación de monitor sin MAC");
+        return;
+    }
+
+    String macConfirmada = mensajeRecibido.substring(0, primeraComa);
+    macConfirmada.trim();
+
+    String estadoConfirmacion = (segundaComa != -1)
+                                   ? mensajeRecibido.substring(primeraComa + 1, segundaComa)
+                                   : mensajeRecibido.substring(primeraComa + 1);
+    estadoConfirmacion.trim();
+
+    String miMac = WiFi.macAddress();
+    miMac.replace("-", ":");
+
+    if (macConfirmada == miMac && (estadoConfirmacion == "registrado" || estadoConfirmacion == "confirmado")) {
+        Serial.println("✅ Confirmación MQTT para el monitor recibida");
+        mqttConfirmed = true;
+        solicitudAltaInicialEnviada = true;
+        guardarMQTTConfirmationState(true);
+        guardarSolicitudAltaInicialState(true);
+        activarDispositivosTrasConfirmacion();
+    } else {
+        Serial.printf("⚠️ Confirmación de monitor ignorada (MAC/estado no coinciden): %s / %s\n",
+                      macConfirmada.c_str(), estadoConfirmacion.c_str());
+    }
+    return;
+}
+
 if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
     Serial.println("Recibiendo mensaje de confirmacion: " + mensajeRecibido);
@@ -2411,6 +2449,9 @@ void reconnect() {
 
   
     // 2. Suscripciones con QoS 1 (confirmación de recepción)
+    client.subscribe("alta/0/confirmacion/", 1);
+Serial.println("Subscripcion: alta/0/confirmacion/");
+    delay(50);
     client.subscribe("alta/1/confirmacion/", 1);
 Serial.println("Subscripcion: alta/1/confirmacion/");
     delay(50);
