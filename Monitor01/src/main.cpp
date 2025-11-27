@@ -1,3 +1,4 @@
+// 56 - 2025-05-12 Corrección: asumir confirmación MQTT cuando EEPROM indica registro previo y evitar reintentos
 // 55 - 2025-05-11 Corrección: marcar monitor confirmado cuando el registro previo está presente y evitar reenviar alta
 // 54 - 2025-05-10 Corrección: no reenviar alta del monitor confirmado y altas pendientes inmediato + cada 5 minutos
 // 53 - 2025-05-09 Corrección: reintento de alta MQTT cada 5 minutos para dispositivos pendientes
@@ -2874,7 +2875,9 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
 
 bool loadMQTTConfirmationState() {
   EEPROM.begin(EEPROM_SIZE);
-  return EEPROM.read(MQTT_CONFIRMED_FLAG_ADDR) == 1;
+  bool flag = EEPROM.read(MQTT_CONFIRMED_FLAG_ADDR) == 1;
+  EEPROM.end();
+  return flag;
 }
 
 void guardarMQTTConfirmationState(bool estado) {
@@ -2886,13 +2889,16 @@ void guardarMQTTConfirmationState(bool estado) {
 
 bool loadSolicitudAltaInicialState() {
   EEPROM.begin(EEPROM_SIZE);
-  return EEPROM.read(MQTT_INITIAL_REQUEST_FLAG_ADDR) == 1;
+  bool flag = EEPROM.read(MQTT_INITIAL_REQUEST_FLAG_ADDR) == 1;
+  EEPROM.end();
+  return flag;
 }
 
 void guardarSolicitudAltaInicialState(bool estado) {
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.write(MQTT_INITIAL_REQUEST_FLAG_ADDR, estado ? 1 : 0);
   EEPROM.commit();
+  EEPROM.end();
 }
 
 void activarDispositivosTrasConfirmacion() {
@@ -3949,9 +3955,26 @@ delay(1000);
 // 10. Alta de monitor
 mqttConfirmed = loadMQTTConfirmationState(); // Cargar estado persistente
 solicitudAltaInicialEnviada = loadSolicitudAltaInicialState();
+
+// Si EEPROM indica registro previo, consolidar la confirmación para el monitor
+if (registroMonitorEEPROM && !mqttConfirmed) {
+  Serial.println("Estado MQTT: Registro previo detectado, se asume monitor confirmado");
+  mqttConfirmed = true;
+  guardarMQTTConfirmationState(true);
+}
+// Alinear la bandera de solicitud inicial cuando hay registro previo
+if (registroMonitorEEPROM && !solicitudAltaInicialEnviada) {
+  solicitudAltaInicialEnviada = true;
+  guardarSolicitudAltaInicialState(true);
+}
+
 // Si ya estaba confirmado, imprimir mensaje
 if(mqttConfirmed) {
   Serial.println("Estado MQTT: Confirmación alta encontrada en EEPROM");
+  if (!solicitudAltaInicialEnviada) {
+    solicitudAltaInicialEnviada = true; // Mantener sincronizada la bandera de solicitud
+    guardarSolicitudAltaInicialState(true);
+  }
   activarDispositivosTrasConfirmacion();
 } else {
   Serial.println("Estado MQTT: Esperando configuracion de alta  inicial");
@@ -3959,14 +3982,6 @@ if(mqttConfirmed) {
 if (solicitudAltaInicialEnviada && !mqttConfirmed) {
   Serial.println("Estado MQTT: Solicitud de alta inicial ya enviada, en espera de confirmación");
 }
-
- // Si el monitor ya tiene registro previo pero falta la marca de confirmación, evitar reintentar alta
- if (!mqttConfirmed && solicitudAltaInicialEnviada && registroMonitorEEPROM) {
-   Serial.println("Estado MQTT: Registro previo detectado, se asume monitor confirmado para evitar reprocesar alta");
-   mqttConfirmed = true;
-   guardarMQTTConfirmationState(true);
-   activarDispositivosTrasConfirmacion();
- }
 
 Serial.println("Setup completado");
 
