@@ -1,3 +1,4 @@
+// 54 - 2025-05-10 Corrección: no reenviar alta del monitor confirmado y altas pendientes inmediato + cada 5 minutos
 // 53 - 2025-05-09 Corrección: reintento de alta MQTT cada 5 minutos para dispositivos pendientes
 // 52 - 2025-05-07 Corrección: alta MQTT con nombre del dispositivo, tipo forzado y sin duplicados
 // 51 - 2025-05-05 Corrección: solicitar alta por MQTT y publicar solo tras confirmación, texto en español
@@ -2770,7 +2771,10 @@ void clearEEPROM() {
 void MQTT_ALTA() {
   // Reintentar la solicitud de alta mientras no exista confirmación
   // incluso si ya se envió previamente.
-  if (mqttConfirmed) return;
+  if (mqttConfirmed) {
+    // El monitor ya está dado de alta, no reenviar solicitud
+    return;
+  }
 
   if (WiFi.status() == WL_CONNECTED && client.connected()) {
     if (millis() - lastConfirmationAttempt > confirmationRetryInterval) {
@@ -2894,7 +2898,7 @@ void procesarAltasPendientes() {
   if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
 
   unsigned long ahora = millis();
-  if (ahora - lastAltaPendienteCheck < altaPendienteInterval) return;
+  if (lastAltaPendienteCheck != 0 && (ahora - lastAltaPendienteCheck < altaPendienteInterval)) return;
 
   lastAltaPendienteCheck = ahora;
 
