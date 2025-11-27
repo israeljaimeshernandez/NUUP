@@ -1,3 +1,4 @@
+// 53 - 2025-05-09 Corrección: reintento de alta MQTT cada 5 minutos para dispositivos pendientes
 // 52 - 2025-05-07 Corrección: alta MQTT con nombre del dispositivo, tipo forzado y sin duplicados
 // 51 - 2025-05-05 Corrección: solicitar alta por MQTT y publicar solo tras confirmación, texto en español
 // 50 - 2025-05-04 Actualizar siempre datos LoRa y publicar la última versión en MQTT
@@ -2807,11 +2808,6 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
     return;
   }
 
-  if (solicitudAltaEnviada[indice]) {
-    Serial.printf("⏳ Alta ya solicitada previamente para %s, esperando confirmación\n", mac.c_str());
-    return;
-  }
-
   if (userID.isEmpty()) {
     Serial.println("⚠️ No se puede solicitar alta: falta userID");
     return;
@@ -2827,7 +2823,10 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
   }
 
   unsigned long ahora = millis();
-  if (ahora - ultimaSolicitudAlta[indice] < altaPendienteInterval) {
+  bool primeraSolicitud = !solicitudAltaEnviada[indice] && ultimaSolicitudAlta[indice] == 0;
+  if (!primeraSolicitud && (ahora - ultimaSolicitudAlta[indice] < altaPendienteInterval)) {
+    Serial.printf("⏳ Alta de %s ya solicitada; se reintentará en %lu ms\n", mac.c_str(),
+                  altaPendienteInterval - (ahora - ultimaSolicitudAlta[indice]));
     return;
   }
 
