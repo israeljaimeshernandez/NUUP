@@ -3800,7 +3800,7 @@ pinMode(BOTON_W, INPUT_PULLUP);
 delay(1000);
 
 
-  // DEBUG COMPLETO EEPROM AL INICIAR
+  // DEBUG COMPLETO EEPROM AL INICIAR/
   Serial.println("\n💾 ===========================================");
   Serial.println("🔍 DEBUG EEPROM AL INICIAR");
   Serial.println("💾 ===========================================");
