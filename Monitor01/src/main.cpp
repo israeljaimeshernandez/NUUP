@@ -3868,7 +3868,7 @@ pinMode(BOTON_W, INPUT_PULLUP);
  
 
  inicializa_eeprom();
-//clearEEPROM();  //solo para configuracion inicial
+clearEEPROM();  //solo para configuracion inicial
 delay(1000);
 
 
