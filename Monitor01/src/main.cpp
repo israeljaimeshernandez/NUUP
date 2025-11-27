@@ -1,3 +1,4 @@
+// 58 - 2025-05-13 Corrección: reiniciar bandera de confirmación si EEPROM fue limpiada para evitar falsos positivos
 // 57 - 2025-05-12 Corrección: procesar confirmación MQTT del monitor (alta/0/confirmacion) y frenar reintentos
 // 56 - 2025-05-12 Corrección: asumir confirmación MQTT cuando EEPROM indica registro previo y evitar reintentos
 // 55 - 2025-05-11 Corrección: marcar monitor confirmado cuando el registro previo está presente y evitar reenviar alta
@@ -2852,6 +2853,14 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
     return;
   }
 
+  // Evitar registrar el propio monitor como dispositivo (tipo 1)
+  String miMac = WiFi.macAddress();
+  miMac.replace("-", ":");
+  if (mac.equalsIgnoreCase(miMac)) {
+    Serial.printf("⏭️  Alta ignorada para la MAC del monitor (%s)\n", mac.c_str());
+    return;
+  }
+
   if (configDispositivos[indice].activo) {
     Serial.printf("ℹ️ Alta ya confirmada para %s, no se reenviará\n", mac.c_str());
     return;
@@ -3997,16 +4006,11 @@ delay(1000);
 mqttConfirmed = loadMQTTConfirmationState(); // Cargar estado persistente
 solicitudAltaInicialEnviada = loadSolicitudAltaInicialState();
 
-// Si EEPROM indica registro previo, consolidar la confirmación para el monitor
-if (registroMonitorEEPROM && !mqttConfirmed) {
-  Serial.println("Estado MQTT: Registro previo detectado, se asume monitor confirmado");
-  mqttConfirmed = true;
-  guardarMQTTConfirmationState(true);
-}
-// Alinear la bandera de solicitud inicial cuando hay registro previo
-if (registroMonitorEEPROM && !solicitudAltaInicialEnviada) {
-  solicitudAltaInicialEnviada = true;
-  guardarSolicitudAltaInicialState(true);
+// Si la EEPROM fue limpiada (flag de registro en 0) pero quedó una confirmación previa, reiniciarla
+if (!registroMonitorEEPROM && mqttConfirmed) {
+  Serial.println("Estado MQTT: Limpieza detectada, se borra confirmación previa");
+  mqttConfirmed = false;
+  guardarMQTTConfirmationState(false);
 }
 
 // Si ya estaba confirmado, imprimir mensaje
