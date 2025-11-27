@@ -3375,8 +3375,8 @@ void recepcion_lora() {
                     actualizarDatosDesdeLoRa(mac, received, "");
                     mensajeLoRa = normalizarPayloadParaMQTT(received);
                     nuevoMensajeLoRa = configDispositivos[i].activo;
-                    if (!configDispositivos[i].activo && !bajaPendienteMQTT[i]) {
-                        solicitarAltaDispositivo(i, mac);
+                    if (!configDispositivos[i].activo) {
+                        Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
                     }
                     break;
                 }
@@ -3389,9 +3389,9 @@ void recepcion_lora() {
                     actualizarDatosDesdeLoRa(mac, received, "");
                     int nuevoIndice = obtenerIndiceDispositivo(mac);
                     if (nuevoIndice >= 0) {
-                        solicitarAltaDispositivo(nuevoIndice, mac);
                         mensajeLoRa = normalizarPayloadParaMQTT(received);
-                        nuevoMensajeLoRa = configDispositivos[nuevoIndice].activo;
+                        nuevoMensajeLoRa = false;
+                        Serial.println("ℹ️  Dispositivo aún inactivo: datos recibidos no se publicarán hasta activación en MQTT");
                     }
                 } else {
                     Serial.println("❌ No se pudo registrar el dispositivo (sin espacio)");
