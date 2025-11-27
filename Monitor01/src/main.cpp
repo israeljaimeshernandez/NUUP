@@ -1,3 +1,4 @@
+// 61 - 2025-05-16 Corrección: limpiar banderas de alta MQTT al borrar o dar de baja por BLE para evitar falsos registros
 // 60 - 2025-05-15 Mejora: baja MQTT con espera configurable, reintentos y cancelación al re-registrar
 // 59 - 2025-05-13 Corrección: normalizar y validar MAC LoRa en mayúsculas para evitar duplicados vacíos
 // 58 - 2025-05-13 Corrección: reiniciar bandera de confirmación si EEPROM fue limpiada para evitar falsos positivos
@@ -2839,7 +2840,7 @@ void clearEEPROM() {
   
   bool success = EEPROM.commit();
   EEPROM.end();
-  
+
   if (!success) {
     Serial.println("❌ Error en commit de EEPROM");
   }
@@ -2859,6 +2860,14 @@ void clearEEPROM() {
     ultimaSolicitudBaja[i] = 0;
     inicioEsperaBaja[i] = 0;
   }
+
+  // 5. Limpiar banderas de alta MQTT y reintentos
+  mqttConfirmed = false;
+  solicitudAltaInicialEnviada = false;
+  lastConfirmationAttempt = 0;
+  lastAltaPendienteCheck = 0;
+  guardarMQTTConfirmationState(false);
+  guardarSolicitudAltaInicialState(false);
   
   // 5. Limpiar redes WiFi en RAM
   for (int i = 0; i < MAX_NETWORKS; i++) {
@@ -2866,7 +2875,7 @@ void clearEEPROM() {
     savedNetworks[i].password = "";
     savedNetworks[i].active = false;
   }
-  
+
   // 6. Limpiar userID
   userID = "";
   
@@ -3035,6 +3044,10 @@ bool iniciarBajaDispositivo(const String &mac) {
   }
 
   ConfigDispositivo *config = &configDispositivos[indice];
+
+  // Resetear cualquier intento de alta previo para evitar estados fantasma
+  solicitudAltaEnviada[indice] = false;
+  ultimaSolicitudAlta[indice] = 0;
 
   // Si nunca estuvo activo en MQTT, eliminar inmediatamente
   if (!config->activo) {
