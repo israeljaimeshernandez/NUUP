@@ -178,7 +178,8 @@ bool mqttConfirmed = false;          // Bandera de confirmación MQTT
 bool solicitudAltaInicialEnviada = false; // Controla que el alta tipo 0 solo se envíe una vez
 unsigned long lastConfirmationAttempt = 0;
 const unsigned long confirmationTimeout = 30000; // 30 segundos para esperar confirmación
-const unsigned long confirmationRetryInterval = 10000; // segundos entre reintentos de conexion MQTT
+const unsigned long confirmationRetryInterval = 10000; // segundos entre reintentos de conexion MQTT para el monitor
+const unsigned long altaPendienteInterval = 5UL * 60UL * 1000UL; // 5 minutos entre solicitudes de alta pendientes
 unsigned long lastAltaPendienteCheck = 0;
 String userID = "";
 
@@ -2766,7 +2767,9 @@ void clearEEPROM() {
 
 
 void MQTT_ALTA() {
-  if (mqttConfirmed || solicitudAltaInicialEnviada) return;
+  // Reintentar la solicitud de alta mientras no exista confirmación
+  // incluso si ya se envió previamente.
+  if (mqttConfirmed) return;
 
   if (WiFi.status() == WL_CONNECTED && client.connected()) {
     if (millis() - lastConfirmationAttempt > confirmationRetryInterval) {
@@ -2824,7 +2827,7 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
   }
 
   unsigned long ahora = millis();
-  if (ahora - ultimaSolicitudAlta[indice] < confirmationRetryInterval) {
+  if (ahora - ultimaSolicitudAlta[indice] < altaPendienteInterval) {
     return;
   }
 
@@ -2892,7 +2895,7 @@ void procesarAltasPendientes() {
   if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
 
   unsigned long ahora = millis();
-  if (ahora - lastAltaPendienteCheck < confirmationRetryInterval) return;
+  if (ahora - lastAltaPendienteCheck < altaPendienteInterval) return;
 
   lastAltaPendienteCheck = ahora;
 
