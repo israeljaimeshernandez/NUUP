@@ -86,6 +86,7 @@
 #define ALIAS_DISPOSITIVOS 2000       // 
 
 #define MQTT_CONFIRMED_FLAG_ADDR 350  //
+#define MQTT_INITIAL_REQUEST_FLAG_ADDR 351
 #define USER_ID_ADDR 400              // 
 #define CONFIG_DISPOSITIVOS_ADDR 700  // 
 
@@ -174,9 +175,11 @@ long lastMsg = 0;
 //***   ALTA MQTT DE MONITOR ***
 //*****************************
 bool mqttConfirmed = false;          // Bandera de confirmación MQTT
+bool solicitudAltaInicialEnviada = false; // Controla que el alta tipo 0 solo se envíe una vez
 unsigned long lastConfirmationAttempt = 0;
 const unsigned long confirmationTimeout = 30000; // 30 segundos para esperar confirmación
 const unsigned long confirmationRetryInterval = 10000; // segundos entre reintentos de conexion MQTT
+unsigned long lastAltaPendienteCheck = 0;
 String userID = "";
 
 
@@ -239,11 +242,14 @@ int obtenerIndiceDispositivo(const String &mac);
 bool registrarDispositivo(const String &mac, byte tipo = 1);
 void MQTT_ALTA();
 bool loadMQTTConfirmationState();
+bool loadSolicitudAltaInicialState();
+void guardarSolicitudAltaInicialState(bool estado);
 void imprimirConfigDispositivo(const String &mac);
 void imprimirDispositivosRegistrados();
 void Reintentar_Wiffi();
 String normalizarPayloadParaMQTT(const String &payload);
 void solicitarAltaDispositivo(int indice, const String &mac);
+void procesarAltasPendientes();
 
 void debugNetworks();
 void checkWiFiStatus();
@@ -2341,6 +2347,8 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
             Serial.println("Email guardado: " + emailUsuario);
 
             mqttConfirmed = true;
+            solicitudAltaInicialEnviada = true;
+            guardarSolicitudAltaInicialState(true);
             activarDispositivosTrasConfirmacion();
             delay(3000); // Espera para evitar conflictos
         } else {
@@ -2712,6 +2720,7 @@ void clearEEPROM() {
   // 2. Borrar flags importantes
   EEPROM.write(0, 0); // Flag de inicialización
   EEPROM.write(MQTT_CONFIRMED_FLAG_ADDR, 0);
+  EEPROM.write(MQTT_INITIAL_REQUEST_FLAG_ADDR, 0);
   
   // 3. Borrar contador de dispositivos en la posición específica
   int addr = CONFIG_DISPOSITIVOS_ADDR;
@@ -2757,8 +2766,8 @@ void clearEEPROM() {
 
 
 void MQTT_ALTA() {
-  if (mqttConfirmed) return;
-  
+  if (mqttConfirmed || solicitudAltaInicialEnviada) return;
+
   if (WiFi.status() == WL_CONNECTED && client.connected()) {
     if (millis() - lastConfirmationAttempt > confirmationRetryInterval) {
       lastConfirmationAttempt = millis();
@@ -2775,6 +2784,8 @@ String mensajeCompleto = miMac + "," + userID;
           Serial.println("MQTT ALTA Solicitud de alta enviada correctamente");
           Serial.println("MQTT ALTA topico: alta/0/solicitud/");
           Serial.println("MQTT ALTA mensaje: "+mensajeCompleto);
+          solicitudAltaInicialEnviada = true;
+          guardarSolicitudAltaInicialState(true);
         } else {
           Serial.println("MQTT ALTA Error al publicar solicitud de alta");
         }
@@ -2853,10 +2864,38 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
 
 
 bool loadMQTTConfirmationState() {
+  EEPROM.begin(EEPROM_SIZE);
   return EEPROM.read(MQTT_CONFIRMED_FLAG_ADDR) == 1;
 }
 
+bool loadSolicitudAltaInicialState() {
+  EEPROM.begin(EEPROM_SIZE);
+  return EEPROM.read(MQTT_INITIAL_REQUEST_FLAG_ADDR) == 1;
+}
+
+void guardarSolicitudAltaInicialState(bool estado) {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(MQTT_INITIAL_REQUEST_FLAG_ADDR, estado ? 1 : 0);
+  EEPROM.commit();
+}
+
 void activarDispositivosTrasConfirmacion() {
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (strlen(configDispositivos[i].mac) > 0 && !configDispositivos[i].activo) {
+      solicitarAltaDispositivo(i, String(configDispositivos[i].mac));
+    }
+  }
+}
+
+void procesarAltasPendientes() {
+  if (!mqttConfirmed) return;
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
+
+  unsigned long ahora = millis();
+  if (ahora - lastAltaPendienteCheck < confirmationRetryInterval) return;
+
+  lastAltaPendienteCheck = ahora;
+
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (strlen(configDispositivos[i].mac) > 0 && !configDispositivos[i].activo) {
       solicitarAltaDispositivo(i, String(configDispositivos[i].mac));
@@ -3892,12 +3931,16 @@ delay(1000);
 
 // 10. Alta de monitor
 mqttConfirmed = loadMQTTConfirmationState(); // Cargar estado persistente
+solicitudAltaInicialEnviada = loadSolicitudAltaInicialState();
 // Si ya estaba confirmado, imprimir mensaje
 if(mqttConfirmed) {
   Serial.println("Estado MQTT: Confirmación alta encontrada en EEPROM");
   activarDispositivosTrasConfirmacion();
 } else {
   Serial.println("Estado MQTT: Esperando configuracion de alta  inicial");
+}
+if (solicitudAltaInicialEnviada && !mqttConfirmed) {
+  Serial.println("Estado MQTT: Solicitud de alta inicial ya enviada, en espera de confirmación");
 }
 
 Serial.println("Setup completado");
@@ -4084,6 +4127,7 @@ testLoRaPeriodico();
     // 8. Solicitar alta en broker si está conectado
     if (client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
         MQTT_ALTA();  //Para solicitar el alta en broker
+        procesarAltasPendientes();
     }
 
     // 9. Verificación periódica de memoria (solo para debug)
