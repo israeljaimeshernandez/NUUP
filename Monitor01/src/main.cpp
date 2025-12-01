@@ -1,3 +1,7 @@
+
+/*
+analizar el proyecto NUUP.SPACE analizar NUUP.SPACE de mi repositorio en github ahí se tiene un archivo en IOT/NODE/index.js el cual tiene el código para el servidor mqtt ya que está insertando tres veces cuando se tiene una petición de alta de nuevo sensor tipo 1 del monitor01 , analizar por qué está enviando esa solicitud tres veces una  es correcta porque da de alta con los valores correctos tipo sensor igual a 1 pero las otras dos da de alta 2  como monitor con tipo igual a cero cuando no es , revisar si la falla está al lado del index.js o del lado del monitor cuando intenta hacer la petición de alta del sensor sólo lo hace para cuando da de alta un sensor sólo en esa parte del código está de alguna forma mezclando para que se da alta tres veces no sé si es cuando se empareja el dispositivo o cuando lora manda la información y en ese momento se da alta tres veces en algún punto lo está haciendo ya se había revisado el código de lora de envío normal que sólo envía datos pero no solicite  de alta no sé si persiste y la falla o sea en otro bloque cuando se empareja */
+
 // 61 - 2025-05-16 Corrección: limpiar banderas de alta MQTT al borrar o dar de baja por BLE para evitar falsos registros
 // 60 - 2025-05-15 Mejora: baja MQTT con espera configurable, reintentos y cancelación al re-registrar
 // 59 - 2025-05-13 Corrección: normalizar y validar MAC LoRa en mayúsculas para evitar duplicados vacíos
