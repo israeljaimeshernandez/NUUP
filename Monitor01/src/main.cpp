@@ -1,9 +1,11 @@
+// 66 - 2025-05-21 Corrección: separar rutas de alta de monitor y Nuup01, forzando tipo=1 en sensores y bloqueando que su MAC
+//      se publique como monitor; se normaliza y persiste el tipo antes de enviar MQTT para que el backend no cree MONITOR NUUP
 // 65 - 2025-05-21 Corrección: eliminar altas duplicadas de Nuup01 corrigiendo payload MQTT (MAC,UserID,Nombre,Altura,Litros)
 //      y bloqueando reenvíos idénticos; la MAC del sensor ya no se acepta en alta/0/solicitud para evitar registros tipo 0
 // 64 - 2025-05-20 Corrección: documentar flujo MQTT de altas/bajas (monitor y Nuup01), trazas extendidas de tópicos/payloads
 //      y resúmenes periódicos separados para Monitor01 y cada Nuup01 con todas sus banderas
 //      Flujo monitor01: TX alta/0/solicitud -> "MAC_MONITOR,UserID" | RX alta/0/confirmacion -> "MAC_MONITOR,registrado,usuario,email"
-//      Flujo alta nuup01: TX alta/1/solicitud -> "MAC_NUUP,UserID,Nombre,Tipo" | RX alta/1/confirmacion -> "MAC_NUUP,registrado" activa MQTT
+//      Flujo alta nuup01: TX alta/1/solicitud -> "MAC_NUUP,UserID,Nombre,Altura,Litros,Tipo(1)" | RX alta/1/confirmacion -> "MAC_NUUP,registrado" activa MQTT
 //      Flujo baja nuup01: TX baja/1/solicitud -> "MAC_NUUP,UserID" | RX baja/1/confirmacion -> "MAC_NUUP,eliminado" limpia flags/EEPROM
 // 63 - 2025-05-19 Corrección: disparar alta MQTT inmediata tras BLE/LoRa cuando el monitor esté confirmado y detallar estados
 // 62 - 2025-05-18 Corrección: alta BLE inactiva y sin duplicados en MQTT; normalizar MAC y bloquear publicación hasta confirmación
@@ -268,7 +270,7 @@ int obtenerIndiceDispositivo(const String &mac);
 bool registrarDispositivo(const String &mac, byte tipo = 1);
 bool esMacValida(const String &mac);
 bool mensajeLoRaTieneDatos(const String &mensaje);
-void MQTT_ALTA();
+void solicitarAltaMonitorMQTT();
 bool loadMQTTConfirmationState();
 void guardarMQTTConfirmationState(bool estado);
 bool loadSolicitudAltaInicialState();
@@ -277,7 +279,7 @@ void imprimirConfigDispositivo(const String &mac);
 void imprimirDispositivosRegistrados();
 void Reintentar_Wiffi();
 String normalizarPayloadParaMQTT(const String &payload);
-void solicitarAltaDispositivo(int indice, const String &mac);
+void solicitarAltaNuupMQTT(int indice, const String &mac);
 void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen);
 void procesarAltasPendientes();
 String normalizarMac(const String &macRaw);
@@ -596,7 +598,7 @@ void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen)
 
     if (mqttConfirmed && mqttConectado) {
         Serial.printf("🚀 Alta MQTT solicitada tras %s para %s\n", origen, mac.c_str());
-        solicitarAltaDispositivo(indice, mac);
+        solicitarAltaNuupMQTT(indice, mac);
         return;
     }
 
@@ -2942,7 +2944,7 @@ void clearEEPROM() {
 }
 
 
-void MQTT_ALTA() {
+void solicitarAltaMonitorMQTT() {
   // Reintentar la solicitud de alta mientras no exista confirmación
   // incluso si ya se envió previamente.
   if (mqttConfirmed) {
@@ -2955,13 +2957,12 @@ void MQTT_ALTA() {
       lastConfirmationAttempt = millis();
 
       if (userID.length() > 0) {
-        Serial.println("🛰️ [ALTA MONITOR01] Existe USUARIO ID -> enviando solicitud inicial");
-        // Versión simplificada usando el método publish() que acepta const char*
-              // Obtener la MAC del dispositivo que está respondiendo (este módulo)
-      String miMac = WiFi.macAddress();
-      miMac.replace("-", ":");
-      // Crear el mensaje completo como String primero
-String mensajeCompleto = miMac + "," + userID;
+        Serial.println("🛰️ [ALTA MONITOR01] Existe USUARIO ID -> enviando solicitud inicial (ruta exclusiva de monitor)");
+
+        String miMac = WiFi.macAddress();
+        miMac.replace("-", ":");
+        String mensajeCompleto = miMac + "," + userID;
+
         Serial.println("   Tópico TX: alta/0/solicitud/");
         Serial.println("   Payload TX: " + mensajeCompleto);
         Serial.println("   Espera RX: alta/0/confirmacion/ con 'MAC,registrado,usuario,email'");
@@ -2977,7 +2978,7 @@ String mensajeCompleto = miMac + "," + userID;
   }
 }
 
-void solicitarAltaDispositivo(int indice, const String &mac) {
+void solicitarAltaNuupMQTT(int indice, const String &mac) {
   if (indice < 0 || indice >= MAX_DISPOSITIVOS) {
     return;
   }
@@ -3027,8 +3028,12 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
   }
 
   byte tipo = configDispositivos[indice].tipoDispositivo;
+  bool tipoNormalizado = false;
   if (tipo == 0) {
-    tipo = 1;  // Forzar tipo por defecto
+    tipo = 1;  // Forzar tipo tanque para que el backend no lo interprete como monitor
+    tipoNormalizado = true;
+  }
+  if (tipo != configDispositivos[indice].tipoDispositivo) {
     configDispositivos[indice].tipoDispositivo = tipo;
     datosActualizados = true;
   }
@@ -3041,21 +3046,24 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
     }
   }
 
-  // Se envía el payload completo que espera el backend: MAC,UserID,Nombre,Altura,Litros
-  // para impedir que el servidor trate el sensor como monitor (tipo 0).
+  // Payload completo: MAC,UserID,Nombre,Altura,Litros,Tipo
+  // Se incluye explícitamente tipo=1 para blindar la ruta de sensores en el backend.
   String altura = String((int)configDispositivos[indice].alturaConfig);
   String litros = String((int)configDispositivos[indice].litrosConfig);
-  String mensaje = mac + "," + userID + "," + nombre + "," + altura + "," + litros;
+  String mensaje = mac + "," + userID + "," + nombre + "," + altura + "," + litros + ",1";
 
   if (solicitudAltaEnviada[indice] && mensaje == ultimoPayloadAltaMQTT[indice]) {
     Serial.printf("⏭️  Alta MQTT ya enviada con el mismo payload para %s, se evita duplicado tipo 0\n", mac.c_str());
     return;
   }
 
-  Serial.println("🛰️ [ALTA NUUP01] Solicitud -> MQTT");
+  Serial.println("🛰️ [ALTA NUUP01] Solicitud -> MQTT (ruta separada de monitor)");
   Serial.printf("   Tópico TX: alta/1/solicitud/\n");
   Serial.printf("   Payload TX: %s\n", mensaje.c_str());
   Serial.println("   Espera RX: alta/1/confirmacion/ con 'MAC,registrado' para activarlo");
+  if (tipoNormalizado) {
+    Serial.printf("   ⚙️  Tipo forzado a 1 antes de enviar (evitar MONITOR NUUP con MAC de sensor %s)\n", mac.c_str());
+  }
   if (client.publish("alta/1/solicitud/", mensaje.c_str())) {
     ultimaSolicitudAlta[indice] = ahora;
     solicitudAltaEnviada[indice] = true;
@@ -3196,7 +3204,7 @@ void guardarSolicitudAltaInicialState(bool estado) {
 void activarDispositivosTrasConfirmacion() {
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (strlen(configDispositivos[i].mac) > 0 && !configDispositivos[i].activo) {
-      solicitarAltaDispositivo(i, String(configDispositivos[i].mac));
+      solicitarAltaNuupMQTT(i, String(configDispositivos[i].mac));
     }
   }
 }
@@ -3212,7 +3220,7 @@ void procesarAltasPendientes() {
 
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (strlen(configDispositivos[i].mac) > 0 && !configDispositivos[i].activo) {
-      solicitarAltaDispositivo(i, String(configDispositivos[i].mac));
+      solicitarAltaNuupMQTT(i, String(configDispositivos[i].mac));
     }
   }
 }
@@ -4557,7 +4565,7 @@ testLoRaPeriodico();
 
     // 8. Solicitar alta en broker si está conectado
     if (client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
-        MQTT_ALTA();  //Para solicitar el alta en broker
+        solicitarAltaMonitorMQTT();  //Para solicitar el alta en broker
         procesarAltasPendientes();
         procesarBajasPendientes();
     }
