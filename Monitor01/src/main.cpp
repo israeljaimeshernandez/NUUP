@@ -1,3 +1,5 @@
+// 65 - 2025-05-21 Corrección: eliminar altas duplicadas de Nuup01 corrigiendo payload MQTT (MAC,UserID,Nombre,Altura,Litros)
+//      y bloqueando reenvíos idénticos; la MAC del sensor ya no se acepta en alta/0/solicitud para evitar registros tipo 0
 // 64 - 2025-05-20 Corrección: documentar flujo MQTT de altas/bajas (monitor y Nuup01), trazas extendidas de tópicos/payloads
 //      y resúmenes periódicos separados para Monitor01 y cada Nuup01 con todas sus banderas
 //      Flujo monitor01: TX alta/0/solicitud -> "MAC_MONITOR,UserID" | RX alta/0/confirmacion -> "MAC_MONITOR,registrado,usuario,email"
@@ -173,6 +175,7 @@ bool solicitudAltaEnviada[MAX_DISPOSITIVOS] = {false};
 bool bajaPendienteMQTT[MAX_DISPOSITIVOS] = {false};
 unsigned long ultimaSolicitudBaja[MAX_DISPOSITIVOS] = {0};
 unsigned long inicioEsperaBaja[MAX_DISPOSITIVOS] = {0};
+String ultimoPayloadAltaMQTT[MAX_DISPOSITIVOS];
 
 
 // O si quieres hacerlo configurable via BLE/serial:
@@ -3038,7 +3041,17 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
     }
   }
 
-  String mensaje = mac + "," + userID + "," + nombre + "," + String(tipo);
+  // Se envía el payload completo que espera el backend: MAC,UserID,Nombre,Altura,Litros
+  // para impedir que el servidor trate el sensor como monitor (tipo 0).
+  String altura = String((int)configDispositivos[indice].alturaConfig);
+  String litros = String((int)configDispositivos[indice].litrosConfig);
+  String mensaje = mac + "," + userID + "," + nombre + "," + altura + "," + litros;
+
+  if (solicitudAltaEnviada[indice] && mensaje == ultimoPayloadAltaMQTT[indice]) {
+    Serial.printf("⏭️  Alta MQTT ya enviada con el mismo payload para %s, se evita duplicado tipo 0\n", mac.c_str());
+    return;
+  }
+
   Serial.println("🛰️ [ALTA NUUP01] Solicitud -> MQTT");
   Serial.printf("   Tópico TX: alta/1/solicitud/\n");
   Serial.printf("   Payload TX: %s\n", mensaje.c_str());
@@ -3046,6 +3059,7 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
   if (client.publish("alta/1/solicitud/", mensaje.c_str())) {
     ultimaSolicitudAlta[indice] = ahora;
     solicitudAltaEnviada[indice] = true;
+    ultimoPayloadAltaMQTT[indice] = mensaje;
     Serial.printf("✅ Solicitud de alta enviada para %s\n", mac.c_str());
   } else {
     Serial.printf("❌ Error al solicitar alta para %s\n", mac.c_str());
