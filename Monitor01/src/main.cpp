@@ -1,3 +1,8 @@
+// 64 - 2025-05-20 Corrección: documentar flujo MQTT de altas/bajas (monitor y Nuup01), trazas extendidas de tópicos/payloads
+//      y resúmenes periódicos separados para Monitor01 y cada Nuup01 con todas sus banderas
+//      Flujo monitor01: TX alta/0/solicitud -> "MAC_MONITOR,UserID" | RX alta/0/confirmacion -> "MAC_MONITOR,registrado,usuario,email"
+//      Flujo alta nuup01: TX alta/1/solicitud -> "MAC_NUUP,UserID,Nombre,Tipo" | RX alta/1/confirmacion -> "MAC_NUUP,registrado" activa MQTT
+//      Flujo baja nuup01: TX baja/1/solicitud -> "MAC_NUUP,UserID" | RX baja/1/confirmacion -> "MAC_NUUP,eliminado" limpia flags/EEPROM
 // 63 - 2025-05-19 Corrección: disparar alta MQTT inmediata tras BLE/LoRa cuando el monitor esté confirmado y detallar estados
 // 62 - 2025-05-18 Corrección: alta BLE inactiva y sin duplicados en MQTT; normalizar MAC y bloquear publicación hasta confirmación
 // 61 - 2025-05-16 Corrección: limpiar banderas de alta MQTT al borrar o dar de baja por BLE para evitar falsos registros
@@ -2381,6 +2386,10 @@ if (strcmp(topic, "alta/0/confirmacion/") == 0) {
     String miMac = WiFi.macAddress();
     miMac.replace("-", ":");
 
+    Serial.println("📥 [CONF MONITOR01] alta/0/confirmacion/" );
+    Serial.println("   Payload RX: " + mensajeRecibido);
+    Serial.println("   Se esperaba: MAC,registrado[,usuario,email]");
+
     if (macConfirmada == miMac && (estadoConfirmacion == "registrado" || estadoConfirmacion == "confirmado")) {
         Serial.println("✅ Confirmación MQTT para el monitor recibida");
         mqttConfirmed = true;
@@ -2397,7 +2406,9 @@ if (strcmp(topic, "alta/0/confirmacion/") == 0) {
 
 if (strcmp(topic, "baja/1/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
-    Serial.println("Confirmación de BAJA recibida: " + mensajeRecibido);
+    Serial.println("📥 [CONF NUUP01] baja/1/confirmacion/");
+    Serial.println("   Payload RX: " + mensajeRecibido);
+    Serial.println("   Se esperaba: MAC,eliminado");
 
     int primeraComa = mensajeRecibido.indexOf(',');
     if (primeraComa == -1) {
@@ -2430,7 +2441,9 @@ if (strcmp(topic, "baja/1/confirmacion/") == 0) {
 
 if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
-    Serial.println("Recibiendo mensaje de confirmacion: " + mensajeRecibido);
+    Serial.println("📥 [CONF ALTA] alta/1/confirmacion/");
+    Serial.println("   Payload RX: " + mensajeRecibido);
+    Serial.println("   Se esperaba: MAC,registrado[,usuario,email]");
 
     int primeraComa = mensajeRecibido.indexOf(',');
     int segundaComa = mensajeRecibido.indexOf(',', primeraComa + 1);
@@ -2491,6 +2504,7 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     } else if (estadoConfirmacion == "registrado") {
         int indice = obtenerIndiceDispositivo(macConfirmada);
         if (indice >= 0) {
+            Serial.printf("✅ [CONF NUUP01] Alta confirmada para %s -> activar dispositivo y permitir LoRa->MQTT\n", macConfirmada.c_str());
             configDispositivos[indice].activo = true;
             ultimaSolicitudAlta[indice] = 0;
             solicitudAltaEnviada[indice] = false;
@@ -2936,23 +2950,24 @@ void MQTT_ALTA() {
   if (WiFi.status() == WL_CONNECTED && client.connected()) {
     if (millis() - lastConfirmationAttempt > confirmationRetryInterval) {
       lastConfirmationAttempt = millis();
-      
+
       if (userID.length() > 0) {
-        Serial.println("MQTT ALTA Existe USUARIO ID Enviando solicitud de alta INICIAL...");  
+        Serial.println("🛰️ [ALTA MONITOR01] Existe USUARIO ID -> enviando solicitud inicial");
         // Versión simplificada usando el método publish() que acepta const char*
               // Obtener la MAC del dispositivo que está respondiendo (este módulo)
       String miMac = WiFi.macAddress();
       miMac.replace("-", ":");
       // Crear el mensaje completo como String primero
 String mensajeCompleto = miMac + "," + userID;
+        Serial.println("   Tópico TX: alta/0/solicitud/");
+        Serial.println("   Payload TX: " + mensajeCompleto);
+        Serial.println("   Espera RX: alta/0/confirmacion/ con 'MAC,registrado,usuario,email'");
         if (client.publish("alta/0/solicitud/",  mensajeCompleto.c_str())) {
-          Serial.println("MQTT ALTA Solicitud de alta enviada correctamente");
-          Serial.println("MQTT ALTA topico: alta/0/solicitud/");
-          Serial.println("MQTT ALTA mensaje: "+mensajeCompleto);
+          Serial.println("✅ [ALTA MONITOR01] Solicitud enviada correctamente");
           solicitudAltaInicialEnviada = true;
           guardarSolicitudAltaInicialState(true);
         } else {
-          Serial.println("MQTT ALTA Error al publicar solicitud de alta");
+          Serial.println("❌ [ALTA MONITOR01] Error al publicar solicitud de alta");
         }
       }
     }
@@ -3024,10 +3039,14 @@ void solicitarAltaDispositivo(int indice, const String &mac) {
   }
 
   String mensaje = mac + "," + userID + "," + nombre + "," + String(tipo);
+  Serial.println("🛰️ [ALTA NUUP01] Solicitud -> MQTT");
+  Serial.printf("   Tópico TX: alta/1/solicitud/\n");
+  Serial.printf("   Payload TX: %s\n", mensaje.c_str());
+  Serial.println("   Espera RX: alta/1/confirmacion/ con 'MAC,registrado' para activarlo");
   if (client.publish("alta/1/solicitud/", mensaje.c_str())) {
     ultimaSolicitudAlta[indice] = ahora;
     solicitudAltaEnviada[indice] = true;
-    Serial.printf("Solicitud de alta enviada para %s\n", mac.c_str());
+    Serial.printf("✅ Solicitud de alta enviada para %s\n", mac.c_str());
   } else {
     Serial.printf("❌ Error al solicitar alta para %s\n", mac.c_str());
   }
@@ -3060,6 +3079,10 @@ bool publicarSolicitudBaja(int indice, const String &mac) {
   }
 
   String mensaje = mac + "," + userID;
+  Serial.println("🛰️ [BAJA NUUP01] Solicitud -> MQTT");
+  Serial.println("   Tópico TX: baja/1/solicitud/");
+  Serial.println("   Payload TX: " + mensaje);
+  Serial.println("   Espera RX: baja/1/confirmacion/ con 'MAC,eliminado' para limpiar todo");
   if (client.publish("baja/1/solicitud/", mensaje.c_str())) {
     ultimaSolicitudBaja[indice] = millis();
     inicioEsperaBaja[indice] = (inicioEsperaBaja[indice] == 0) ? ultimaSolicitudBaja[indice] : inicioEsperaBaja[indice];
@@ -4625,15 +4648,42 @@ if (dispActual.nombre != ultimoNombreMostrado ||
     static unsigned long lastStateDebug = 0;
     if (millis() - lastStateDebug > 15000) {
         lastStateDebug = millis();
-        
-        Serial.println("\n📊 ===== ESTADO DEL SISTEMA =====");
-        Serial.printf("📡 WiFi: %s\n", WiFi.status() == WL_CONNECTED ? "CONECTADO" : "DESCONECTADO");
-        Serial.printf("📶 RSSI WiFi: %d dBm\n", WiFi.RSSI());
-        Serial.printf("🔗 MQTT: %s\n", client.connected() ? "CONECTADO" : "DESCONECTADO");
+
+        Serial.println("\n🛰️ ===== ESTADO DE MONITOR01 =====");
+        Serial.printf("📡 WiFi: %s (RSSI %d dBm)\n", WiFi.status() == WL_CONNECTED ? "CONECTADO" : "DESCONECTADO", WiFi.RSSI());
+        Serial.printf("🔗 MQTT: %s | Confirmado: %s | Alta inicial enviada: %s\n", client.connected() ? "CONECTADO" : "DESCONECTADO", mqttConfirmed ? "SI" : "NO", solicitudAltaInicialEnviada ? "SI" : "NO");
+        Serial.printf("👤 UserID: %s\n", userID.c_str());
+        Serial.printf("🛂 Subscripciones: alta/0/confirmacion/, alta/1/confirmacion/, baja/1/confirmacion/, %s/command, %s/estatus\n", serial_number.c_str(), serial_number.c_str());
         Serial.printf("📱 BLE: %s\n", deviceConnected ? "CONECTADO" : "DESCONECTADO");
         Serial.printf("💾 Dispositivos registrados: %d\n", contarDispositivosRegistrados());
-        Serial.printf("🔄 Dispositivo actual en pantalla: %d\n", dispositivoActual);
-        Serial.println("📊 ==============================\n");
+        Serial.println("🛰️ ================================\n");
+
+        Serial.println("📟 ===== ESTADO DE CADA NUUP01 =====");
+        for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+            if (String(configDispositivos[i].mac) == "") continue;
+
+            String resumenLoRa = ultimoMensajeLoRaDispositivo[i];
+            if (resumenLoRa.length() > 60) {
+                resumenLoRa = resumenLoRa.substring(0, 60) + "...";
+            }
+
+            Serial.printf("[%02d] MAC: %s | Nombre: '%s' | ActivoMQTT: %s | AltaSolicitada: %s | BajaPendiente: %s\n",
+                          i,
+                          configDispositivos[i].mac,
+                          configDispositivos[i].nombre,
+                          configDispositivos[i].activo ? "SI" : "NO",
+                          solicitudAltaEnviada[i] ? "SI" : "NO",
+                          bajaPendienteMQTT[i] ? "SI" : "NO");
+            Serial.printf("     Últimos datos: %.2fL | %.2fV | %.2f°C | AlturaCfg %.2f | LitrosCfg %.2f | %% %d\n",
+                          configDispositivos[i].litrosActuales,
+                          configDispositivos[i].voltaje,
+                          configDispositivos[i].temperatura,
+                          configDispositivos[i].alturaConfig,
+                          configDispositivos[i].litrosConfig,
+                          configDispositivos[i].porcentaje);
+            Serial.printf("     Último LoRa guardado: %s\n", resumenLoRa.c_str());
+        }
+        Serial.println("📟 ==================================\n");
     }
 
 
