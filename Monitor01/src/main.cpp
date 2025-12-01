@@ -1,3 +1,6 @@
+// 68 - 2025-05-22 Corrección: se fija y se imprime una sola vez la MAC del monitor, se reutiliza en todas las rutas MQTT y se
+//      documenta para detener ciclos en consola; además se refuerza que la MAC del monitor nunca se use en altas de sensores
+//      evitando registros MONITOR NUUP extra con MAC de Nuup01.
 // 67 - 2025-05-21 Corrección: se blinda la ruta de alta del monitor fijando su MAC al inicio y anulando cualquier intento de
 //      usar la MAC de un sensor; trazas claras indican si se bloquea el envío y se documenta el motivo para evitar duplicados
 //      MONITOR NUUP con MAC de sensor en la base de datos.
@@ -196,6 +199,7 @@ const char *mqtt_pass ="Kfl-0878";
 WiFiClient espClient;
 PubSubClient client(espClient);
 String macMonitorFija = "";  // MAC del monitor fijada al inicio para evitar usar MAC de sensores
+bool macMonitorFijaAnunciada = false; // evita spam en consola cuando se dibuja la animación WiFi
 
 long lastMsg = 0;
 
@@ -279,6 +283,7 @@ bool loadMQTTConfirmationState();
 void guardarMQTTConfirmationState(bool estado);
 bool loadSolicitudAltaInicialState();
 void guardarSolicitudAltaInicialState(bool estado);
+void asegurarMacMonitorFija(const char* motivo);
 void imprimirConfigDispositivo(const String &mac);
 void imprimirDispositivosRegistrados();
 void Reintentar_Wiffi();
@@ -2929,6 +2934,9 @@ void clearEEPROM() {
   lastAltaPendienteCheck = 0;
   guardarMQTTConfirmationState(false);
   guardarSolicitudAltaInicialState(false);
+
+  macMonitorFija = "";
+  macMonitorFijaAnunciada = false;
   
   // 5. Limpiar redes WiFi en RAM
   for (int i = 0; i < MAX_NETWORKS; i++) {
@@ -2963,11 +2971,7 @@ void solicitarAltaMonitorMQTT() {
       if (userID.length() > 0) {
         Serial.println("🛰️ [ALTA MONITOR01] Existe USUARIO ID -> enviando solicitud inicial (ruta exclusiva de monitor)");
 
-        if (macMonitorFija.isEmpty()) {
-          macMonitorFija = WiFi.macAddress();
-          macMonitorFija.replace("-", ":");
-          Serial.printf("ℹ️  MAC del monitor fijada de nuevo: %s\n", macMonitorFija.c_str());
-        }
+        asegurarMacMonitorFija("alta_monitor");
 
         // Bloquear si, por error, la MAC fija coincide con algún sensor registrado
         for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
@@ -3002,11 +3006,8 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
   }
 
   // Evitar registrar el propio monitor como dispositivo (tipo 1)
+  asegurarMacMonitorFija("alta_sensor");
   String macMonitor = macMonitorFija;
-  if (macMonitor.isEmpty()) {
-    macMonitor = WiFi.macAddress();
-    macMonitor.replace("-", ":");
-  }
 
   if (mac.equalsIgnoreCase(macMonitor)) {
     Serial.printf("⏭️  Alta ignorada para la MAC del monitor (%s)\n", mac.c_str());
@@ -3221,6 +3222,24 @@ void guardarSolicitudAltaInicialState(bool estado) {
   EEPROM.write(MQTT_INITIAL_REQUEST_FLAG_ADDR, estado ? 1 : 0);
   EEPROM.commit();
   EEPROM.end();
+}
+
+// Fijar la MAC del monitor una sola vez y evitar que se imprima en bucle
+void asegurarMacMonitorFija(const char* motivo) {
+  if (macMonitorFija.isEmpty()) {
+    macMonitorFija = WiFi.macAddress();
+    macMonitorFija.replace("-", ":");
+    macMonitorFijaAnunciada = false; // permitir un anuncio fresco cuando se obtenga de cero
+  }
+
+  if (!macMonitorFija.isEmpty() && !macMonitorFijaAnunciada) {
+    Serial.printf("🔒 MAC fija del monitor: %s", macMonitorFija.c_str());
+    if (motivo && strlen(motivo) > 0) {
+      Serial.printf(" (origen: %s)", motivo);
+    }
+    Serial.println();
+    macMonitorFijaAnunciada = true;
+  }
 }
 
 void activarDispositivosTrasConfirmacion() {
@@ -3724,9 +3743,7 @@ void mostrarConexionWifi() {
   display.setTextColor(SSD1306_WHITE);
 
   // Capturar y fijar la MAC del monitor para evitar confundirla con la de un sensor
-  macMonitorFija = WiFi.macAddress();
-  macMonitorFija.replace("-", ":");
-  Serial.printf("🔒 MAC fija del monitor: %s\n", macMonitorFija.c_str());
+  asegurarMacMonitorFija("wifi_anim");
   
   display.setCursor(0, 45);
   display.print("WiFi");
@@ -4571,8 +4588,12 @@ testLoRaPeriodico();
     if (WiFi.status() == WL_CONNECTED && client.connected() && mqttConfirmed && !forceAPMode) {
         // Publicar inmediatamente si hay datos y estamos conectados
         if (nuevoMensajeLoRa) {
-            String miMac = WiFi.macAddress();
-            miMac.replace("-", ":");
+            asegurarMacMonitorFija("mqtt_lora");
+            String miMac = macMonitorFija;
+            if (miMac.isEmpty()) {
+                miMac = WiFi.macAddress();
+                miMac.replace("-", ":");
+            }
             String topico = "NUUP/" + miMac;
             if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
                 Serial.print("Publicado: ");
