@@ -1,3 +1,4 @@
+// 62 - 2025-05-18 Corrección: alta BLE inactiva y sin duplicados en MQTT; normalizar MAC y bloquear publicación hasta confirmación
 // 61 - 2025-05-16 Corrección: limpiar banderas de alta MQTT al borrar o dar de baja por BLE para evitar falsos registros
 // 60 - 2025-05-15 Mejora: baja MQTT con espera configurable, reintentos y cancelación al re-registrar
 // 59 - 2025-05-13 Corrección: normalizar y validar MAC LoRa en mayúsculas para evitar duplicados vacíos
@@ -579,9 +580,15 @@ ultimaAltura = configDispositivos[i].alturaConfig;
 
 
 bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", int altura = 0, int litros = 0) {
-    
+
+    String macNormalizada = normalizarMac(macCliente);
+    if (!esMacValida(macNormalizada)) {
+        Serial.println("❌ MAC inválida en registro BLE, se descarta");
+        return false;
+    }
+
     Serial.println("🔄 Procesando registro BLE COMPLETO:");
-    Serial.println("   MAC: " + macCliente);
+    Serial.println("   MAC: " + macNormalizada);
     Serial.println("   Nombre: " + nombre);
     Serial.println("   Altura: " + String(altura));
     Serial.println("   Litros: " + String(litros));
@@ -590,12 +597,12 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
     ultimoNombreDispositivo = nombre;
     ultimaAltura = altura;
     ultimosLitros = litros;
-    
+
     // Buscar si ya existe el dispositivo
     for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-        if (String(configDispositivos[i].mac) == macCliente) {
+        if (normalizarMac(String(configDispositivos[i].mac)) == macNormalizada) {
             Serial.println("⚠️  Dispositivo ya registrado - Actualizando datos");
-            
+
             // ⭐⭐ ACTUALIZAR CORRECTAMENTE los campos
             configDispositivos[i].alturaConfig = altura;
             configDispositivos[i].litrosConfig = litros;
@@ -603,6 +610,8 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             nombre.toCharArray(configDispositivos[i].nombre, 20);
             configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
+            solicitudAltaEnviada[i] = false;
+            ultimaSolicitudAlta[i] = 0;
             limpiarEstadoBaja(i);
 
             Serial.println("✅ Datos actualizados para dispositivo existente");
@@ -617,12 +626,12 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             }
         }
     }
-    
+
     // Buscar espacio libre para nuevo registro
     for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
         if (String(configDispositivos[i].mac) == "") {
             // ⭐⭐ GUARDAR CORRECTAMENTE todos los campos
-            macCliente.toCharArray(configDispositivos[i].mac, MAC_LEN + 1);
+            macNormalizada.toCharArray(configDispositivos[i].mac, MAC_LEN + 1);
             nombre.toCharArray(configDispositivos[i].nombre, 20);
             configDispositivos[i].alturaConfig = altura;
             configDispositivos[i].litrosConfig = litros;
@@ -632,6 +641,8 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
             configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
             configDispositivos[i].tipoDispositivo = 1; // Tipo tanque
+            solicitudAltaEnviada[i] = false;
+            ultimaSolicitudAlta[i] = 0;
             limpiarEstadoBaja(i);
 
             Serial.println("✅ Nuevo dispositivo registrado con datos");
@@ -3374,7 +3385,7 @@ void recepcion_lora() {
                     // Procesar datos
                     actualizarDatosDesdeLoRa(mac, received, "");
                     mensajeLoRa = normalizarPayloadParaMQTT(received);
-                    nuevoMensajeLoRa = configDispositivos[i].activo;
+                    nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
                     if (!configDispositivos[i].activo) {
                         Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
                     }
@@ -3891,7 +3902,7 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
             // Guardar mensaje completo (incluye valores adicionales de IA)
             ultimoMensajeLoRaDispositivo[i] = mensaje;
             mensajeLoRa = mensaje;          // Garantizar que el mensaje más reciente quede listo para MQTT
-            nuevoMensajeLoRa = true;
+            nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
 
             // Actualizar tipo de dispositivo en caso de que cambie en un mensaje futuro
             int primeraComa = mensaje.indexOf(',');
