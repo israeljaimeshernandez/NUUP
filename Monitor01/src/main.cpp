@@ -1,3 +1,6 @@
+// 67 - 2025-05-21 Corrección: se blinda la ruta de alta del monitor fijando su MAC al inicio y anulando cualquier intento de
+//      usar la MAC de un sensor; trazas claras indican si se bloquea el envío y se documenta el motivo para evitar duplicados
+//      MONITOR NUUP con MAC de sensor en la base de datos.
 // 66 - 2025-05-21 Corrección: separar rutas de alta de monitor y Nuup01, forzando tipo=1 en sensores y bloqueando que su MAC
 //      se publique como monitor; se normaliza y persiste el tipo antes de enviar MQTT para que el backend no cree MONITOR NUUP
 // 65 - 2025-05-21 Corrección: eliminar altas duplicadas de Nuup01 corrigiendo payload MQTT (MAC,UserID,Nombre,Altura,Litros)
@@ -192,6 +195,7 @@ const char *mqtt_user="nuup_web";
 const char *mqtt_pass ="Kfl-0878";
 WiFiClient espClient;
 PubSubClient client(espClient);
+String macMonitorFija = "";  // MAC del monitor fijada al inicio para evitar usar MAC de sensores
 
 long lastMsg = 0;
 
@@ -2959,9 +2963,23 @@ void solicitarAltaMonitorMQTT() {
       if (userID.length() > 0) {
         Serial.println("🛰️ [ALTA MONITOR01] Existe USUARIO ID -> enviando solicitud inicial (ruta exclusiva de monitor)");
 
-        String miMac = WiFi.macAddress();
-        miMac.replace("-", ":");
-        String mensajeCompleto = miMac + "," + userID;
+        if (macMonitorFija.isEmpty()) {
+          macMonitorFija = WiFi.macAddress();
+          macMonitorFija.replace("-", ":");
+          Serial.printf("ℹ️  MAC del monitor fijada de nuevo: %s\n", macMonitorFija.c_str());
+        }
+
+        // Bloquear si, por error, la MAC fija coincide con algún sensor registrado
+        for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+          if (strlen(configDispositivos[i].mac) > 0 &&
+              macMonitorFija.equalsIgnoreCase(String(configDispositivos[i].mac))) {
+            Serial.printf("⛔ Alta de monitor cancelada: la MAC fija %s coincide con un sensor en índice %d\n",
+                          macMonitorFija.c_str(), i);
+            return;
+          }
+        }
+
+        String mensajeCompleto = macMonitorFija + "," + userID;
 
         Serial.println("   Tópico TX: alta/0/solicitud/");
         Serial.println("   Payload TX: " + mensajeCompleto);
@@ -2984,9 +3002,13 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
   }
 
   // Evitar registrar el propio monitor como dispositivo (tipo 1)
-  String miMac = WiFi.macAddress();
-  miMac.replace("-", ":");
-  if (mac.equalsIgnoreCase(miMac)) {
+  String macMonitor = macMonitorFija;
+  if (macMonitor.isEmpty()) {
+    macMonitor = WiFi.macAddress();
+    macMonitor.replace("-", ":");
+  }
+
+  if (mac.equalsIgnoreCase(macMonitor)) {
     Serial.printf("⏭️  Alta ignorada para la MAC del monitor (%s)\n", mac.c_str());
     return;
   }
@@ -3700,6 +3722,11 @@ void mostrarConexionWifi() {
   // Texto "Conectando WiFi" - ALINEADO A LA IZQUIERDA
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
+
+  // Capturar y fijar la MAC del monitor para evitar confundirla con la de un sensor
+  macMonitorFija = WiFi.macAddress();
+  macMonitorFija.replace("-", ":");
+  Serial.printf("🔒 MAC fija del monitor: %s\n", macMonitorFija.c_str());
   
   display.setCursor(0, 45);
   display.print("WiFi");
