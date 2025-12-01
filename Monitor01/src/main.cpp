@@ -1,3 +1,4 @@
+// 63 - 2025-05-19 Corrección: disparar alta MQTT inmediata tras BLE/LoRa cuando el monitor esté confirmado y detallar estados
 // 62 - 2025-05-18 Corrección: alta BLE inactiva y sin duplicados en MQTT; normalizar MAC y bloquear publicación hasta confirmación
 // 61 - 2025-05-16 Corrección: limpiar banderas de alta MQTT al borrar o dar de baja por BLE para evitar falsos registros
 // 60 - 2025-05-15 Mejora: baja MQTT con espera configurable, reintentos y cancelación al re-registrar
@@ -269,6 +270,7 @@ void imprimirDispositivosRegistrados();
 void Reintentar_Wiffi();
 String normalizarPayloadParaMQTT(const String &payload);
 void solicitarAltaDispositivo(int indice, const String &mac);
+void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen);
 void procesarAltasPendientes();
 String normalizarMac(const String &macRaw);
 bool iniciarBajaDispositivo(const String &mac);
@@ -579,6 +581,27 @@ ultimaAltura = configDispositivos[i].alturaConfig;
 }
 
 
+void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen) {
+    if (indice < 0 || indice >= MAX_DISPOSITIVOS) return;
+
+    bool mqttConectado = WiFi.status() == WL_CONNECTED && client.connected();
+
+    if (mqttConfirmed && mqttConectado) {
+        Serial.printf("🚀 Alta MQTT solicitada tras %s para %s\n", origen, mac.c_str());
+        solicitarAltaDispositivo(indice, mac);
+        return;
+    }
+
+    Serial.printf("⏳ Alta pendiente (%s): monitor %s, MQTT %s\n",
+                  origen,
+                  mqttConfirmed ? "confirmado" : "sin confirmar",
+                  mqttConectado ? "conectado" : "desconectado");
+
+    solicitudAltaEnviada[indice] = false;
+    ultimaSolicitudAlta[indice] = 0;
+}
+
+
 bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", int altura = 0, int litros = 0) {
 
     String macNormalizada = normalizarMac(macCliente);
@@ -617,6 +640,8 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             Serial.println("✅ Datos actualizados para dispositivo existente");
             
             if (guardarDispositivos()) {
+                int indice = obtenerIndiceDispositivo(macNormalizada);
+                intentarAltaTrasRegistro(indice, macNormalizada, "BLE (actualización)");
                 solicitudAltaBLE = true;
                 iniciarEmparejamiento();
                 return true;
@@ -653,6 +678,8 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             
             if (guardarDispositivos()) {
                 imprimirDispositivosRegistrados();
+                int indice = obtenerIndiceDispositivo(macNormalizada);
+                intentarAltaTrasRegistro(indice, macNormalizada, "BLE (nuevo)");
                 solicitudAltaBLE = true;
                 iniciarEmparejamiento();
                 return true;
@@ -3388,6 +3415,7 @@ void recepcion_lora() {
                     nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
                     if (!configDispositivos[i].activo) {
                         Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
+                        intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
                     }
                     break;
                 }
@@ -3403,6 +3431,7 @@ void recepcion_lora() {
                         mensajeLoRa = normalizarPayloadParaMQTT(received);
                         nuevoMensajeLoRa = false;
                         Serial.println("ℹ️  Dispositivo aún inactivo: datos recibidos no se publicarán hasta activación en MQTT");
+                        intentarAltaTrasRegistro(nuevoIndice, mac, "LoRa (nuevo)");
                     }
                 } else {
                     Serial.println("❌ No se pudo registrar el dispositivo (sin espacio)");
@@ -4073,15 +4102,42 @@ void debugEstadoDispositivos() {
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 30000) { // ⭐⭐ CADA 30 SEGUNDOS (en lugar de 5)
         lastDebug = millis();
-        
-        Serial.println("\n=== DEBUG ESTADO DISPOSITIVOS ===");
+
+        Serial.println("\n=== ESTADO DETALLADO MONITOR01 ===");
+        Serial.printf("📡 WiFi: %s\n", WiFi.status() == WL_CONNECTED ? "CONECTADO" : "DESCONECTADO");
+        Serial.printf("🔗 MQTT: %s\n", client.connected() ? "CONECTADO" : "DESCONECTADO");
+        Serial.printf("✅ Alta monitor confirmada: %s\n", mqttConfirmed ? "SI" : "NO");
+        Serial.printf("📨 Solicitud alta inicial enviada: %s\n", solicitudAltaInicialEnviada ? "SI" : "NO");
+        Serial.printf("🆔 UserID: '%s'\n", userID.c_str());
+        Serial.printf("📦 Altas pendientes cada 5min: %s\n", mqttConfirmed ? "ACTIVAS" : "EN ESPERA DE CONFIRMACION");
+
+        Serial.println("\n=== ESTADO DETALLADO NUUP01 ===");
         int total = contarDispositivosRegistrados();
-        
+        Serial.printf("📊 Total dispositivos registrados: %d\n", total);
+
         for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
             if (String(configDispositivos[i].mac) != "") {
-                Serial.println("📍 " + String(configDispositivos[i].nombre) + 
-                             " - " + String(configDispositivos[i].porcentaje) + "% - " + 
-                             String(configDispositivos[i].litrosActuales) + "L");
+                unsigned long desdeLoRa = millis() - ultimaActualizacionLoRa[i];
+                Serial.printf("📍 [%02d] MAC: %s | Nombre: %s\n", i, configDispositivos[i].mac, configDispositivos[i].nombre);
+                Serial.printf("    ⚡ Activo MQTT: %s | Tipo: %d | %%: %d\n",
+                              configDispositivos[i].activo ? "SI" : "NO",
+                              configDispositivos[i].tipoDispositivo,
+                              configDispositivos[i].porcentaje);
+                Serial.printf("    📨 Solicitud alta enviada: %s | Última solicitud: %lu ms\n",
+                              solicitudAltaEnviada[i] ? "SI" : "NO",
+                              ultimaSolicitudAlta[i]);
+                Serial.printf("    🗑️ Baja pendiente: %s | Inicio espera: %lu ms\n",
+                              bajaPendienteMQTT[i] ? "SI" : "NO",
+                              inicioEsperaBaja[i]);
+                Serial.printf("    💧 Litros: %.1f/%.1f | Altura: %.1f | Voltaje: %.2f | Temp: %.1f\n",
+                              configDispositivos[i].litrosActuales,
+                              configDispositivos[i].litrosConfig,
+                              configDispositivos[i].alturaConfig,
+                              configDispositivos[i].voltaje,
+                              configDispositivos[i].temperatura);
+                Serial.printf("    🛰️ Último mensaje LoRa hace: %lu ms | Guardado: %s\n",
+                              desdeLoRa,
+                              ultimoMensajeLoRaDispositivo[i].length() > 0 ? ultimoMensajeLoRaDispositivo[i].c_str() : "SIN DATOS");
             }
         }
         Serial.println("================================\n");
