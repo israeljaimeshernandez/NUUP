@@ -1,3 +1,5 @@
+// 70 - 2025-05-23 Corrección: deduplicar confirmaciones MQTT (alta/1/confirmacion) para no reactivar ni imprimir varias veces
+//      el mismo sensor/monitor tras reconexiones; se valida si ya estaba activo/confirmado y si el payload es igual, se ignora.
 // 69 - 2025-05-22 Corrección: no se fuerza el tipo=1 en altas de Nuup01; se respeta el tipo registrado, se aborta si está en
 //      cero para evitar registros corruptos y se sigue enviando el tipo real en el payload para que el backend diferencie
 //      sensores sin duplicarlos como MONITOR NUUP. Además, se mantiene la MAC fija del monitor sin spam en consola.
@@ -187,6 +189,8 @@ bool bajaPendienteMQTT[MAX_DISPOSITIVOS] = {false};
 unsigned long ultimaSolicitudBaja[MAX_DISPOSITIVOS] = {0};
 unsigned long inicioEsperaBaja[MAX_DISPOSITIVOS] = {0};
 String ultimoPayloadAltaMQTT[MAX_DISPOSITIVOS];
+String ultimoPayloadConfirmAlta[MAX_DISPOSITIVOS];
+String ultimoPayloadConfirmMonitor = "";
 
 
 // O si quieres hacerlo configurable via BLE/serial:
@@ -2458,9 +2462,6 @@ if (strcmp(topic, "baja/1/confirmacion/") == 0) {
 
 if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
-    Serial.println("📥 [CONF ALTA] alta/1/confirmacion/");
-    Serial.println("   Payload RX: " + mensajeRecibido);
-    Serial.println("   Se esperaba: MAC,registrado[,usuario,email]");
 
     int primeraComa = mensajeRecibido.indexOf(',');
     int segundaComa = mensajeRecibido.indexOf(',', primeraComa + 1);
@@ -2480,6 +2481,25 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
 
     String miMac = WiFi.macAddress();
     miMac.replace("-", ":");
+
+    bool esMonitor = macConfirmada == miMac;
+
+    if (esMonitor && estadoConfirmacion == "registrado" && mqttConfirmed && ultimoPayloadConfirmMonitor == mensajeRecibido) {
+        Serial.printf("ℹ️ [CONF MONITOR01] Confirmación duplicada ignorada para %s\n", macConfirmada.c_str());
+        return;
+    }
+
+    if (!esMonitor && estadoConfirmacion == "registrado") {
+        int indiceTemp = obtenerIndiceDispositivo(macConfirmada);
+        if (indiceTemp >= 0 && configDispositivos[indiceTemp].activo && ultimoPayloadConfirmAlta[indiceTemp] == mensajeRecibido) {
+            Serial.printf("ℹ️ [CONF NUUP01] Confirmación duplicada ignorada para %s\n", macConfirmada.c_str());
+            return;
+        }
+    }
+
+    Serial.println("📥 [CONF ALTA] alta/1/confirmacion/");
+    Serial.println("   Payload RX: " + mensajeRecibido);
+    Serial.println("   Se esperaba: MAC,registrado[,usuario,email]");
 
     if (macConfirmada == miMac) {
         // Confirmación para el monitor
@@ -2513,6 +2533,7 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
             mqttConfirmed = true;
             solicitudAltaInicialEnviada = true;
             guardarSolicitudAltaInicialState(true);
+            ultimoPayloadConfirmMonitor = mensajeRecibido;
             activarDispositivosTrasConfirmacion();
             delay(3000); // Espera para evitar conflictos
         } else {
@@ -2521,10 +2542,15 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
     } else if (estadoConfirmacion == "registrado") {
         int indice = obtenerIndiceDispositivo(macConfirmada);
         if (indice >= 0) {
+            if (configDispositivos[indice].activo && ultimoPayloadConfirmAlta[indice] == mensajeRecibido) {
+                Serial.printf("ℹ️ [CONF NUUP01] Confirmación duplicada ignorada para %s\n", macConfirmada.c_str());
+                return;
+            }
             Serial.printf("✅ [CONF NUUP01] Alta confirmada para %s -> activar dispositivo y permitir LoRa->MQTT\n", macConfirmada.c_str());
             configDispositivos[indice].activo = true;
             ultimaSolicitudAlta[indice] = 0;
             solicitudAltaEnviada[indice] = false;
+            ultimoPayloadConfirmAlta[indice] = mensajeRecibido;
             if (guardarDispositivos()) {
                 Serial.printf("✅ Dispositivo %s confirmado y activado\n", macConfirmada.c_str());
             } else {
