@@ -1,3 +1,6 @@
+// 69 - 2025-05-22 Corrección: no se fuerza el tipo=1 en altas de Nuup01; se respeta el tipo registrado, se aborta si está en
+//      cero para evitar registros corruptos y se sigue enviando el tipo real en el payload para que el backend diferencie
+//      sensores sin duplicarlos como MONITOR NUUP. Además, se mantiene la MAC fija del monitor sin spam en consola.
 // 68 - 2025-05-22 Corrección: se fija y se imprime una sola vez la MAC del monitor, se reutiliza en todas las rutas MQTT y se
 //      documenta para detener ciclos en consola; además se refuerza que la MAC del monitor nunca se use en altas de sensores
 //      evitando registros MONITOR NUUP extra con MAC de Nuup01.
@@ -3051,14 +3054,9 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
   }
 
   byte tipo = configDispositivos[indice].tipoDispositivo;
-  bool tipoNormalizado = false;
   if (tipo == 0) {
-    tipo = 1;  // Forzar tipo tanque para que el backend no lo interprete como monitor
-    tipoNormalizado = true;
-  }
-  if (tipo != configDispositivos[indice].tipoDispositivo) {
-    configDispositivos[indice].tipoDispositivo = tipo;
-    datosActualizados = true;
+    Serial.printf("⏭️  Alta cancelada: tipo de dispositivo en cero para %s (corregir registro)\n", mac.c_str());
+    return;
   }
 
   if (datosActualizados) {
@@ -3069,11 +3067,10 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
     }
   }
 
-  // Payload completo: MAC,UserID,Nombre,Altura,Litros,Tipo
-  // Se incluye explícitamente tipo=1 para blindar la ruta de sensores en el backend.
+  // Payload completo: MAC,UserID,Nombre,Altura,Litros,Tipo (tipo real registrado)
   String altura = String((int)configDispositivos[indice].alturaConfig);
   String litros = String((int)configDispositivos[indice].litrosConfig);
-  String mensaje = mac + "," + userID + "," + nombre + "," + altura + "," + litros + ",1";
+  String mensaje = mac + "," + userID + "," + nombre + "," + altura + "," + litros + "," + String(tipo);
 
   if (solicitudAltaEnviada[indice] && mensaje == ultimoPayloadAltaMQTT[indice]) {
     Serial.printf("⏭️  Alta MQTT ya enviada con el mismo payload para %s, se evita duplicado tipo 0\n", mac.c_str());
@@ -3084,9 +3081,6 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
   Serial.printf("   Tópico TX: alta/1/solicitud/\n");
   Serial.printf("   Payload TX: %s\n", mensaje.c_str());
   Serial.println("   Espera RX: alta/1/confirmacion/ con 'MAC,registrado' para activarlo");
-  if (tipoNormalizado) {
-    Serial.printf("   ⚙️  Tipo forzado a 1 antes de enviar (evitar MONITOR NUUP con MAC de sensor %s)\n", mac.c_str());
-  }
   if (client.publish("alta/1/solicitud/", mensaje.c_str())) {
     ultimaSolicitudAlta[indice] = ahora;
     solicitudAltaEnviada[indice] = true;
