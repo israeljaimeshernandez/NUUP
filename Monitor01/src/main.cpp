@@ -2,6 +2,7 @@
 /*
 analizar el proyecto NUUP.SPACE analizar NUUP.SPACE de mi repositorio en github ahí se tiene un archivo en IOT/NODE/index.js el cual tiene el código para el servidor mqtt ya que está insertando tres veces cuando se tiene una petición de alta de nuevo sensor tipo 1 del monitor01 , analizar por qué está enviando esa solicitud tres veces una  es correcta porque da de alta con los valores correctos tipo sensor igual a 1 pero las otras dos da de alta 2  como monitor con tipo igual a cero cuando no es , revisar si la falla está al lado del index.js o del lado del monitor cuando intenta hacer la petición de alta del sensor sólo lo hace para cuando da de alta un sensor sólo en esa parte del código está de alguna forma mezclando para que se da alta tres veces no sé si es cuando se empareja el dispositivo o cuando lora manda la información y en ese momento se da alta tres veces en algún punto lo está haciendo ya se había revisado el código de lora de envío normal que sólo envía datos pero no solicite  de alta no sé si persiste y la falla o sea en otro bloque cuando se empareja */
 
+// 62 - 2025-05-17 Mejora: baja muestra nombre grande, avisa reinicio y elimina el dispositivo de EEPROM al solicitarlo
 // 61 - 2025-05-16 Corrección: limpiar banderas de alta MQTT al borrar o dar de baja por BLE para evitar falsos registros
 // 60 - 2025-05-15 Mejora: baja MQTT con espera configurable, reintentos y cancelación al re-registrar
 // 59 - 2025-05-13 Corrección: normalizar y validar MAC LoRa en mayúsculas para evitar duplicados vacíos
@@ -496,13 +497,19 @@ bool oldDeviceConnected = false;
 bool solicitudAltaBLE = false;
 bool solicitudBajaBLE = false;
 
-// Variables para mostrar detalles de la operación del ALTA o BAJA de un dispositivo  
+// Variables para mostrar detalles de la operación del ALTA o BAJA de un dispositivo
 String ultimoNombreDispositivo = "";
 int ultimosLitros = 0;
 int ultimaAltura = 0;
 bool mostrarResultado = false;
 unsigned long inicioResultado = 0;
 const unsigned long TIEMPO_RESULTADO = 5000; // 5 segundos
+bool mostrandoNombreBaja = false;
+unsigned long inicioNombreBaja = 0;
+bool mostrandoReinicioBaja = false;
+unsigned long inicioReinicioBaja = 0;
+const unsigned long TIEMPO_NOMBRE_BAJA = 5000;
+const unsigned long TIEMPO_REINICIO_BAJA = 2000;
 
 // Basado en "NUUP" - más fácil de recordar
 #define SERVICE_UUID        "4e555550-2024-1337-8001-123456789abc"
@@ -545,9 +552,12 @@ bool procesarBajaBLE(const String &macCliente) {
                 indiceEncontrado = i;
                 
                 // Guardar datos para mostrar en pantalla
-                ultimoNombreDispositivo = "Dispositivo"; // Nombre genérico para baja
-ultimosLitros = configDispositivos[i].litrosActuales;
-ultimaAltura = configDispositivos[i].alturaConfig;
+                ultimoNombreDispositivo = String(configDispositivos[i].nombre);
+                if (ultimoNombreDispositivo.trim().isEmpty()) {
+                    ultimoNombreDispositivo = macBuscada;
+                }
+                ultimosLitros = configDispositivos[i].litrosActuales;
+                ultimaAltura = configDispositivos[i].alturaConfig;
                 break;
             }
         }
@@ -965,7 +975,7 @@ void manejarBLE() {
 
 void mostrarResultadoOperacion() {
     display.clearDisplay();
-    
+
     // Texto grande ALTA/BAJA
     display.setTextSize(3);
     display.setTextColor(SSD1306_WHITE);
@@ -1003,7 +1013,35 @@ void mostrarResultadoOperacion() {
         display.print(ultimaAltura);
         display.print(" cm");
     }
-    
+
+    display.display();
+}
+
+void mostrarNombreDispositivoBaja() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("DISPOSITIVO dado de baja:");
+
+    display.setTextSize(2);
+    display.setCursor(0, 20);
+    display.println(ultimoNombreDispositivo);
+
+    display.display();
+}
+
+void mostrarMensajeReinicioBaja() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+
+    display.setTextSize(2);
+    display.setCursor(0, 10);
+    display.println("Reiniciando");
+    display.setCursor(0, 35);
+    display.println("dispositivo...");
+
     display.display();
 }
 
@@ -3049,28 +3087,34 @@ bool iniciarBajaDispositivo(const String &mac) {
 
   ConfigDispositivo *config = &configDispositivos[indice];
 
+  // Guardar nombre para mensajes en pantalla y logs
+  String nombreDispositivo = String(config->nombre);
+  if (nombreDispositivo.trim().isEmpty()) {
+    nombreDispositivo = macNormalizada;
+  }
+
   // Resetear cualquier intento de alta previo para evitar estados fantasma
   solicitudAltaEnviada[indice] = false;
   ultimaSolicitudAlta[indice] = 0;
 
-  // Si nunca estuvo activo en MQTT, eliminar inmediatamente
-  if (!config->activo) {
-    Serial.printf("ℹ️ Dispositivo %s sin alta MQTT previa, se elimina localmente\n", macNormalizada.c_str());
-    return eliminarDispositivo(macNormalizada);
-  }
+  bool solicitudMQTTEnviada = false;
 
-  // Marcar como pendiente de baja y pausar publicaciones
-  config->activo = false;
-  bajaPendienteMQTT[indice] = true;
-
-  bool enviada = publicarSolicitudBaja(indice, macNormalizada);
-  if (!enviada) {
-    Serial.println("⚠️ Baja encolada para reintento cuando MQTT se reconecte");
+  // Si estuvo activo en MQTT, intentar notificar antes de eliminarlo localmente
+  if (config->activo) {
+    solicitudMQTTEnviada = publicarSolicitudBaja(indice, macNormalizada);
+    // No mantener estados pendientes una vez que se elimine localmente
+    limpiarEstadoBaja(indice);
   } else {
-    Serial.println("⏳ Esperando confirmación de baja hasta 30s");
+    Serial.printf("ℹ️ Dispositivo %s sin alta MQTT previa, se elimina localmente\n", macNormalizada.c_str());
   }
 
-  return true;
+  if (eliminarDispositivo(macNormalizada)) {
+    Serial.printf("✅ Dispositivo %s eliminado de EEPROM y memoria\n", nombreDispositivo.c_str());
+    return true;
+  }
+
+  Serial.printf("❌ No se pudo eliminar %s tras solicitar baja\n", nombreDispositivo.c_str());
+  return solicitudMQTTEnviada;
 }
 
 void procesarBajasPendientes() {
@@ -4377,12 +4421,16 @@ testLoRaPeriodico();
     if (solicitudAltaBLE || solicitudBajaBLE) {
         static unsigned long inicioAnimacion = 0;
         static bool faseAnimacion = true; // true: animación giratoria, false: resultado
-        
+
         if (inicioAnimacion == 0) {
             inicioAnimacion = millis();
             faseAnimacion = true;
+            mostrandoNombreBaja = false;
+            mostrandoReinicioBaja = false;
+            inicioNombreBaja = 0;
+            inicioReinicioBaja = 0;
         }
-        
+
         // Fase 1: Animación giratoria por 3 segundos
         if (faseAnimacion && (millis() - inicioAnimacion <= 3000)) {
             if (millis() - ultimoCambioAnimacion >= INTERVALO_ANIMACION) {
@@ -4396,11 +4444,30 @@ testLoRaPeriodico();
             faseAnimacion = false;
             inicioAnimacion = millis(); // Reiniciar timer para fase 2
         }
-        else if (!faseAnimacion && (millis() - inicioAnimacion <= 5000)) {
+        else if (!faseAnimacion && (millis() - inicioAnimacion <= TIEMPO_RESULTADO)) {
             mostrarResultadoOperacion();
         }
-        // Finalizar: Limpiar estado y regresar a normal
-        else if (!faseAnimacion && (millis() - inicioAnimacion > 5000)) {
+        else if (solicitudBajaBLE) {
+            if (!mostrandoNombreBaja) {
+                mostrandoNombreBaja = true;
+                inicioNombreBaja = millis();
+            }
+
+            if (millis() - inicioNombreBaja <= TIEMPO_NOMBRE_BAJA) {
+                mostrarNombreDispositivoBaja();
+                return;
+            }
+
+            if (!mostrandoReinicioBaja) {
+                mostrandoReinicioBaja = true;
+                inicioReinicioBaja = millis();
+            }
+
+            if (millis() - inicioReinicioBaja <= TIEMPO_REINICIO_BAJA) {
+                mostrarMensajeReinicioBaja();
+                return;
+            }
+
             solicitudAltaBLE = false;
             solicitudBajaBLE = false;
             inicioAnimacion = 0;
@@ -4408,9 +4475,25 @@ testLoRaPeriodico();
             ultimoNombreDispositivo = "";
             ultimosLitros = 0;
             ultimaAltura = 0;
+            mostrandoNombreBaja = false;
+            mostrandoReinicioBaja = false;
+            detenerEmparejamiento();
+            ESP.restart();
+        }
+        // Finalizar ALTA: Limpiar estado y regresar a normal
+        else if (!faseAnimacion && (millis() - inicioAnimacion > TIEMPO_RESULTADO)) {
+            solicitudAltaBLE = false;
+            solicitudBajaBLE = false;
+            inicioAnimacion = 0;
+            faseAnimacion = true;
+            ultimoNombreDispositivo = "";
+            ultimosLitros = 0;
+            ultimaAltura = 0;
+            mostrandoNombreBaja = false;
+            mostrandoReinicioBaja = false;
             detenerEmparejamiento();
         }
-        
+
         return; // Salir del loop mientras se muestra animación/resultado
     }
 
