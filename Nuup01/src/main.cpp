@@ -3,21 +3,21 @@
  * ║                          ANTIGRAVITY AI                               ║
  * ║                   Advanced Agentic Coding System                      ║
  * ╚═══════════════════════════════════════════════════════════════════════╝
- * 
+ *
  * Proyecto:    NUUP - Sistema de Monitoreo de Tanques de Agua
  * Componente:  NUUP01 - Sensor de Nivel para Tanque/Tinaco
  * Hardware:    ESP32 NodeMCU-32S (Espressif ESP32)
  * Plataforma:  PlatformIO + Arduino Framework
- * 
+ *
  * DESCRIPCIÓN:
  * Dispositivo sensor instalado en tanques de agua que mide el nivel mediante
  * sensor ultrasónico HC-SR04, transmite datos vía LoRa al Monitor01, y gestiona
  * consumo de energía mediante deep sleep inteligente.
- * 
+ *
  * CAPACIDADES:
  * - Medición de nivel con sensor ultrasónico (2-400cm)
  * - Cálculo de litros basado en geometría del tanque
- * - Transmisión LoRa de telemetría cada 10 segundos
+ * - Transmisión LoRa de telemetría cada 20 segundos
  * - Portal WiFi cautivo para configuración web
  * - Cliente BLE para emparejamiento con Monitor
  * - Análisis local de consumo con IA
@@ -25,11 +25,15 @@
  * - Deep sleep con wake-up por timer o impacto
  * - Sensor de vibración para detección de golpes
  * - LEDs indicadores de estado (verde/rojo)
- * 
+ *
  * COMPILADO CON: Antigravity AI - Google DeepMind
  * FECHA: 2025-12-03
- * 
+ *
  ******************************************************************************/
+
+// 01 - 2025-05-24 Ajuste de doble/triple toque para despertar, espera
+//      ampliada en modo AP tras abrir la página, envíos LoRa cada 20s y
+//      proceso de baja con parpadeo/validación extendidos.
 
 // ============================================================================
 // LEYENDA: Rama 'work' - Última actualización: persistencia web sin registro, MAC nula hasta READY y limpiezas solo por baja/botón.
@@ -48,7 +52,7 @@
 #define LORA_DIO0 -1
 
 // --- Tiempos ÚNICOS ---
-#define INTERVALO_ENVIO_DATOS 10000   // 10 segundos entre envíos LoRa
+#define INTERVALO_ENVIO_DATOS 20000   // 20 segundos entre envíos LoRa (registrado)
 #define INTERVALO_ESCANEO_ALTA 10000  // 10 segundos (búsqueda activa extendida)
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
 #define INTERVALO_PARPADEO 62
@@ -77,7 +81,8 @@ int potenciaTxWiFi = 8;    // Potencia de transmisión
 #include <WiFi.h>
 #include <WebServer.h>
 #include <EEPROM.h>
-#include <math.h> 
+#include <math.h>
+#include <cstring>
 #include "driver/rtc_io.h"
 #include <algorithm>
 #include "esp_task_wdt.h"
@@ -93,7 +98,7 @@ WebServer server(80);
 // --- Variables globales ---
 bool modoConfiguracionActivo = false;
 unsigned long tiempoInicioConfiguracion = 0;
-#define TIEMPO_MAXIMO_CONFIGURACION 120000 // 2 minutos máximo
+#define TIEMPO_MAXIMO_CONFIGURACION 0 // 0 = sin límite mientras haya cliente
 
 // --- Estructura de datos ---
 struct DispositivoData {
@@ -156,6 +161,7 @@ bool bajaAutomaticaActivada = false;
 unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
 bool wakeByImpact = false;
+unsigned long inicioVigiliaImpacto = 0;
 
 // Variables sensor
 const int trigPin = 21;
@@ -183,7 +189,7 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 #define PARPADEO_LED_RAPIDO_MS 250
 #define PARPADEO_LED_LENTO_MS 1000
 #define DURACION_PARPADEO_PROCESO_BAJA_MS 5000
-#define DURACION_PARPADEO_FINAL_BAJA_MS 1000
+#define DURACION_PARPADEO_FINAL_BAJA_MS 10000
 #define PARPADEO_LORA_INTERVALO_MS 100
 #define DURACION_PARPADEO_LORA_MS 500
 #define PARPADEO_WAKE_ROJO_MS 250
@@ -191,6 +197,7 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 #define DURACION_PARPADEO_EMPAREJANDO_MS 5000
 #define INTERVALO_PARPADEO_EMPAREJANDO_MS 250
 #define DURACION_LED_CONFIRMACION_MS 5000
+#define TIEMPO_VIGILIA_IMPACTO_MS 20000
 
 // Estructuras IA
 struct MedicionHistorial {
@@ -455,14 +462,50 @@ void verificarConexionCliente() {
         } else {
             modoConfiguracionActivo = false;
             Serial.println("📱 Cliente desconectado - MODO NORMAL");
+
+            // Si el despertar fue por impacto y ya salió el usuario, reiniciar para cerrar sesión AP
+            if (wakeByImpact) {
+                Serial.println("🔁 Configuración por impacto finalizada - Reiniciando ESP32...");
+                delay(500);
+                ESP.restart();
+            }
         }
         clientesAnteriores = clientes;
     }
-    
-    if (modoConfiguracionActivo && (millis() - tiempoInicioConfiguracion > TIEMPO_MAXIMO_CONFIGURACION)) {
+
+    if (TIEMPO_MAXIMO_CONFIGURACION > 0 &&
+        modoConfiguracionActivo &&
+        (millis() - tiempoInicioConfiguracion > TIEMPO_MAXIMO_CONFIGURACION)) {
         modoConfiguracionActivo = false;
         Serial.println("⏰ Timeout configuración");
     }
+}
+
+bool confirmarGolpesImpacto() {
+    Serial.println("🔔 Detectando doble/triple toque para despertar...");
+
+    int toquesDetectados = 1; // Primer toque es el que despertó
+    unsigned long inicioVentana = millis();
+    bool ultimoEstado = digitalRead(SENSOR_IMPACTO_PIN);
+
+    while (millis() - inicioVentana < 1200) {
+        bool estadoActual = digitalRead(SENSOR_IMPACTO_PIN);
+
+        if (ultimoEstado == HIGH && estadoActual == LOW) {
+            toquesDetectados++;
+            Serial.printf("💥 Toque %d registrado\n", toquesDetectados);
+            delay(120); // Descartar rebotes
+        }
+
+        ultimoEstado = estadoActual;
+
+        if (toquesDetectados >= 3) {
+            break; // No se requieren más de tres golpes
+        }
+    }
+
+    Serial.printf("🔎 Total de toques detectados: %d\n", toquesDetectados);
+    return toquesDetectados >= 2 && toquesDetectados <= 3;
 }
 
 void mostrarPaginaConfig() {
@@ -1632,6 +1675,16 @@ void setup() {
     digitalWrite(LED_PIN, LOW);
     digitalWrite(LED_ROJO_PIN, LOW);
 
+    if (wakeByImpact) {
+        inicioVigiliaImpacto = millis();
+        if (!confirmarGolpesImpacto()) {
+            Serial.println("⚠️  Golpes insuficientes o fuera de rango (2-3). Volviendo a dormir...");
+            wakeByImpact = false;
+            prepararParaDeepSleep();
+            esp_deep_sleep_start();
+        }
+    }
+
     if (wakeByImpact && !registrado) {
         parpadearLED(LED_ROJO_PIN, PARPADEO_WAKE_ROJO_MS, DURACION_PARPADEO_WAKE_MS);
     }
@@ -1968,6 +2021,28 @@ void loop() {
         }
         delay(500); // Delay cooperativo normal
     } else if (wakeByImpact) {
+        if (inicioVigiliaImpacto == 0) {
+            inicioVigiliaImpacto = millis();
+        }
+
+        bool sesionAPActiva = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
+        bool enlaceBLEActivo = deviceConnected || enProcesoRegistro || bajaAutomaticaActivada;
+
+        if (sesionAPActiva || enlaceBLEActivo) {
+            static bool avisoMantenerseDespierto = false;
+            if (!avisoMantenerseDespierto) {
+                Serial.println("⏳ Modo impacto activo - manteniendo AP/BLE despiertos");
+                avisoMantenerseDespierto = true;
+            }
+            delay(50);
+            return;
+        }
+
+        if (millis() - inicioVigiliaImpacto < TIEMPO_VIGILIA_IMPACTO_MS) {
+            delay(50);
+            return;
+        }
+
         Serial.println("😴 Impacto atendido - regresando a deep sleep");
         wakeByImpact = false;
         entrarDeepSleep();
@@ -2110,26 +2185,36 @@ void limpiarEEPROMYReiniciar() {
     Serial.println("\n");
     
     Serial.println("🧹 Limpiando EEPROM...");
-    
+
     // Limpiar flag de registro
     EEPROM.write(EEPROM_ADDR_REGISTRADO, 0);
 
     // Restablecer datos del dispositivo a valores de fábrica (MAC nula)
     establecerValoresDeFabrica();
     EEPROM.put(EEPROM_ADDR_DATOS, dispositivo);
-    
+
     bool success = EEPROM.commit();
     Serial.printf("💿 EEPROM limpiada: %s\n", success ? "ÉXITO" : "FALLO");
 
     registrado = false;
     macRegistrada = "";
 
-    // ⭐ VERIFICACIÓN
+    // ⭐ VERIFICACIÓN PROFUNDA DE BORRADO
     registrado = EEPROM.read(EEPROM_ADDR_REGISTRADO) == 1;
-    Serial.printf("🔍 Verificación - Registrado: %s\n", registrado ? "SI" : "NO");
-    
-    Serial.println("🔄 Reiniciando en 3 segundos...");
-    
+    DispositivoData verificacion;
+    EEPROM.get(EEPROM_ADDR_DATOS, verificacion);
+
+    bool valoresFabrica = (strncmp(verificacion.nombre, dispositivo.nombre, sizeof(dispositivo.nombre)) == 0) &&
+                          verificacion.altura == dispositivo.altura &&
+                          verificacion.litros == dispositivo.litros &&
+                          strlen(verificacion.mac) == 0;
+
+    Serial.printf("🔍 Verificación - Registrado: %s | Datos fábrica: %s\n",
+                  registrado ? "SI" : "NO",
+                  valoresFabrica ? "OK" : "FALTA LIMPIEZA");
+
+    Serial.println("🔄 Reiniciando en 3 segundos tras parpadeo extendido...");
+
     Serial.printf("✨ Parpadeo final de %d segundo(s) (LED rojo)...\n", DURACION_PARPADEO_FINAL_BAJA_MS / 1000);
     parpadearLED(LED_ROJO_PIN, PARPADEO_LED_RAPIDO_MS, DURACION_PARPADEO_FINAL_BAJA_MS);
 

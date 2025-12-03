@@ -32,6 +32,8 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 72 - 2025-05-24 Ajuste baja: mensaje de reinicio prolongado (20s) asegurando
+//      borrado total en RAM/EEPROM antes de reiniciar.
 // 71 - 2025-05-23 Corrección: baja inmediata y visual reforzada; al solicitar baja se elimina de EEPROM/arreglo sin esperar
 //      confirmación, se muestra el nombre en pantalla 5s y luego "Reiniciando dispositivo" antes de reiniciar.
 // 70 - 2025-05-23 Corrección: deduplicar confirmaciones MQTT (alta/1/confirmacion) para no reactivar ni imprimir varias veces
@@ -571,6 +573,7 @@ const unsigned long TIEMPO_RESULTADO = 5000; // 5 segundos
 
 // Agrega esto con las otras variables globales BLE
 String ultimaMacCliente = "";  // Para mantener la MAC entre mensajes
+String macBajaEnCurso = "";    // Verificación extra de borrado
 
 bool procesarBajaBLE(const String &macCliente) {
     Serial.println("\n🔄 ===== PROCESANDO BAJA BLE =====");
@@ -620,16 +623,20 @@ bool procesarBajaBLE(const String &macCliente) {
     if (!encontrado) {
         Serial.println("❌ BAJA FALLIDA - Dispositivo no encontrado");
         Serial.println("💡 El sensor no está dado de alta en el servidor");
-        
+
         // ⭐⭐ CONFIGURAR DATOS PARA MOSTRAR EN PANTALLA
         ultimoNombreDispositivo = "No Registrado";
         ultimosLitros = 0;
         ultimaAltura = 0;
-        
+
+        macBajaEnCurso = "";
+
         Serial.println("===== FIN BAJA BLE =====\n");
         return false;
     }
     
+    macBajaEnCurso = macBuscada;
+
     // Proceder con la eliminación protegida por MQTT
     if (iniciarBajaDispositivo(configDispositivos[indiceEncontrado].mac)) {
         Serial.println("✅ Baja solicitada para la MAC: " + macCliente);
@@ -3386,6 +3393,58 @@ int obtenerIndiceDispositivo(const String &mac) {
   return -1;
 }
 
+bool macPresenteEnEEPROM(const String &mac) {
+  String buscada = normalizarMac(mac);
+
+  EEPROM.begin(EEPROM_SIZE);
+  int addr = CONFIG_DISPOSITIVOS_ADDR;
+
+  byte version = EEPROM.read(addr++);
+  int count = (EEPROM.read(addr++) << 8) | EEPROM.read(addr++);
+
+  (void)version; // Solo se lee para avanzar el puntero
+
+  bool encontrada = false;
+
+  for (int i = 0; i < count && addr < EEPROM_SIZE; i++) {
+    char macLeida[MAC_LEN + 1] = {0};
+
+    for (int j = 0; j < MAC_LEN && addr < EEPROM_SIZE; j++) {
+      macLeida[j] = EEPROM.read(addr++);
+    }
+    macLeida[MAC_LEN] = '\0';
+
+    // Saltar nombre (20 bytes)
+    addr += 20;
+
+    // Saltar floats de telemetría/config (5 valores)
+    addr += sizeof(float) * 5;
+
+    // Porcentaje (uint16), tipo (byte), activo (byte)
+    addr += 2 + 1 + 1;
+
+    // Mensaje LoRa almacenado (longitud + contenido)
+    if (addr + 2 > EEPROM_SIZE) {
+      break;
+    }
+    uint16_t mensajeLen = (EEPROM.read(addr++) << 8);
+    mensajeLen |= EEPROM.read(addr++);
+    addr += mensajeLen;
+
+    if (addr > EEPROM_SIZE) {
+      break;
+    }
+
+    if (buscada == normalizarMac(String(macLeida))) {
+      encontrada = true;
+      break;
+    }
+  }
+
+  EEPROM.end();
+  return encontrada;
+}
+
 // Imprimir configuración de un dispositivo
 void imprimirConfigDispositivo(const String &mac) {
     ConfigDispositivo* config = getConfigDispositivo(mac);
@@ -4667,11 +4726,20 @@ testLoRaPeriodico();
             if (transcurrido <= 5000) {
                 mostrarMensajeBajaFinal();
             } else {
+                bool borradoRAM = macBajaEnCurso.isEmpty() || obtenerIndiceDispositivo(macBajaEnCurso) == -1;
+                bool borradoEEPROM = macBajaEnCurso.isEmpty() || !macPresenteEnEEPROM(macBajaEnCurso);
+
+                Serial.printf("🧹 Verificación baja - RAM:%s | EEPROM:%s\n",
+                              borradoRAM ? "OK" : "PENDIENTE",
+                              borradoEEPROM ? "OK" : "PENDIENTE");
+
+                macBajaEnCurso = "";
+
                 faseAnimacion = 3;
                 inicioAnimacion = millis();
                 detenerEmparejamiento();
                 reinicioSolicitado = true;
-                reinicioProgramado = millis() + 2000;
+                reinicioProgramado = millis() + 20000;
             }
         } else if (faseAnimacion == 3) { // Aviso de reinicio y esperar reinicio programado
             mostrarMensajeReinicioBaja();
