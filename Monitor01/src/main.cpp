@@ -1,3 +1,5 @@
+// 71 - 2025-05-23 Corrección: baja inmediata y visual reforzada; al solicitar baja se elimina de EEPROM/arreglo sin esperar
+//      confirmación, se muestra el nombre en pantalla 5s y luego "Reiniciando dispositivo" antes de reiniciar.
 // 70 - 2025-05-23 Corrección: deduplicar confirmaciones MQTT (alta/1/confirmacion) para no reactivar ni imprimir varias veces
 //      el mismo sensor/monitor tras reconexiones; se valida si ya estaba activo/confirmado y si el payload es igual, se ignora.
 // 69 - 2025-05-22 Corrección: no se fuerza el tipo=1 en altas de Nuup01; se respeta el tipo registrado, se aborta si está en
@@ -570,9 +572,12 @@ bool procesarBajaBLE(const String &macCliente) {
                 indiceEncontrado = i;
                 
                 // Guardar datos para mostrar en pantalla
-                ultimoNombreDispositivo = "Dispositivo"; // Nombre genérico para baja
-ultimosLitros = configDispositivos[i].litrosActuales;
-ultimaAltura = configDispositivos[i].alturaConfig;
+                ultimoNombreDispositivo = String(configDispositivos[i].nombre);
+                if (ultimoNombreDispositivo.isEmpty()) {
+                    ultimoNombreDispositivo = "Dispositivo"; // Nombre genérico para baja
+                }
+                ultimosLitros = configDispositivos[i].litrosActuales;
+                ultimaAltura = configDispositivos[i].alturaConfig;
                 break;
             }
         }
@@ -1064,6 +1069,40 @@ void mostrarResultadoOperacion() {
         display.print(" cm");
     }
     
+    display.display();
+}
+
+void mostrarMensajeBajaFinal() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+
+    // Etiqueta de baja
+    display.setTextSize(2);
+    display.setCursor(0, 0);
+    display.println("BAJA");
+
+    // Nombre del dispositivo en grande (recortado para caber)
+    String nombre = ultimoNombreDispositivo;
+    if (nombre.length() > 10) {
+        nombre = nombre.substring(0, 10);
+    }
+    display.setTextSize(2);
+    display.setCursor(0, 24);
+    display.println("DISPOSITIVO");
+    display.setCursor(0, 44);
+    display.println(nombre);
+
+    display.display();
+}
+
+void mostrarMensajeReinicioBaja() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(2);
+    display.setCursor(0, 16);
+    display.println("Reiniciando");
+    display.setCursor(0, 40);
+    display.println("dispositivo");
     display.display();
 }
 
@@ -3181,7 +3220,7 @@ bool iniciarBajaDispositivo(const String &mac) {
     return eliminarDispositivo(macNormalizada);
   }
 
-  // Marcar como pendiente de baja y pausar publicaciones
+  // Marcar como pendiente de baja y pausar publicaciones mientras enviamos la solicitud
   config->activo = false;
   bajaPendienteMQTT[indice] = true;
 
@@ -3192,7 +3231,13 @@ bool iniciarBajaDispositivo(const String &mac) {
     Serial.println("⏳ Esperando confirmación de baja hasta 30s");
   }
 
-  return true;
+  // Eliminar inmediatamente del arreglo/EEPROM para que no aparezca más como registrado
+  bool eliminado = eliminarDispositivo(macNormalizada);
+  if (!eliminado) {
+    Serial.printf("⚠️ No se pudo eliminar %s de EEPROM tras solicitar baja\n", macNormalizada.c_str());
+  }
+
+  return eliminado || enviada;
 }
 
 void procesarBajasPendientes() {
@@ -4548,41 +4593,57 @@ testLoRaPeriodico();
     // 1. Procesar solicitudes BLE pendientes (COMPLETAMENTE MODIFICADO)
     if (solicitudAltaBLE || solicitudBajaBLE) {
         static unsigned long inicioAnimacion = 0;
-        static bool faseAnimacion = true; // true: animación giratoria, false: resultado
-        
+        static int faseAnimacion = 0; // 0: giro, 1: resultado, 2: mensaje baja, 3: reinicio
+
         if (inicioAnimacion == 0) {
             inicioAnimacion = millis();
-            faseAnimacion = true;
+            faseAnimacion = 0;
         }
-        
-        // Fase 1: Animación giratoria por 3 segundos
-        if (faseAnimacion && (millis() - inicioAnimacion <= 3000)) {
-            if (millis() - ultimoCambioAnimacion >= INTERVALO_ANIMACION) {
-                frameAnimacion++;
-                ultimoCambioAnimacion = millis();
+
+        unsigned long transcurrido = millis() - inicioAnimacion;
+
+        if (faseAnimacion == 0) { // Animación giratoria (3s)
+            if (transcurrido <= 3000) {
+                if (millis() - ultimoCambioAnimacion >= INTERVALO_ANIMACION) {
+                    frameAnimacion++;
+                    ultimoCambioAnimacion = millis();
+                }
+                mostrarEmparejamiento();
+            } else {
+                faseAnimacion = 1;
+                inicioAnimacion = millis();
             }
-            mostrarEmparejamiento();
+        } else if (faseAnimacion == 1) { // Resultado genérico (5s)
+            if (transcurrido <= 5000) {
+                mostrarResultadoOperacion();
+            } else if (solicitudBajaBLE) {
+                faseAnimacion = 2;
+                inicioAnimacion = millis();
+            } else {
+                solicitudAltaBLE = false;
+                solicitudBajaBLE = false;
+                inicioAnimacion = 0;
+                faseAnimacion = 0;
+                ultimoNombreDispositivo = "";
+                ultimosLitros = 0;
+                ultimaAltura = 0;
+                detenerEmparejamiento();
+            }
+        } else if (faseAnimacion == 2) { // Mensaje final de baja (5s con nombre grande)
+            if (transcurrido <= 5000) {
+                mostrarMensajeBajaFinal();
+            } else {
+                faseAnimacion = 3;
+                inicioAnimacion = millis();
+                detenerEmparejamiento();
+                reinicioSolicitado = true;
+                reinicioProgramado = millis() + 2000;
+            }
+        } else if (faseAnimacion == 3) { // Aviso de reinicio y esperar reinicio programado
+            mostrarMensajeReinicioBaja();
+            // Mantener flags hasta reinicio
         }
-        // Fase 2: Mostrar resultado por 5 segundos
-        else if (faseAnimacion && (millis() - inicioAnimacion > 3000)) {
-            faseAnimacion = false;
-            inicioAnimacion = millis(); // Reiniciar timer para fase 2
-        }
-        else if (!faseAnimacion && (millis() - inicioAnimacion <= 5000)) {
-            mostrarResultadoOperacion();
-        }
-        // Finalizar: Limpiar estado y regresar a normal
-        else if (!faseAnimacion && (millis() - inicioAnimacion > 5000)) {
-            solicitudAltaBLE = false;
-            solicitudBajaBLE = false;
-            inicioAnimacion = 0;
-            faseAnimacion = true;
-            ultimoNombreDispositivo = "";
-            ultimosLitros = 0;
-            ultimaAltura = 0;
-            detenerEmparejamiento();
-        }
-        
+
         return; // Salir del loop mientras se muestra animación/resultado
     }
 
