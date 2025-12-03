@@ -1,3 +1,36 @@
+/******************************************************************************
+ * ╔═══════════════════════════════════════════════════════════════════════╗
+ * ║                          ANTIGRAVITY AI                               ║
+ * ║                   Advanced Agentic Coding System                      ║
+ * ╚═══════════════════════════════════════════════════════════════════════╝
+ * 
+ * Proyecto:    NUUP - Sistema de Monitoreo de Tanques de Agua
+ * Componente:  NUUP01 - Sensor de Nivel para Tanque/Tinaco
+ * Hardware:    ESP32 NodeMCU-32S (Espressif ESP32)
+ * Plataforma:  PlatformIO + Arduino Framework
+ * 
+ * DESCRIPCIÓN:
+ * Dispositivo sensor instalado en tanques de agua que mide el nivel mediante
+ * sensor ultrasónico HC-SR04, transmite datos vía LoRa al Monitor01, y gestiona
+ * consumo de energía mediante deep sleep inteligente.
+ * 
+ * CAPACIDADES:
+ * - Medición de nivel con sensor ultrasónico (2-400cm)
+ * - Cálculo de litros basado en geometría del tanque
+ * - Transmisión LoRa de telemetría cada 10 segundos
+ * - Portal WiFi cautivo para configuración web
+ * - Cliente BLE para emparejamiento con Monitor
+ * - Análisis local de consumo con IA
+ * - Detección de fugas y patrones anormales
+ * - Deep sleep con wake-up por timer o impacto
+ * - Sensor de vibración para detección de golpes
+ * - LEDs indicadores de estado (verde/rojo)
+ * 
+ * COMPILADO CON: Antigravity AI - Google DeepMind
+ * FECHA: 2025-12-03
+ * 
+ ******************************************************************************/
+
 // ============================================================================
 // LEYENDA: Rama 'work' - Última actualización: persistencia web sin registro, MAC nula hasta READY y limpiezas solo por baja/botón.
 // ============================================================================

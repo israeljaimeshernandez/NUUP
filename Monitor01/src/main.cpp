@@ -1,3 +1,37 @@
+/******************************************************************************
+ * ╔═══════════════════════════════════════════════════════════════════════╗
+ * ║                          ANTIGRAVITY AI                               ║
+ * ║                   Advanced Agentic Coding System                      ║
+ * ╚═══════════════════════════════════════════════════════════════════════╝
+ * 
+ * Proyecto:    NUUP - Sistema de Monitoreo de Tanques de Agua
+ * Componente:  Monitor01 - Estación Central de Monitoreo
+ * Hardware:    ESP32 NodeMCU-32S (Espressif ESP32)
+ * Plataforma:  PlatformIO + Arduino Framework
+ * 
+ * DESCRIPCIÓN:
+ * Dispositivo central que recibe datos de múltiples sensores NUUP01 vía LoRa,
+ * gestiona hasta 50 dispositivos, conecta a WiFi/MQTT, y muestra información
+ * en pantalla OLED. Incluye servidor BLE para emparejamiento de sensores.
+ * 
+ * CAPACIDADES:
+ * - Recepción LoRa de sensores remotos
+ * - Conectividad WiFi multi-red (hasta 3 redes guardadas)
+ * - Integración MQTT con servidor remoto
+ * - Portal cautivo para configuración web
+ * - Servidor BLE para alta/baja de dispositivos
+ * - Pantalla OLED 128x64 con interfaz visual
+ * - Almacenamiento persistente en EEPROM (4KB)
+ * - Gestión de hasta 50 dispositivos NUUP01
+ * 
+ * COMPILADO CON: Antigravity AI - Google DeepMind
+ * FECHA: 2025-12-03
+ * 
+ ******************************************************************************/
+
+// ============================================================================
+// HISTORIAL DE VERSIONES Y CORRECCIONES
+// ============================================================================
 // 71 - 2025-05-23 Corrección: baja inmediata y visual reforzada; al solicitar baja se elimina de EEPROM/arreglo sin esperar
 //      confirmación, se muestra el nombre en pantalla 5s y luego "Reiniciando dispositivo" antes de reiniciar.
 // 70 - 2025-05-23 Corrección: deduplicar confirmaciones MQTT (alta/1/confirmacion) para no reactivar ni imprimir varias veces
