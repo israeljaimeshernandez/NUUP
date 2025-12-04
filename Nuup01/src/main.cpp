@@ -89,11 +89,11 @@ const uint16_t IMPACTO_VENTANA_MS = 1500;
 // 02) Tiempo mínimo entre toques para evitar rebotes (ms)
 const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
 // 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
-const uint16_t IMPACTO_UMBRAL_ANALOGICO = 120;
+const uint16_t IMPACTO_UMBRAL_ANALOGICO = 50;
 // 04) Muestras usadas para estimar el nivel en reposo del sensor
 const uint8_t IMPACTO_MUESTRAS_BASE = 16;
 // 05) Cantidad mínima de toques válidos para aceptar el despertar
-const uint8_t IMPACTO_MIN_TOQUES = 2;
+const uint8_t IMPACTO_MIN_TOQUES = 1;
 // 06) Cantidad máxima de toques válidos (se ignoran adicionales)
 const uint8_t IMPACTO_MAX_TOQUES = 3;
 
