@@ -34,6 +34,11 @@
 // 01 - 2025-05-24 Ajuste de doble/triple toque para despertar, espera
 //      ampliada en modo AP tras abrir la página, envíos LoRa cada 20s y
 //      proceso de baja con parpadeo/validación extendidos.
+// 02 - 2025-05-25 Calibración fina del sensor de impacto para toques suaves;
+//      ajustar IMPACTO_UMBRAL_ANALOGICO (sensibilidad), IMPACTO_MIN_SEPARACION_MS
+//      (rebote), IMPACTO_VENTANA_MS (ventana de conteo), IMPACTO_MUESTRAS_BASE
+//      (línea base) y los límites IMPACTO_MIN_TOQUES/IMPACTO_MAX_TOQUES según
+//      la respuesta del hardware.
 
 // ============================================================================
 // LEYENDA: Rama 'work' - Última actualización: persistencia web sin registro, MAC nula hasta READY y limpiezas solo por baja/botón.
@@ -48,8 +53,22 @@
 #define LED_PIN LED_VERDE_PIN
 #define ADC_PIN 34
 #define LORA_SS 5
-#define LORA_RST -1   
+#define LORA_RST -1
 #define LORA_DIO0 -1
+
+// --- Calibración de sensibilidad de impacto (ajustables) ---
+// 01) Ventana máxima para capturar toques consecutivos (ms)
+const uint16_t IMPACTO_VENTANA_MS = 1500;
+// 02) Tiempo mínimo entre toques para evitar rebotes (ms)
+const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
+// 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
+const uint16_t IMPACTO_UMBRAL_ANALOGICO = 120;
+// 04) Muestras usadas para estimar el nivel en reposo del sensor
+const uint8_t IMPACTO_MUESTRAS_BASE = 16;
+// 05) Cantidad mínima de toques válidos para aceptar el despertar
+const uint8_t IMPACTO_MIN_TOQUES = 2;
+// 06) Cantidad máxima de toques válidos (se ignoran adicionales)
+const uint8_t IMPACTO_MAX_TOQUES = 3;
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 20000   // 20 segundos entre envíos LoRa (registrado)
@@ -484,28 +503,43 @@ void verificarConexionCliente() {
 bool confirmarGolpesImpacto() {
     Serial.println("🔔 Detectando doble/triple toque para despertar...");
 
+    // Calibrar el nivel de referencia con varias lecturas suaves
+    uint32_t acumulado = 0;
+    for (uint8_t i = 0; i < IMPACTO_MUESTRAS_BASE; i++) {
+        acumulado += analogRead(SENSOR_IMPACTO_PIN);
+        delay(2);
+    }
+    uint16_t baseReposo = acumulado / IMPACTO_MUESTRAS_BASE;
+    Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
+
     int toquesDetectados = 1; // Primer toque es el que despertó
     unsigned long inicioVentana = millis();
     bool ultimoEstado = digitalRead(SENSOR_IMPACTO_PIN);
+    unsigned long ultimoToque = inicioVentana;
 
-    while (millis() - inicioVentana < 1200) {
+    while (millis() - inicioVentana < IMPACTO_VENTANA_MS) {
         bool estadoActual = digitalRead(SENSOR_IMPACTO_PIN);
+        uint16_t lecturaAnalogica = analogRead(SENSOR_IMPACTO_PIN);
+        bool posibleToquePorAnalogico = baseReposo > lecturaAnalogica &&
+                                        (baseReposo - lecturaAnalogica) >= IMPACTO_UMBRAL_ANALOGICO;
+        bool transicionDigital = (ultimoEstado == HIGH && estadoActual == LOW);
 
-        if (ultimoEstado == HIGH && estadoActual == LOW) {
+        if ((transicionDigital || posibleToquePorAnalogico) &&
+            (millis() - ultimoToque) >= IMPACTO_MIN_SEPARACION_MS) {
             toquesDetectados++;
-            Serial.printf("💥 Toque %d registrado\n", toquesDetectados);
-            delay(120); // Descartar rebotes
+            ultimoToque = millis();
+            Serial.printf("💥 Toque %d registrado (analog=%u, base=%u)\n", toquesDetectados, lecturaAnalogica, baseReposo);
         }
 
         ultimoEstado = estadoActual;
 
-        if (toquesDetectados >= 3) {
+        if (toquesDetectados >= IMPACTO_MAX_TOQUES) {
             break; // No se requieren más de tres golpes
         }
     }
 
     Serial.printf("🔎 Total de toques detectados: %d\n", toquesDetectados);
-    return toquesDetectados >= 2 && toquesDetectados <= 3;
+    return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
 }
 
 void mostrarPaginaConfig() {
