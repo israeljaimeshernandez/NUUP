@@ -39,6 +39,9 @@
 //      (rebote), IMPACTO_VENTANA_MS (ventana de conteo), IMPACTO_MUESTRAS_BASE
 //      (línea base) y los límites IMPACTO_MIN_TOQUES/IMPACTO_MAX_TOQUES según
 //      la respuesta del hardware.
+// 03 - 2025-05-26 Ventana de vigilia por impacto ahora configurable (1 minuto
+//      por defecto) con LED verde parpadeando al esperar BLE/WiFi, sólido si
+//      hay cliente en portal web y reinicio completo al finalizar la vigilia.
 
 // ============================================================================
 // LEYENDA: Rama 'work' - Última actualización: persistencia web sin registro, MAC nula hasta READY y limpiezas solo por baja/botón.
@@ -89,13 +92,15 @@ const uint16_t IMPACTO_VENTANA_MS = 1500;
 // 02) Tiempo mínimo entre toques para evitar rebotes (ms)
 const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
 // 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
-const uint16_t IMPACTO_UMBRAL_ANALOGICO = 120;
+const uint16_t IMPACTO_UMBRAL_ANALOGICO = 50;
 // 04) Muestras usadas para estimar el nivel en reposo del sensor
 const uint8_t IMPACTO_MUESTRAS_BASE = 16;
 // 05) Cantidad mínima de toques válidos para aceptar el despertar
-const uint8_t IMPACTO_MIN_TOQUES = 2;
+const uint8_t IMPACTO_MIN_TOQUES = 1;
 // 06) Cantidad máxima de toques válidos (se ignoran adicionales)
 const uint8_t IMPACTO_MAX_TOQUES = 3;
+// 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
+const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 20000   // 20 segundos entre envíos LoRa (registrado)
@@ -217,7 +222,6 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 #define DURACION_PARPADEO_EMPAREJANDO_MS 5000
 #define INTERVALO_PARPADEO_EMPAREJANDO_MS 250
 #define DURACION_LED_CONFIRMACION_MS 5000
-#define TIEMPO_VIGILIA_IMPACTO_MS 20000
 
 // Estructuras IA
 struct MedicionHistorial {
@@ -1404,6 +1408,27 @@ void manejarLED() {
         return;
     }
 
+    // ⭐⭐ WAKE POR IMPACTO: LED VERDE PARPADEANDO EN ESPERA O FIJO CON CLIENTE
+    if (wakeByImpact) {
+        static unsigned long ultimoBlinkImpacto = 0;
+        static bool estadoImpacto = false;
+
+        bool clienteWiFiActivo = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
+
+        if (clienteWiFiActivo) {
+            digitalWrite(LED_VERDE_PIN, HIGH); // Usuario en portal: LED fijo
+        } else {
+            if (millis() - ultimoBlinkImpacto >= PARPADEO_LED_LENTO_MS) {
+                estadoImpacto = !estadoImpacto;
+                ultimoBlinkImpacto = millis();
+            }
+            digitalWrite(LED_VERDE_PIN, estadoImpacto);
+        }
+
+        digitalWrite(LED_ROJO_PIN, LOW);
+        return;
+    }
+
     if (!registrado) {
         // NO REGISTRADO: LED ROJO ENCENDIDO FIJO (o parpadeo corto al despertar por impacto)
         if (wakeByImpact) {
@@ -1713,7 +1738,7 @@ void setup() {
     if (wakeByImpact) {
         inicioVigiliaImpacto = millis();
         if (!confirmarGolpesImpacto()) {
-            Serial.println("⚠️  Golpes insuficientes o fuera de rango (2-3). Volviendo a dormir...");
+            Serial.println("⚠️  Golpes insuficientes o fuera de rango (1-3). Volviendo a dormir...");
             wakeByImpact = false;
             prepararParaDeepSleep();
             esp_deep_sleep_start();
@@ -2073,14 +2098,15 @@ void loop() {
             return;
         }
 
-        if (millis() - inicioVigiliaImpacto < TIEMPO_VIGILIA_IMPACTO_MS) {
+        if (millis() - inicioVigiliaImpacto < IMPACTO_TIEMPO_VIGILIA_MS) {
             delay(50);
             return;
         }
 
-        Serial.println("😴 Impacto atendido - regresando a deep sleep");
+        Serial.println("🔁 Vigilia por impacto finalizada - Reiniciando dispositivo");
         wakeByImpact = false;
-        entrarDeepSleep();
+        delay(250);
+        ESP.restart();
     }
     
     // ⭐ DELAY OPTIMIZADO PARA COOPERATIVIDAD
