@@ -46,6 +46,33 @@
 // CONFIGURACIÓN PRINCIPAL - DEFINICIONES ÚNICAS
 // ============================================================================
 
+// --- Incluir librerías ---
+#include <Arduino.h>
+#include <SPI.h>
+#include <LoRa.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <EEPROM.h>
+#include <math.h>
+#include <cstring>
+#include "driver/rtc_io.h"
+#include <algorithm>
+#include "esp_task_wdt.h"
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+#include <DNSServer.h>
+DNSServer dnsServer;
+
+// --- Declarar objetos globales ---
+WebServer server(80);
+
+// --- Variables globales ---
+bool modoConfiguracionActivo = false;
+unsigned long tiempoInicioConfiguracion = 0;
+#define TIEMPO_MAXIMO_CONFIGURACION 0 // 0 = sin límite mientras haya cliente
+
 // --- Pines ---
 #define LED_VERDE_PIN 27
 #define LED_ROJO_PIN 26
@@ -92,32 +119,6 @@ const char* passwordAP = ""; // Sin contraseña
 // --- Variables WiFi ---
 int alcanceWiFiMaximo = 1; // metros
 int potenciaTxWiFi = 8;    // Potencia de transmisión
-
-// --- Incluir librerías ---
-#include <Arduino.h>
-#include <SPI.h>
-#include <LoRa.h>
-#include <WiFi.h>
-#include <WebServer.h>
-#include <EEPROM.h>
-#include <math.h>
-#include <cstring>
-#include "driver/rtc_io.h"
-#include <algorithm>
-#include "esp_task_wdt.h"
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
-#include <DNSServer.h>
-DNSServer dnsServer;
-// --- Declarar objetos globales ---
-WebServer server(80);
-
-// --- Variables globales ---
-bool modoConfiguracionActivo = false;
-unsigned long tiempoInicioConfiguracion = 0;
-#define TIEMPO_MAXIMO_CONFIGURACION 0 // 0 = sin límite mientras haya cliente
 
 // --- Estructura de datos ---
 struct DispositivoData {
