@@ -32,6 +32,12 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 74 - 2025-05-25 Ajuste: el identificador de usuario sigue siendo userID; se usa para
+//      almacenar/leer el users_registro_id confirmado sin variables duplicadas.
+// 73 - 2025-05-25 Integración: el portal AP guía el alta por correo/teléfono/nombre/password
+//      con el combo "ya estoy registrado", oculta formularios tras guardar users_registro_id
+//      y añade el botón de reinicio de fábrica. Las solicitudes MQTT de alta usan correo en
+//      lugar de user_id y procesan confirmaciones devolviendo users_registro_id.
 // 72 - 2025-05-24 Ajuste baja: mensaje de reinicio prolongado (20s) asegurando
 //      borrado total en RAM/EEPROM antes de reiniciar.
 // 71 - 2025-05-23 Corrección: baja inmediata y visual reforzada; al solicitar baja se elimina de EEPROM/arreglo sin esperar
@@ -149,15 +155,23 @@
 
 //EEPROM  Tamaño EEPROM (ESP32 tiene 4KB)
 // Definir direcciones para nombre y email (después de tus otras configuraciones) 
-#define USER_NAME_ADDR 3000    // 
-#define USER_EMAIL_ADDR 3500 //
+#define USER_NAME_ADDR 3000    //
+#define USER_PHONE_ADDR 3200   // Teléfono del usuario
+#define USER_EMAIL_ADDR 3400   // Correo electrónico del usuario
+#define USER_PASS_ADDR 3600    // Password del usuario
+#define USER_REGISTERED_FLAG_ADDR 3700 // 1 = usuario ya existe en backend
 #define EEPROM_SIZE 4096              //
 #define ALIAS_DISPOSITIVOS 2000       // 
 
 #define MQTT_CONFIRMED_FLAG_ADDR 350  //
 #define MQTT_INITIAL_REQUEST_FLAG_ADDR 351
-#define USER_ID_ADDR 400              // 
-#define CONFIG_DISPOSITIVOS_ADDR 700  // 
+#define USER_ID_ADDR 400              //
+#define CONFIG_DISPOSITIVOS_ADDR 700  //
+
+#define USER_NAME_MAX_LEN 64
+#define USER_PHONE_MAX_LEN 24
+#define USER_EMAIL_MAX_LEN 64
+#define USER_PASS_MAX_LEN 32
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -260,7 +274,12 @@ const unsigned long altaPendienteInterval = 5UL * 60UL * 1000UL; // 5 minutos en
 const unsigned long bajaConfirmTimeout = 30000; // Tiempo de espera de confirmación de baja MQTT
 const unsigned long bajaPendienteInterval = 5UL * 60UL * 1000UL; // Reenvío de bajas pendientes
 unsigned long lastAltaPendienteCheck = 0;
-String userID = "";
+String userID = "";                // También se usa para almacenar users_registro_id confirmado
+String userEmail = "";
+String userNombre = "";
+String userTelefono = "";
+String userPassword = "";
+bool userFlagRegistrado = false;  // true si el usuario ya existe y solo se busca por correo
 bool registroMonitorEEPROM = false;  // Bandera de registro general (no se confunde con activo de dispositivos)
 
 
@@ -1302,6 +1321,7 @@ void registrarRutasPortal() {
   server.on("/select", HTTP_POST, handleSelectNetwork);
   server.on("/delete_device", HTTP_POST, handleDeleteDevice);
   server.on("/setid", HTTP_POST, handleSetID);
+  server.on("/factory_reset", HTTP_POST, handleFactoryReset);
 
   // Captura peticiones típicas de detección de portal cautivo
   server.on("/generate_204", HTTP_ANY, handleRoot);
@@ -1478,7 +1498,7 @@ void handleRoot() {
     portalPantallaFija = true;
   }
 
-  loadUserIDFromEEPROM();
+  loadUserProfileFromEEPROM();
   loadNetworksFromEEPROM();
 
   // Mantener el formulario vacío al cargar la página; se llenará al elegir “Modificar” o “Usar”
@@ -1543,12 +1563,36 @@ void handleRoot() {
   }
 
 
-String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
-  String idValueAttr = userID.length() > 0 ? " value='" + userID + "'" : "";
-  String idSection = "<h3>ID de usuario actual:</h3>";
-  idSection += "<p><strong>" + currentIDDisplay + "</strong></p>";
-  idSection += "<input type='text' name='newid' placeholder='Nuevo ID' maxlength='" + String(USER_ID_MAX_LEN) + "' required" + idValueAttr + ">";
-  idSection += "<hr>";
+  bool usuarioConfirmado = userID.length() > 0;
+  String correoAttr = userEmail.length() > 0 ? " value='" + escapeForHTMLAttr(userEmail) + "'" : "";
+  String nombreAttr = userNombre.length() > 0 ? " value='" + escapeForHTMLAttr(userNombre) + "'" : "";
+  String telefonoAttr = userTelefono.length() > 0 ? " value='" + escapeForHTMLAttr(userTelefono) + "'" : "";
+  String passAttr = ""; // No prellenar password por seguridad
+
+  String userSection = "<div class='network-list'>";
+  userSection += "<h3 class='section-title'>Usuario NUUP</h3>";
+  if (usuarioConfirmado) {
+    String resumenNombre = userNombre.length() > 0 ? userNombre : "(sin nombre)";
+    String resumenCorreo = userEmail.length() > 0 ? userEmail : "(sin correo)";
+    userSection += "<p><strong>Registrado:</strong><br>" + escapeForHTMLAttr(resumenNombre) + "<br>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
+    userSection += "<p><small>ID de registro: " + escapeForHTMLAttr(userID) + "</small></p>";
+    userSection += "<p><small>Para cambiar de usuario, realiza un reinicio de fábrica.</small></p>";
+  } else {
+    String checked = userFlagRegistrado ? " checked" : "";
+    userSection += "<label class='combo-label'><input type='checkbox' id='userRegistered' name='user_registered' value='1'" + checked + "> Ya estoy registrado</label>";
+    userSection += "<label for='correoInput'>Correo</label>";
+    userSection += "<input id='correoInput' type='email' name='correo' placeholder='correo@ejemplo.com' required" + correoAttr + ">";
+    userSection += "<div id='newUserFields' class='user-extra-fields'>";
+    userSection += "  <label for='nombreInput'>Nombre</label>";
+    userSection += "  <input id='nombreInput' type='text' name='nombre' placeholder='Nombre completo'" + nombreAttr + ">";
+    userSection += "  <label for='telefonoInput'>Teléfono</label>";
+    userSection += "  <input id='telefonoInput' type='tel' name='telefono' placeholder='Teléfono'" + telefonoAttr + ">";
+    userSection += "  <label for='passUserInput'>Password</label>";
+    userSection += "  <input id='passUserInput' type='password' name='pass_usuario' placeholder='Contraseña'" + passAttr + ">";
+    userSection += "</div>";
+    userSection += "<hr>";
+  }
+  userSection += "</div>";
 
 
   
@@ -1648,6 +1692,28 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     .network-list {
       margin: 20px 0;
     }
+    .user-extra-fields {
+      border: 1px dashed #FFD700;
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 10px;
+    }
+    .combo-label {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .factory-reset {
+      background-color: #2b2b2b;
+      color: #FFD700;
+      border: 1px solid #FFD700;
+      font-size: 12px;
+      padding: 6px 8px;
+      width: fit-content;
+      margin-left: auto;
+      margin-right: auto;
+    }
     .network-item {
       display: flex;
       align-items: center;
@@ -1737,6 +1803,32 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
       }
     }
 
+    function toggleUserFields() {
+      const checkbox = document.getElementById('userRegistered');
+      const extra = document.getElementById('newUserFields');
+      const hideExtras = checkbox && checkbox.checked;
+      if (extra) {
+        extra.style.display = hideExtras ? 'none' : 'block';
+      }
+      ['nombreInput', 'telefonoInput', 'passUserInput'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.required = !hideExtras;
+        }
+      });
+    }
+
+    function factoryReset() {
+      if (!confirm('¿Seguro que deseas reiniciar de fábrica el monitor?')) return;
+      fetch('/factory_reset', { method: 'POST' })
+        .then(resp => {
+          if (resp.ok) {
+            alert('Reinicio de fábrica solicitado. El equipo se reiniciará.');
+            setTimeout(() => location.reload(), 1200);
+          }
+        });
+    }
+
     let ssidLocked = false;
 
     function clearSelections() {
@@ -1812,11 +1904,11 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } });</script>";
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } toggleUserFields(); });</script>";
 
 
   html += "<form action='/finalizar' method='POST'>";
-  html += idSection;
+  html += userSection;
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
@@ -1851,6 +1943,9 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
     <div class="network-list">
       <button type='submit'>Configurar y reiniciar</button>
     </div>
+    <div class="network-list" style="text-align:center;">
+      <button type='button' class='factory-reset' onclick='factoryReset()'>Reinicio de fábrica</button>
+    </div>
   </form>
   </div>
 
@@ -1862,8 +1957,8 @@ String currentIDDisplay = userID.length() > 0 ? userID : "Sin ID configurado";
 }
 
 void handleSaveCredentials() {
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Configura el User ID antes de guardar redes");
+  if (userID.isEmpty() && userEmail.isEmpty()) {
+    server.send(400, "text/plain", "Configura el usuario (correo) antes de guardar redes");
     return;
   }
   if(server.hasArg("ssid") && server.hasArg("pass")) {
@@ -1953,24 +2048,41 @@ void handleFinalizeConfig() {
     wifiConfigInProgress = false;
   };
 
-  // Actualizar User ID con el valor ingresado o validar el existente
-  if (server.hasArg("newid")) {
-    String newID = server.arg("newid");
-    newID.trim();
-    if (newID.length() > 0 && newID.length() <= USER_ID_MAX_LEN) {
-      saveUserIDToEEPROM(newID);
-      userID = newID;
-    } else {
-      server.send(400, "text/plain", "User ID inválido");
+  bool usuarioConfirmado = !userID.isEmpty();
+  bool banderaRegistrado = server.hasArg("user_registered");
+
+  String correo = server.hasArg("correo") ? server.arg("correo") : userEmail;
+  String nombre = server.hasArg("nombre") ? server.arg("nombre") : userNombre;
+  String telefono = server.hasArg("telefono") ? server.arg("telefono") : userTelefono;
+  String passUsuario = server.hasArg("pass_usuario") ? server.arg("pass_usuario") : userPassword;
+
+  correo.trim();
+  nombre.trim();
+  telefono.trim();
+  passUsuario.trim();
+
+  if (!usuarioConfirmado) {
+    if (correo.length() == 0) {
+      server.send(400, "text/plain", "Captura el correo del usuario");
       liberarPortal();
       return;
     }
-  }
 
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Debes capturar un User ID válido para finalizar");
-    liberarPortal();
-    return;
+    if (!banderaRegistrado) {
+      if (nombre.length() == 0 || telefono.length() == 0 || passUsuario.length() == 0) {
+        server.send(400, "text/plain", "Completa nombre, teléfono y password para dar de alta");
+        liberarPortal();
+        return;
+      }
+    }
+
+    userEmail = correo;
+    userNombre = nombre;
+    userTelefono = telefono;
+    userPassword = passUsuario;
+    userFlagRegistrado = banderaRegistrado;
+    userID = "";
+    saveUserProfileToEEPROM();
   }
 
   // Guardar la red (nueva o modificada) si se proporcionó
@@ -2073,8 +2185,8 @@ void handleFinalizeConfig() {
 }
 
 void handleDeleteNetwork() {
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Configura el User ID antes de borrar redes");
+  if (userID.isEmpty() && userEmail.isEmpty()) {
+    server.send(400, "text/plain", "Configura el usuario (correo) antes de borrar redes");
     return;
   }
   if(server.hasArg("index")) {
@@ -2106,8 +2218,8 @@ void handleDeleteNetwork() {
 }
 
 void handleDeleteDevice() {
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Configura el User ID antes de borrar dispositivos");
+  if (userID.isEmpty() && userEmail.isEmpty()) {
+    server.send(400, "text/plain", "Configura el usuario (correo) antes de borrar dispositivos");
     return;
   }
   if (server.hasArg("mac")) {
@@ -2131,8 +2243,8 @@ void handleDeleteDevice() {
 }
 
 void handleSelectNetwork() {
-  if (userID.isEmpty()) {
-    server.send(400, "text/plain", "Configura el User ID antes de seleccionar una red");
+  if (userID.isEmpty() && userEmail.isEmpty()) {
+    server.send(400, "text/plain", "Configura el usuario (correo) antes de seleccionar una red");
     return;
   }
   if(server.hasArg("index")) {
@@ -2178,6 +2290,13 @@ void handleSetID() {
   } else {
     server.send(400, "text/plain", "Falta parámetro newid");
   }
+}
+
+void handleFactoryReset() {
+  clearEEPROM();
+  server.send(200, "text/plain", "OK");
+  delay(300);
+  ESP.restart();
 }
 
 
@@ -2450,6 +2569,75 @@ bool loadUserIDFromEEPROM() {
   return success;
 }
 
+void saveStringFieldToEEPROM(int address, const String &value, int maxLen) {
+  int len = value.length();
+  if (len > maxLen) len = maxLen;
+
+  EEPROM.write(address, len);
+  for (int i = 0; i < len; i++) {
+    EEPROM.write(address + 1 + i, value[i]);
+  }
+
+  for (int i = len; i < maxLen; i++) {
+    EEPROM.write(address + 1 + i, 0);
+  }
+}
+
+String loadStringFieldFromEEPROM(int address, int maxLen) {
+  int len = EEPROM.read(address);
+  if (len == 0xFF || len < 0 || len > maxLen) {
+    return "";
+  }
+  char buffer[maxLen + 1] = {0};
+  for (int i = 0; i < len; i++) {
+    buffer[i] = EEPROM.read(address + 1 + i);
+  }
+  buffer[len] = '\0';
+  return String(buffer);
+}
+
+void saveUserProfileToEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para guardar perfil de usuario");
+    return;
+  }
+
+  saveStringFieldToEEPROM(USER_NAME_ADDR, userNombre, USER_NAME_MAX_LEN);
+  saveStringFieldToEEPROM(USER_PHONE_ADDR, userTelefono, USER_PHONE_MAX_LEN);
+  saveStringFieldToEEPROM(USER_EMAIL_ADDR, userEmail, USER_EMAIL_MAX_LEN);
+  saveStringFieldToEEPROM(USER_PASS_ADDR, userPassword, USER_PASS_MAX_LEN);
+  EEPROM.write(USER_REGISTERED_FLAG_ADDR, userFlagRegistrado ? 1 : 0);
+
+  int len = userID.length();
+  if (len > USER_ID_MAX_LEN) len = USER_ID_MAX_LEN;
+  EEPROM.write(USER_ID_ADDR, len);
+  for (int i = 0; i < len; i++) {
+    EEPROM.write(USER_ID_ADDR + 1 + i, userID[i]);
+  }
+  for (int i = len; i < USER_ID_MAX_LEN; i++) {
+    EEPROM.write(USER_ID_ADDR + 1 + i, 0);
+  }
+
+  EEPROM.commit();
+  EEPROM.end();
+}
+
+void loadUserProfileFromEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("❌ No se pudo iniciar EEPROM para leer perfil de usuario");
+    return;
+  }
+
+  userNombre = loadStringFieldFromEEPROM(USER_NAME_ADDR, USER_NAME_MAX_LEN);
+  userTelefono = loadStringFieldFromEEPROM(USER_PHONE_ADDR, USER_PHONE_MAX_LEN);
+  userEmail = loadStringFieldFromEEPROM(USER_EMAIL_ADDR, USER_EMAIL_MAX_LEN);
+  userPassword = loadStringFieldFromEEPROM(USER_PASS_ADDR, USER_PASS_MAX_LEN);
+  userFlagRegistrado = EEPROM.read(USER_REGISTERED_FLAG_ADDR) == 1;
+  EEPROM.end();
+
+  loadUserIDFromEEPROM();
+}
+
 
 void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println("callback MQTT ejecutado recepcion-->");  // al principio de la función
@@ -2468,33 +2656,70 @@ if (strcmp(topic, "alta/0/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
     Serial.println("Confirmación de monitor recibida: " + mensajeRecibido);
 
-    int primeraComa = mensajeRecibido.indexOf(',');
-    int segundaComa = mensajeRecibido.indexOf(',', primeraComa + 1);
+    // Esperado: MAC,registrado[,correo,nombre,users_registro_id]
+    int indices[4] = {-1, -1, -1, -1};
+    int buscador = 0;
+    int inicio = 0;
+    while (buscador < 4) {
+      int coma = mensajeRecibido.indexOf(',', inicio);
+      if (coma == -1) break;
+      indices[buscador] = coma;
+      buscador++;
+      inicio = coma + 1;
+    }
 
-    if (primeraComa == -1) {
+    if (indices[0] == -1) {
         Serial.println("⚠️  Mensaje de confirmación de monitor sin MAC");
         return;
     }
 
-    String macConfirmada = mensajeRecibido.substring(0, primeraComa);
-    macConfirmada.trim();
+    String macConfirmada = mensajeRecibido.substring(0, indices[0]);
+    macConfirmada = normalizarMac(macConfirmada);
 
-    String estadoConfirmacion = (segundaComa != -1)
-                                   ? mensajeRecibido.substring(primeraComa + 1, segundaComa)
-                                   : mensajeRecibido.substring(primeraComa + 1);
+    String estadoConfirmacion = (indices[0] != -1 && indices[1] != -1)
+                                   ? mensajeRecibido.substring(indices[0] + 1, indices[1])
+                                   : mensajeRecibido.substring(indices[0] + 1);
     estadoConfirmacion.trim();
 
-    String miMac = WiFi.macAddress();
-    miMac.replace("-", ":");
+    String correoConfirmado = (indices[1] != -1 && indices[2] != -1)
+                                ? mensajeRecibido.substring(indices[1] + 1, indices[2])
+                                : "";
+    correoConfirmado.trim();
+
+    String nombreConfirmado = (indices[2] != -1 && indices[3] != -1)
+                                ? mensajeRecibido.substring(indices[2] + 1, indices[3])
+                                : "";
+    nombreConfirmado.trim();
+
+    String registroConfirmado = (indices[3] != -1)
+                                  ? mensajeRecibido.substring(indices[3] + 1)
+                                  : "";
+    registroConfirmado.trim();
+
+    asegurarMacMonitorFija("conf_monitor");
+    String miMac = normalizarMac(macMonitorFija);
 
     Serial.println("📥 [CONF MONITOR01] alta/0/confirmacion/" );
     Serial.println("   Payload RX: " + mensajeRecibido);
-    Serial.println("   Se esperaba: MAC,registrado[,usuario,email]");
+    Serial.println("   Se esperaba: MAC,registrado[,correo,nombre,users_registro_id]");
 
     if (macConfirmada == miMac && (estadoConfirmacion == "registrado" || estadoConfirmacion == "confirmado")) {
         Serial.println("✅ Confirmación MQTT para el monitor recibida");
         mqttConfirmed = true;
         solicitudAltaInicialEnviada = true;
+
+        if (registroConfirmado.length() > 0) {
+          userID = registroConfirmado;
+        }
+        if (correoConfirmado.length() > 0) {
+          userEmail = correoConfirmado;
+        }
+        if (nombreConfirmado.length() > 0) {
+          userNombre = nombreConfirmado;
+        }
+        userFlagRegistrado = true;
+
+        saveUserProfileToEEPROM();
         guardarMQTTConfirmationState(true);
         guardarSolicitudAltaInicialState(true);
         activarDispositivosTrasConfirmacion();
@@ -2583,32 +2808,29 @@ if (strcmp(topic, "alta/1/confirmacion/") == 0) {
 
     if (macConfirmada == miMac) {
         // Confirmación para el monitor
-        if (estadoConfirmacion == "registrado" && segundaComa != -1 && terceraComa != -1) {
-            String nombreUsuario = mensajeRecibido.substring(segundaComa + 1, terceraComa);
-            String emailUsuario = mensajeRecibido.substring(terceraComa + 1);
+        int cuartaComa = (terceraComa != -1) ? mensajeRecibido.indexOf(',', terceraComa + 1) : -1;
+        if (estadoConfirmacion == "registrado" && segundaComa != -1) {
+            String correoUsuario = (terceraComa != -1)
+                                       ? mensajeRecibido.substring(segundaComa + 1, terceraComa)
+                                       : mensajeRecibido.substring(segundaComa + 1);
+            String nombreUsuario = (terceraComa != -1 && cuartaComa != -1)
+                                       ? mensajeRecibido.substring(terceraComa + 1, cuartaComa)
+                                       : "";
+            String registroId = (cuartaComa != -1)
+                                     ? mensajeRecibido.substring(cuartaComa + 1)
+                                     : "";
 
-            EEPROM.begin(EEPROM_SIZE);
-
-            int nombreLen = nombreUsuario.length();
-            EEPROM.write(USER_NAME_ADDR, nombreLen);
-            for (int i = 0; i < nombreLen; i++) {
-                EEPROM.write(USER_NAME_ADDR + 1 + i, nombreUsuario[i]);
-            }
-
-            int emailLen = emailUsuario.length();
-            EEPROM.write(USER_EMAIL_ADDR, emailLen);
-            for (int i = 0; i < emailLen; i++) {
-                EEPROM.write(USER_EMAIL_ADDR + 1 + i, emailUsuario[i]);
-            }
-
-            EEPROM.commit();
-            EEPROM.end();
-
+            userNombre = nombreUsuario;
+            userEmail = correoUsuario;
+            userID = registroId;
+            userFlagRegistrado = true;
             guardarMQTTConfirmationState(true);
+            saveUserProfileToEEPROM();
 
             Serial.println("CONFIRMACION RECIBIDA - Alta del monitor validada correctamente");
             Serial.println("Nombre guardado: " + nombreUsuario);
-            Serial.println("Email guardado: " + emailUsuario);
+            Serial.println("Email guardado: " + correoUsuario);
+            Serial.println("users_registro_id: " + registroId);
 
             mqttConfirmed = true;
             solicitudAltaInicialEnviada = true;
@@ -3056,6 +3278,11 @@ void clearEEPROM() {
 
   // 6. Limpiar userID
   userID = "";
+  userEmail = "";
+  userNombre = "";
+  userTelefono = "";
+  userPassword = "";
+  userFlagRegistrado = false;
   
   Serial.println("✅ EEPROM Y MEMORIA RAM BORRADOS COMPLETAMENTE");
   
@@ -3077,33 +3304,42 @@ void solicitarAltaMonitorMQTT() {
     if (millis() - lastConfirmationAttempt > confirmationRetryInterval) {
       lastConfirmationAttempt = millis();
 
-      if (userID.length() > 0) {
-        Serial.println("🛰️ [ALTA MONITOR01] Existe USUARIO ID -> enviando solicitud inicial (ruta exclusiva de monitor)");
+      String correo = userEmail;
+      if (correo.isEmpty()) {
+        Serial.println("⚠️ [ALTA MONITOR01] Falta correo para solicitar alta");
+        return;
+      }
 
-        asegurarMacMonitorFija("alta_monitor");
+      asegurarMacMonitorFija("alta_monitor");
 
-        // Bloquear si, por error, la MAC fija coincide con algún sensor registrado
-        for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
-          if (strlen(configDispositivos[i].mac) > 0 &&
-              macMonitorFija.equalsIgnoreCase(String(configDispositivos[i].mac))) {
-            Serial.printf("⛔ Alta de monitor cancelada: la MAC fija %s coincide con un sensor en índice %d\n",
-                          macMonitorFija.c_str(), i);
-            return;
-          }
+      // Bloquear si, por error, la MAC fija coincide con algún sensor registrado
+      for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+        if (strlen(configDispositivos[i].mac) > 0 &&
+            macMonitorFija.equalsIgnoreCase(String(configDispositivos[i].mac))) {
+          Serial.printf("⛔ Alta de monitor cancelada: la MAC fija %s coincide con un sensor en índice %d\n",
+                        macMonitorFija.c_str(), i);
+          return;
         }
+      }
 
-        String mensajeCompleto = macMonitorFija + "," + userID;
-
-        Serial.println("   Tópico TX: alta/0/solicitud/");
-        Serial.println("   Payload TX: " + mensajeCompleto);
-        Serial.println("   Espera RX: alta/0/confirmacion/ con 'MAC,registrado,usuario,email'");
-        if (client.publish("alta/0/solicitud/",  mensajeCompleto.c_str())) {
-          Serial.println("✅ [ALTA MONITOR01] Solicitud enviada correctamente");
-          solicitudAltaInicialEnviada = true;
-          guardarSolicitudAltaInicialState(true);
-        } else {
-          Serial.println("❌ [ALTA MONITOR01] Error al publicar solicitud de alta");
+      String mensajeCompleto = macMonitorFija + "," + correo;
+      if (!userFlagRegistrado) {
+        if (userTelefono.isEmpty() || userNombre.isEmpty() || userPassword.isEmpty()) {
+          Serial.println("⚠️ [ALTA MONITOR01] Falta nombre/teléfono/password para alta nueva");
+          return;
         }
+        mensajeCompleto += "," + userTelefono + "," + userNombre + "," + userPassword;
+      }
+
+      Serial.println("   Tópico TX: alta/0/solicitud/");
+      Serial.println("   Payload TX: " + mensajeCompleto);
+      Serial.println("   Espera RX: alta/0/confirmacion/ con 'MAC,registrado,correo,nombre,users_registro_id'");
+      if (client.publish("alta/0/solicitud/",  mensajeCompleto.c_str())) {
+        Serial.println("✅ [ALTA MONITOR01] Solicitud enviada correctamente");
+        solicitudAltaInicialEnviada = true;
+        guardarSolicitudAltaInicialState(true);
+      } else {
+        Serial.println("❌ [ALTA MONITOR01] Error al publicar solicitud de alta");
       }
     }
   }
@@ -3128,8 +3364,9 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
     return;
   }
 
-  if (userID.isEmpty()) {
-    Serial.println("⚠️ No se puede solicitar alta: falta userID");
+  String registroId = userID;
+  if (registroId.isEmpty()) {
+    Serial.println("⚠️ No se puede solicitar alta: falta users_registro_id");
     return;
   }
 
@@ -3176,7 +3413,7 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
   // Payload completo: MAC,UserID,Nombre,Altura,Litros,Tipo (tipo real registrado)
   String altura = String((int)configDispositivos[indice].alturaConfig);
   String litros = String((int)configDispositivos[indice].litrosConfig);
-  String mensaje = mac + "," + userID + "," + nombre + "," + altura + "," + litros + "," + String(tipo);
+  String mensaje = mac + "," + registroId + "," + nombre + "," + altura + "," + litros + "," + String(tipo);
 
   if (solicitudAltaEnviada[indice] && mensaje == ultimoPayloadAltaMQTT[indice]) {
     Serial.printf("⏭️  Alta MQTT ya enviada con el mismo payload para %s, se evita duplicado tipo 0\n", mac.c_str());
@@ -3208,8 +3445,9 @@ void limpiarEstadoBaja(int indice) {
 bool publicarSolicitudBaja(int indice, const String &mac) {
   if (indice < 0 || indice >= MAX_DISPOSITIVOS) return false;
 
-  if (userID.isEmpty()) {
-    Serial.println("⚠️ No se puede solicitar baja: falta userID");
+  String registroId = userID;
+  if (registroId.isEmpty()) {
+    Serial.println("⚠️ No se puede solicitar baja: falta users_registro_id");
     return false;
   }
 
@@ -3223,7 +3461,7 @@ bool publicarSolicitudBaja(int indice, const String &mac) {
     return false;
   }
 
-  String mensaje = mac + "," + userID;
+  String mensaje = mac + "," + registroId;
   Serial.println("🛰️ [BAJA NUUP01] Solicitud -> MQTT");
   Serial.println("   Tópico TX: baja/1/solicitud/");
   Serial.println("   Payload TX: " + mensaje);
@@ -4482,27 +4720,20 @@ delay(1000);
   debugNetworks();
 
 
-// 3. Cargar configuración UserID capturado por usuario
+// 3. Cargar configuración del usuario
+  loadUserProfileFromEEPROM();
 
-  if (!loadUserIDFromEEPROM()) {
-    Serial.println("Error al cargar ID de EEPROM");
+  if (userID.length() == 0 || userID[0] > 127) {
+    Serial.println("🔄 users_registro_id corrupto detectado, limpiando...");
+    userID = "";
+    saveUserProfileToEEPROM();
   }
 
-  // En setup(), después de cargar userID:
-if (userID.length() == 0 || userID[0] > 127) {
-    Serial.println("🔄 UserID corrupto detectado, limpiando...");
-    userID = "";
-    saveUserIDToEEPROM("");
-}
-
-
-
-    //ID guardado
-if (userID.isEmpty()) {
-   Serial.println("No hay Cargando  ID de EEPROM ");
+  //ID guardado
+  if (userID.isEmpty()) {
+    Serial.println("No hay users_registro_id en EEPROM");
   } else {
-    // Intentar conectar a WiFi normalmente
-   Serial.println("ID cargado en  EEPROM ");
+    Serial.println("users_registro_id cargado desde EEPROM");
   }
 delay(1000);
 
