@@ -32,6 +32,9 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 77 - 2025-05-27 Consecutivo: se documenta la integración de la baja del monitor con su
+//      confirmación MQTT, reteniendo la MAC enviada, limpiando EEPROM y reiniciando tras un
+//      estado válido, alineado con la bitácora de cambios.
 // 76 - 2025-05-27 Confirmación: se escucha baja/0/confirmacion/ del monitor, validando MAC y
 //      estado para limpiar EEPROM/reiniciar tras la baja y manteniendo la MAC enviada aun si
 //      ya fue borrada.
