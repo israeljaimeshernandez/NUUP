@@ -32,6 +32,9 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 76 - 2025-05-27 Confirmación: se escucha baja/0/confirmacion/ del monitor, validando MAC y
+//      estado para limpiar EEPROM/reiniciar tras la baja y manteniendo la MAC enviada aun si
+//      ya fue borrada.
 // 75 - 2025-05-26 Mejora: el portal AP oculta/bloquea campos al marcar "ya estoy registrado",
 //      valida capturas completas en altas nuevas y agrega controles visuales para baja MQTT
 //      del monitor y reinicio de fábrica, enviando baja/0/solicitud y borrando EEPROM.
@@ -283,6 +286,9 @@ String userNombre = "";
 String userTelefono = "";
 String userPassword = "";
 bool userFlagRegistrado = false;  // true si el usuario ya existe y solo se busca por correo
+bool bajaMonitorEsperandoConfirmacion = false; // true cuando se envió baja/0/solicitud
+unsigned long inicioEsperaBajaMonitor = 0;     // inicio de ventana de confirmación de baja del monitor
+String ultimaMacMonitorBaja = "";             // MAC usada en la última solicitud de baja para validar confirmación
 bool registroMonitorEEPROM = false;  // Bandera de registro general (no se confunde con activo de dispositivos)
 
 
@@ -2871,6 +2877,52 @@ if (strcmp(topic, "alta/0/confirmacion/") == 0) {
     return;
 }
 
+if (strcmp(topic, "baja/0/confirmacion/") == 0) {
+    String mensajeRecibido = String(message);
+    Serial.println("📥 [CONF MONITOR01] baja/0/confirmacion/");
+    Serial.println("   Payload RX: " + mensajeRecibido);
+    Serial.println("   Se esperaba: MAC,eliminado");
+
+    int primeraComa = mensajeRecibido.indexOf(',');
+    if (primeraComa == -1) {
+        Serial.println("⚠️  Mensaje de confirmación de baja sin MAC");
+        return;
+    }
+
+    String macConfirmada = normalizarMac(mensajeRecibido.substring(0, primeraComa));
+    String estado = mensajeRecibido.substring(primeraComa + 1);
+    estado.trim();
+
+    asegurarMacMonitorFija("conf_baja_monitor");
+    String macEsperada = macMonitorFija;
+    if (macEsperada.isEmpty() && !ultimaMacMonitorBaja.isEmpty()) {
+      macEsperada = ultimaMacMonitorBaja;
+    }
+    macEsperada = normalizarMac(macEsperada);
+
+    if (macEsperada.isEmpty()) {
+      Serial.println("⚠️  No hay MAC del monitor para validar la confirmación de baja");
+      return;
+    }
+
+    if (!macConfirmada.equalsIgnoreCase(macEsperada)) {
+      Serial.printf("⚠️  Confirmación de baja ignorada: MAC no coincide (%s vs %s)\n",
+                    macConfirmada.c_str(), macEsperada.c_str());
+      return;
+    }
+
+    if (estado == "eliminado" || estado == "baja" || estado == "confirmado") {
+      Serial.println("✅ Baja MQTT del monitor confirmada; limpiando y reiniciando");
+      bajaMonitorEsperandoConfirmacion = false;
+      clearEEPROM();
+      reinicioSolicitado = true;
+      reinicioProgramado = millis() + 2000;
+    } else {
+      Serial.printf("⚠️ Estado de baja del monitor no reconocido: %s\n", estado.c_str());
+    }
+    return;
+}
+
 if (strcmp(topic, "baja/1/confirmacion/") == 0) {
     String mensajeRecibido = String(message);
     Serial.println("📥 [CONF NUUP01] baja/1/confirmacion/");
@@ -3040,6 +3092,9 @@ void reconnect() {
     // 2. Suscripciones con QoS 1 (confirmación de recepción)
     client.subscribe("alta/0/confirmacion/", 1);
 Serial.println("Subscripcion: alta/0/confirmacion/");
+    delay(50);
+    client.subscribe("baja/0/confirmacion/", 1);
+Serial.println("Subscripcion: baja/0/confirmacion/");
     delay(50);
     client.subscribe("alta/1/confirmacion/", 1);
 Serial.println("Subscripcion: alta/1/confirmacion/");
@@ -3514,6 +3569,9 @@ bool solicitarBajaMonitorMQTT() {
 
   if (client.publish("baja/0/solicitud/", mensaje.c_str())) {
     Serial.println("✅ Solicitud de baja enviada para el monitor");
+    bajaMonitorEsperandoConfirmacion = true;
+    inicioEsperaBajaMonitor = millis();
+    ultimaMacMonitorBaja = mac;
     return true;
   }
 
