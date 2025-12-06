@@ -32,6 +32,9 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 75 - 2025-05-26 Mejora: el portal AP oculta/bloquea campos al marcar "ya estoy registrado",
+//      valida capturas completas en altas nuevas y agrega controles visuales para baja MQTT
+//      del monitor y reinicio de fábrica, enviando baja/0/solicitud y borrando EEPROM.
 // 74 - 2025-05-25 Ajuste: el identificador de usuario sigue siendo userID; se usa para
 //      almacenar/leer el users_registro_id confirmado sin variables duplicadas.
 // 73 - 2025-05-25 Integración: el portal AP guía el alta por correo/teléfono/nombre/password
@@ -322,6 +325,7 @@ void handleFinalizeConfig();
 void handleDeleteNetwork();
 void handleSelectNetwork();
 void handleDeleteDevice();
+void handleBajaMonitor();
 void reiniciarConfiguracionWiFi();
 void detenerConfiguracionWiFi();
 bool saveNetworksToEEPROM();
@@ -361,6 +365,7 @@ void procesarAltasPendientes();
 String normalizarMac(const String &macRaw);
 bool iniciarBajaDispositivo(const String &mac);
 bool publicarSolicitudBaja(int indice, const String &mac);
+bool solicitarBajaMonitorMQTT();
 void procesarBajasPendientes();
 void limpiarEstadoBaja(int indice);
 
@@ -1325,6 +1330,7 @@ void registrarRutasPortal() {
   server.on("/delete_device", HTTP_POST, handleDeleteDevice);
   server.on("/setid", HTTP_POST, handleSetID);
   server.on("/factory_reset", HTTP_POST, handleFactoryReset);
+  server.on("/baja_monitor", HTTP_POST, handleBajaMonitor);
 
   // Captura peticiones típicas de detección de portal cautivo
   server.on("/generate_204", HTTP_ANY, handleRoot);
@@ -1582,7 +1588,8 @@ void handleRoot() {
     userSection += "<p><small>Para cambiar de usuario, realiza un reinicio de fábrica.</small></p>";
   } else {
     String checked = userFlagRegistrado ? " checked" : "";
-    userSection += "<label class='combo-label'><input type='checkbox' id='userRegistered' name='user_registered' value='1'" + checked + "> Ya estoy registrado</label>";
+    userSection += "<p class='hint'>Marca si el usuario ya existe para buscar solo por correo. Si es nuevo, captura todos los campos.</p>";
+    userSection += "<label class='combo-label'><input type='checkbox' id='userRegistered' name='user_registered' value='1'" + checked + " onchange=\"toggleUserFields()\"> Ya estoy registrado</label>";
     userSection += "<label for='correoInput'>Correo</label>";
     userSection += "<input id='correoInput' type='email' name='correo' placeholder='correo@ejemplo.com' required" + correoAttr + ">";
     userSection += "<div id='newUserFields' class='user-extra-fields'>";
@@ -1597,8 +1604,20 @@ void handleRoot() {
   }
   userSection += "</div>";
 
+  String actionsSection = "<div class='network-list actions-panel'>";
+  actionsSection += "<h3 class='section-title'>Acciones del monitor</h3>";
+  actionsSection += "<div class='action-card alert-card'>";
+  actionsSection += "  <div class='action-text'><div class='icon-badge'>🛑</div><div><strong>Dar de baja el monitor</strong><br><small>Enviará baja/0/solicitud y borrará todo el registro guardado.</small></div></div>";
+  actionsSection += "  <button type='button' class='danger-btn' onclick=\"confirmBajaMonitor()\">Dar de baja dispositivo</button>";
+  actionsSection += "</div>";
+  actionsSection += "<div class='action-card neutral-card'>";
+  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reinicio de fábrica</strong><br><small>Limpia completamente la EEPROM con la misma apariencia que Nuup01.</small></div></div>";
+  actionsSection += "  <button type='button' class='secondary-btn' onclick=\"factoryReset()\">Reseteo de fábrica</button>";
+  actionsSection += "</div>";
+  actionsSection += "</div>";
 
-  
+
+
   String html = R"=====(
 <!DOCTYPE html>
 <html>
@@ -1786,6 +1805,64 @@ void handleRoot() {
       margin: 10px 0;
       font-weight: bold;
     }
+    .hint {
+      margin: 0 0 10px 0;
+      color: #d8c16a;
+      font-size: 13px;
+    }
+    .actions-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .action-card {
+      background-color: #222;
+      border: 1px solid #FFD700;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .action-text {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .icon-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background-color: #FFD700;
+      color: #121212;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      box-shadow: 0 0 10px rgba(255, 215, 0, 0.35);
+    }
+    .action-card small { color: #d8c16a; }
+    .alert-card { border-color: #ff7f50; box-shadow: 0 0 10px rgba(255, 127, 80, 0.35); }
+    .neutral-card { border-color: #6ac6ff; box-shadow: 0 0 10px rgba(106, 198, 255, 0.25); }
+    .danger-btn {
+      background-color: #ff3333;
+      color: #fff;
+      border: none;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-weight: bold;
+    }
+    .danger-btn:hover { background-color: #cc0000; }
+    .secondary-btn {
+      background-color: #FFD700;
+      color: #121212;
+      border: 1px solid #FFD700;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-weight: bold;
+    }
+    .secondary-btn:hover { background-color: #ffeb7a; }
     ::placeholder {
       color: #888;
       opacity: 1;
@@ -1817,12 +1894,17 @@ void handleRoot() {
         const el = document.getElementById(id);
         if (el) {
           el.required = !hideExtras;
+          el.disabled = hideExtras;
+          el.classList.toggle('locked', hideExtras);
+          if (hideExtras) {
+            el.value = '';
+          }
         }
       });
     }
 
     function factoryReset() {
-      if (!confirm('¿Seguro que deseas reiniciar de fábrica el monitor?')) return;
+      if (!confirm('Se borrará toda la EEPROM y el monitor reiniciará. ¿Seguro que deseas hacer un reinicio de fábrica?')) return;
       fetch('/factory_reset', { method: 'POST' })
         .then(resp => {
           if (resp.ok) {
@@ -1830,6 +1912,45 @@ void handleRoot() {
             setTimeout(() => location.reload(), 1200);
           }
         });
+    }
+
+    function confirmBajaMonitor() {
+      const mensaje = 'Se enviará baja/0/solicitud y se borrará toda la configuración guardada. ¿Continuar?';
+      if (!confirm(mensaje)) return;
+      fetch('/baja_monitor', { method: 'POST' })
+        .then(resp => resp.text().then(text => ({ ok: resp.ok, text })))
+        .then(result => {
+          alert(result.text || 'Solicitud de baja procesada.');
+          setTimeout(() => location.reload(), 1200);
+        })
+        .catch(() => alert('No se pudo procesar la baja del monitor.'));
+    }
+
+    function validateUserForm(event) {
+      const checkbox = document.getElementById('userRegistered');
+      const registered = checkbox && checkbox.checked;
+      const correo = document.getElementById('correoInput');
+      const nombre = document.getElementById('nombreInput');
+      const telefono = document.getElementById('telefonoInput');
+      const pass = document.getElementById('passUserInput');
+
+      if (correo && correo.value.trim().length === 0) {
+        alert('Captura el correo del usuario.');
+        event.preventDefault();
+        return false;
+      }
+
+      if (!registered) {
+        if (!nombre || !telefono || !pass ||
+            nombre.value.trim().length === 0 ||
+            telefono.value.trim().length === 0 ||
+            pass.value.trim().length === 0) {
+          alert('Completa nombre, teléfono y password para dar de alta al usuario.');
+          event.preventDefault();
+          return false;
+        }
+      }
+      return true;
     }
 
     let ssidLocked = false;
@@ -1907,11 +2028,12 @@ void handleRoot() {
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } toggleUserFields(); });</script>";
+  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } const userToggle = document.getElementById('userRegistered'); if (userToggle) { userToggle.addEventListener('change', toggleUserFields); } const configForm = document.getElementById('configForm'); if (configForm) { configForm.addEventListener('submit', validateUserForm); } toggleUserFields(); });</script>";
 
 
-  html += "<form action='/finalizar' method='POST'>";
+  html += "<form id='configForm' action='/finalizar' method='POST' novalidate>";
   html += userSection;
+  html += actionsSection;
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
@@ -1945,9 +2067,6 @@ void handleRoot() {
 
     <div class="network-list">
       <button type='submit'>Configurar y reiniciar</button>
-    </div>
-    <div class="network-list" style="text-align:center;">
-      <button type='button' class='factory-reset' onclick='factoryReset()'>Reinicio de fábrica</button>
     </div>
   </form>
   </div>
@@ -2073,7 +2192,7 @@ void handleFinalizeConfig() {
 
     if (!banderaRegistrado) {
       if (nombre.length() == 0 || telefono.length() == 0 || passUsuario.length() == 0) {
-        server.send(400, "text/plain", "Completa nombre, teléfono y password para dar de alta");
+        server.send(400, "text/plain", "Completa nombre, teléfono y password para dar de alta al usuario");
         liberarPortal();
         return;
       }
@@ -2300,6 +2419,25 @@ void handleFactoryReset() {
   server.send(200, "text/plain", "OK");
   delay(300);
   ESP.restart();
+}
+
+void handleBajaMonitor() {
+  portalEnUso = true;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
+  portalPantallaFija = true;
+
+  bool mqttEnviado = solicitarBajaMonitorMQTT();
+
+  clearEEPROM();
+  reinicioSolicitado = true;
+  reinicioProgramado = millis() + 2000;
+
+  String respuesta = mqttEnviado
+                        ? "Solicitud de baja enviada y datos borrados."
+                        : "Datos borrados. No se pudo enviar la solicitud de baja (MQTT/WiFi sin conexión).";
+  server.send(200, "text/plain", respuesta);
 }
 
 
@@ -3346,6 +3484,41 @@ void solicitarAltaMonitorMQTT() {
       }
     }
   }
+}
+
+bool solicitarBajaMonitorMQTT() {
+  asegurarMacMonitorFija("baja_monitor");
+  String mac = normalizarMac(macMonitorFija);
+
+  if (mac.isEmpty()) {
+    Serial.println("⚠️ [BAJA MONITOR01] Sin MAC fija para solicitar la baja");
+    return false;
+  }
+
+  String registroId = userID;
+  if (registroId.isEmpty()) {
+    Serial.println("⚠️ [BAJA MONITOR01] Falta userID/users_registro_id para baja/0/solicitud");
+    return false;
+  }
+
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+    Serial.println("⚠️ [BAJA MONITOR01] MQTT desconectado; la solicitud de baja no se envió");
+    return false;
+  }
+
+  String mensaje = mac + "," + registroId;
+  Serial.println("🛰️ [BAJA MONITOR01] Solicitud -> MQTT");
+  Serial.println("   Tópico TX: baja/0/solicitud/");
+  Serial.println("   Payload TX: " + mensaje);
+  Serial.println("   Espera RX: baja/0/confirmacion/ con 'MAC,eliminado' y limpieza total");
+
+  if (client.publish("baja/0/solicitud/", mensaje.c_str())) {
+    Serial.println("✅ Solicitud de baja enviada para el monitor");
+    return true;
+  }
+
+  Serial.println("❌ No se pudo publicar la solicitud de baja del monitor");
+  return false;
 }
 
 void solicitarAltaNuupMQTT(int indice, const String &mac) {
