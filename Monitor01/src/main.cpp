@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 87 - 2025-06-04 Corrección: la baja solicitada desde el portal AP cierra el modo AP, reanuda WiFi y ejecuta el mismo ciclo que BLE (animación, solicitud MQTT y reinicio), sumando bitácora en español.
 // 86 - 2025-06-03 Corrección: el portal AP solo se abre con el botón WiFi; la pantalla inicial resume red guardada, registro MQTT y sensores.
 // 85 - 2025-06-02 Ajuste portal y bajas: usuario fijo por correo, reseteo de fábrica al final y bajas vía botón/BLE con animación y solicitud MQTT.
 // 84 - 2025-06-01 Corrección: el modo AP automático se bloquea tras reinicio si no hay redes guardadas; solo se activa con el botón o al fallar redes existentes.
@@ -2446,6 +2447,13 @@ void handleDeleteDevice() {
     if (indice >= 0) {
       respaldo = configDispositivos[indice];
       prepararAnimacionBajaPortal(macNormalizada, &respaldo);
+    } else {
+      Serial.println("⚠️  Baja desde portal AP: MAC no encontrada, se mostrará mensaje de error pero se cerrará el portal para reanudar el ciclo normal.");
+      solicitudBajaBLE = true;
+      ultimoNombreDispositivo = "No Registrado";
+      ultimosLitros = 0;
+      ultimaAltura = 0;
+      macBajaEnCurso = "";
     }
 
     bool eliminado = iniciarBajaDispositivo(macNormalizada);
@@ -2453,6 +2461,11 @@ void handleDeleteDevice() {
       server.send(200, "text/plain", "OK");
     } else {
       server.send(404, "text/plain", "Dispositivo no encontrado");
+    }
+
+    if (apMode || forceAPMode) {
+      Serial.println("🚪 Cerrando modo AP para completar la baja con WiFi/MQTT y animaciones como en BLE...");
+      detenerConfiguracionWiFi();
     }
   } else {
     server.send(400, "text/plain", "Falta parámetro mac");

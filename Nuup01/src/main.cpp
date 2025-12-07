@@ -39,6 +39,8 @@
 //      (rebote), IMPACTO_VENTANA_MS (ventana de conteo), IMPACTO_MUESTRAS_BASE
 //      (línea base) y los límites IMPACTO_MIN_TOQUES/IMPACTO_MAX_TOQUES según
 //      la respuesta del hardware.
+// 04 - 2025-06-04 Límite de emparejamiento BLE a ~5cm: se exige RSSI cercano,
+//      se imprime el alcance y se refuerza la bitácora en español.
 // 03 - 2025-05-26 Ventana de vigilia por impacto ahora configurable (1 minuto
 //      por defecto) con LED verde parpadeando al esperar BLE/WiFi, sólido si
 //      hay cliente en portal web y reinicio completo al finalizar la vigilia.
@@ -156,6 +158,7 @@ bool doConnect = false;
 bool comandoPendiente = false;
 String targetDeviceName = "NUUP_Monitor";
 BLEAdvertisedDevice* myDevice;
+const int RSSI_MIN_APAREAMIENTO = -45; // dBm necesarios para estar a ~5 cm
 
 String macRegistrada = "";
 bool esperandoDatosConfig = false;
@@ -831,14 +834,20 @@ void MyClientCallback::onDisconnect(BLEClient* pclient) {
 void MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice) {
     String deviceName = String(advertisedDevice.getName().c_str());
     String deviceAddress = String(advertisedDevice.getAddress().toString().c_str());
-    int rssi = advertisedDevice.getRSSI();
+  int rssi = advertisedDevice.getRSSI();
     
     Serial.printf("   📶 Dispositivo: '%s'", deviceName.c_str());
     Serial.printf(" - MAC: %s", deviceAddress.c_str());
     Serial.printf(" - RSSI: %d dBm", rssi);
     
-    if (deviceName == targetDeviceName) {
+  if (deviceName == targetDeviceName) {
         Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO!**");
+
+        if (rssi < RSSI_MIN_APAREAMIENTO) {
+            Serial.printf("      ⛔ RSSI %d dBm es demasiado débil: acércalo a ~5 cm (>= %d dBm) para emparejar.\n", rssi, RSSI_MIN_APAREAMIENTO);
+            return;
+        }
+
         advertisedDevice.getScan()->stop();
         myDevice = new BLEAdvertisedDevice(advertisedDevice);
         doConnect = true;
@@ -1001,6 +1010,7 @@ void scanForDevices() {
     Serial.printf("   - Servidor buscado: '%s'\n", targetDeviceName.c_str());
     Serial.printf("   - Duración: 4 segundos\n");
     Serial.printf("   - Potencia: Máxima\n");
+    Serial.printf("   - Emparejamiento solo si RSSI >= %d dBm (equivalente a ~5 cm)\n", RSSI_MIN_APAREAMIENTO);
     Serial.println("   ═══════════════════════════════════");
     
     // Reiniciar flags
