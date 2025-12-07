@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 85 - 2025-06-02 Ajuste portal y bajas: usuario fijo por correo, reseteo de fábrica al final y bajas vía botón/BLE con animación y solicitud MQTT.
 // 84 - 2025-06-01 Corrección: el modo AP automático se bloquea tras reinicio si no hay redes guardadas; solo se activa con el botón o al fallar redes existentes.
 // 83 - 2025-05-31 Consecutivo en español: se anuncia en consola la versión activa y su resumen breve.
 // 82 - 2025-05-30 Flujo guiado de reseteo de fábrica: intenta reconectar WiFi, pide baja MQTT por 1 minuto,
@@ -197,7 +198,7 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 84;
+const uint16_t CONSECUTIVO_ACTUAL = 85;
 const char *RESUMEN_CONSECUTIVO = "Evita AP automático sin redes guardadas";
 
 // Configuración WiFi
@@ -1635,8 +1636,8 @@ void handleRoot() {
   userSection += "<h3 class='section-title'>Usuario NUUP</h3>";
   if (usuarioConfirmado) {
     String resumenCorreo = userEmail.length() > 0 ? userEmail : "(sin correo)";
-    userSection += "<p><strong>Registrado con correo:</strong><br>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
-    userSection += "<p><small>Para cambiar de usuario, ejecuta un reseteo de fábrica.</small></p>";
+    userSection += "<p><strong>Usuario:</strong></p>";
+    userSection += "<p>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
   } else {
     String checked = userFlagRegistrado ? " checked" : "";
     String newUserFieldsStyle = userFlagRegistrado ? " style='display:none;'" : "";
@@ -1970,6 +1971,9 @@ void handleRoot() {
     }
 
     function validateUserForm(event) {
+      if (typeof usuarioConfirmadoPortal !== 'undefined' && usuarioConfirmadoPortal) {
+        return true;
+      }
       const checkbox = document.getElementById('userRegistered');
       const registered = checkbox && checkbox.checked;
       const correo = document.getElementById('correoInput');
@@ -2071,12 +2075,11 @@ void handleRoot() {
     <h1>Configurar WiFi</h1>
 )=====";
 
-  html += "<script>document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } const userToggle = document.getElementById('userRegistered'); if (userToggle) { userToggle.addEventListener('change', toggleUserFields); } const configForm = document.getElementById('configForm'); if (configForm) { configForm.addEventListener('submit', validateUserForm); } toggleUserFields(); });</script>";
+  html += "<script>const usuarioConfirmadoPortal = " + String(usuarioConfirmado ? "true" : "false") + "; document.addEventListener('DOMContentLoaded', () => { const initialSsid = \"" + selectedSsidJs + "\"; updateSelected(initialSsid, false); const ssidInput = document.getElementById('ssidInput'); if (ssidInput) { ssidInput.addEventListener('input', handleManualSsidInput); ssidInput.addEventListener('focus', handleManualSsidInput); } const userToggle = document.getElementById('userRegistered'); if (userToggle) { userToggle.addEventListener('change', toggleUserFields); } const configForm = document.getElementById('configForm'); if (configForm) { configForm.addEventListener('submit', validateUserForm); } toggleUserFields(); });</script>";
 
 
   html += "<form id='configForm' action='/finalizar' method='POST' novalidate>";
   html += userSection;
-  html += actionsSection;
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Redes guardadas:</h3>
@@ -2103,7 +2106,7 @@ void handleRoot() {
   html += R"=====(
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
-)=====";
+  )=====";
   html += devicesList;
   html += R"=====(
     </div>
@@ -2112,11 +2115,16 @@ void handleRoot() {
       <button type='submit'>Configurar y reiniciar</button>
     </div>
   </form>
-  </div>
+  )=====";
 
-</body>
-</html>
-)=====";
+  html += actionsSection;
+
+  html += R"=====(
+    </div>
+
+  </body>
+  </html>
+  )=====";
 
   server.send(200, "text/html", html);
 }
@@ -2382,6 +2390,26 @@ void handleDeleteNetwork() {
   }
 }
 
+void prepararAnimacionBajaPortal(const String &macNormalizada, const ConfigDispositivo *config) {
+  solicitudAltaBLE = false;
+  solicitudBajaBLE = true;
+  macBajaEnCurso = macNormalizada;
+
+  if (config != nullptr) {
+    ultimoNombreDispositivo = String(config->nombre);
+    ultimoNombreDispositivo.trim();
+    if (ultimoNombreDispositivo.isEmpty()) {
+      ultimoNombreDispositivo = "Nuup01";
+    }
+    ultimosLitros = config->litrosActuales;
+    ultimaAltura = config->alturaConfig;
+  } else {
+    ultimoNombreDispositivo = "Nuup01";
+    ultimosLitros = 0;
+    ultimaAltura = 0;
+  }
+}
+
 void handleDeleteDevice() {
   if (userID.isEmpty() && userEmail.isEmpty()) {
     server.send(400, "text/plain", "Configura el usuario (correo) antes de borrar dispositivos");
@@ -2396,7 +2424,15 @@ void handleDeleteDevice() {
       return;
     }
 
-    bool eliminado = iniciarBajaDispositivo(mac);
+    String macNormalizada = normalizarMac(mac);
+    int indice = obtenerIndiceDispositivo(macNormalizada);
+    ConfigDispositivo respaldo{};
+    if (indice >= 0) {
+      respaldo = configDispositivos[indice];
+      prepararAnimacionBajaPortal(macNormalizada, &respaldo);
+    }
+
+    bool eliminado = iniciarBajaDispositivo(macNormalizada);
     if (eliminado) {
       server.send(200, "text/plain", "OK");
     } else {
