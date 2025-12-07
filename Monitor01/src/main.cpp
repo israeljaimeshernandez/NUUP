@@ -32,6 +32,8 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 82 - 2025-05-30 Flujo guiado de reseteo de fábrica: intenta reconectar WiFi, pide baja MQTT por 1 minuto,
+//      muestra resultado en español con hora y luego borra EEPROM antes de reiniciar.
 // 81 - 2025-05-29 Corrección: al fallar 3 reintentos de WiFi se activa el portal AP automáticamente
 //      mostrando aviso en pantalla en español para permitir reconfiguración inmediata.
 // 80 - 2025-05-28 Ajuste: el check "ya estoy registrado" oculta y bloquea los datos de usuario
@@ -150,6 +152,7 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include <time.h>
 
 #include <LoRa.h>
 #include <EEPROM.h>
@@ -564,6 +567,10 @@ void detenerAnimacionWifi();
 void conectarWifi();
 void testWiFiConnection();
 void debugEEPROMReal();
+void iniciarFlujoFactoryReset();
+void manejarFlujoFactoryReset();
+String horaLegibleCorta();
+void mostrarMensajeFactory(const String &l1, const String &l2 = "", const String &l3 = "");
 
 void verificarEstadoConfigDispositivos();
 
@@ -592,6 +599,26 @@ String ultimaContrasenaConfigurada = "";
 bool conexionExitosa = false;
 unsigned long retrasoMensajeConexion = 0;
 unsigned long duracionMensajeConexion = 5000;
+
+// Flujo guiado de reseteo de fábrica con baja MQTT
+enum FactoryResetStage {
+  FACTORY_IDLE = 0,
+  FACTORY_BUSCANDO_WIFI,
+  FACTORY_SOLICITANDO_BAJA,
+  FACTORY_ESPERANDO_CONFIRMACION,
+  FACTORY_FALLO_WIFI,
+  FACTORY_CONFIRMADA
+};
+
+FactoryResetStage factoryResetStage = FACTORY_IDLE;
+bool factoryResetEnProceso = false;
+unsigned long factoryWifiDeadline = 0;
+unsigned long factoryConfirmDeadline = 0;
+unsigned long ultimoIntentoWifiFactory = 0;
+String horaConfirmacionBaja = "";
+const unsigned long FACTORY_WIFI_TIMEOUT = 120000;   // 2 minutos para reconectar
+const unsigned long FACTORY_WIFI_RETRY = 5000;        // cada 5 segundos intentar
+const unsigned long FACTORY_BAJA_TIMEOUT = 60000;     // 1 minuto esperando confirmación
 
 //void manejarBoton_S();
 
@@ -1350,7 +1377,6 @@ void registrarRutasPortal() {
   server.on("/delete_device", HTTP_POST, handleDeleteDevice);
   server.on("/setid", HTTP_POST, handleSetID);
   server.on("/factory_reset", HTTP_POST, handleFactoryReset);
-  server.on("/baja_monitor", HTTP_POST, handleBajaMonitor);
 
   // Captura peticiones típicas de detección de portal cautivo
   server.on("/generate_204", HTTP_ANY, handleRoot);
@@ -1467,7 +1493,7 @@ void procesarEscaneoRedes() {
     return;
   }
 
-  const int MAX_SCAN_RESULTS = 20;
+  const int MAX_SCAN_RESULTS = 3;
   int limitedCount = n > MAX_SCAN_RESULTS ? MAX_SCAN_RESULTS : n;
   int *indices = new int[limitedCount];
   for (int i = 0; i < limitedCount; i++) {
@@ -1601,11 +1627,9 @@ void handleRoot() {
   String userSection = "<div class='network-list'>";
   userSection += "<h3 class='section-title'>Usuario NUUP</h3>";
   if (usuarioConfirmado) {
-    String resumenNombre = userNombre.length() > 0 ? userNombre : "(sin nombre)";
     String resumenCorreo = userEmail.length() > 0 ? userEmail : "(sin correo)";
-    userSection += "<p><strong>Registrado:</strong><br>" + escapeForHTMLAttr(resumenNombre) + "<br>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
-    userSection += "<p><small>ID de registro: " + escapeForHTMLAttr(userID) + "</small></p>";
-    userSection += "<p><small>Para cambiar de usuario, realiza un reinicio de fábrica.</small></p>";
+    userSection += "<p><strong>Registrado con correo:</strong><br>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
+    userSection += "<p><small>Para cambiar de usuario, ejecuta un reseteo de fábrica.</small></p>";
   } else {
     String checked = userFlagRegistrado ? " checked" : "";
     String newUserFieldsStyle = userFlagRegistrado ? " style='display:none;'" : "";
@@ -1630,11 +1654,7 @@ void handleRoot() {
   String actionsSection = "<div class='network-list actions-panel'>";
   actionsSection += "<h3 class='section-title'>Acciones del monitor</h3>";
   actionsSection += "<div class='action-card alert-card'>";
-  actionsSection += "  <div class='action-text'><div class='icon-badge'>🛑</div><div><strong>Dar de baja el monitor</strong><br><small>Enviará baja/0/solicitud y borrará todo el registro guardado.</small></div></div>";
-  actionsSection += "  <button type='button' class='danger-btn' onclick=\"confirmBajaMonitor()\">Dar de baja dispositivo</button>";
-  actionsSection += "</div>";
-  actionsSection += "<div class='action-card alert-card'>";
-  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reinicio de fábrica</strong><br><small>Enviará baja/0/solicitud, limpiará la EEPROM y reiniciará el monitor.</small></div></div>";
+  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reseteo de fábrica</strong><br><small>Intentará reconectar WiFi, solicitará la baja durante 1 minuto y luego borrará la EEPROM antes de reiniciar.</small></div></div>";
   actionsSection += "  <button type='button' class='danger-btn' onclick=\"factoryReset()\">Reseteo de fábrica</button>";
   actionsSection += "</div>";
   actionsSection += "</div>";
@@ -1931,7 +1951,7 @@ void handleRoot() {
     });
 
     function factoryReset() {
-      const mensaje = 'Se enviará baja/0/solicitud, se limpiará toda la EEPROM y el monitor reiniciará. ¿Deseas continuar?';
+      const mensaje = 'Se intentará reconectar a WiFi, pedir la baja durante 1 minuto y luego borrar la EEPROM. ¿Deseas continuar?';
       if (!confirm(mensaje)) return;
       fetch('/factory_reset', { method: 'POST' })
         .then(resp => resp.text().then(text => ({ ok: resp.ok, text })))
@@ -1940,18 +1960,6 @@ void handleRoot() {
           setTimeout(() => location.reload(), 1200);
         })
         .catch(() => alert('No se pudo solicitar el reinicio de fábrica.'));
-    }
-
-    function confirmBajaMonitor() {
-      const mensaje = 'Se enviará baja/0/solicitud y se borrará toda la configuración guardada. ¿Continuar?';
-      if (!confirm(mensaje)) return;
-      fetch('/baja_monitor', { method: 'POST' })
-        .then(resp => resp.text().then(text => ({ ok: resp.ok, text })))
-        .then(result => {
-          alert(result.text || 'Solicitud de baja procesada.');
-          setTimeout(() => location.reload(), 1200);
-        })
-        .catch(() => alert('No se pudo procesar la baja del monitor.'));
     }
 
     function validateUserForm(event) {
@@ -2442,42 +2450,142 @@ void handleSetID() {
   }
 }
 
+String horaLegibleCorta() {
+  time_t ahora = time(nullptr);
+  if (ahora < 1000) {
+    return "hora no disponible";
+  }
+  struct tm *tiempo = localtime(&ahora);
+  char buffer[16];
+  strftime(buffer, sizeof(buffer), "%H:%M:%S", tiempo);
+  return String(buffer);
+}
+
+void mostrarMensajeFactory(const String &l1, const String &l2, const String &l3) {
+  if (!displayReady) return;
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println(l1);
+  if (l2.length() > 0) {
+    display.setCursor(0, 16);
+    display.println(l2);
+  }
+  if (l3.length() > 0) {
+    display.setCursor(0, 32);
+    display.println(l3);
+  }
+  display.display();
+}
+
+void iniciarFlujoFactoryReset() {
+  detenerConfiguracionWiFi();
+  factoryResetEnProceso = true;
+  factoryResetStage = FACTORY_BUSCANDO_WIFI;
+  factoryWifiDeadline = millis() + FACTORY_WIFI_TIMEOUT;
+  factoryConfirmDeadline = 0;
+  horaConfirmacionBaja = "";
+  ultimoIntentoWifiFactory = 0;
+
+  mostrarMensajeFactory("Conectando el", "dispositivo a WiFi", "esperando red...");
+  attemptReconnectToAllNetworks();
+}
+
+void manejarFlujoFactoryReset() {
+  if (!factoryResetEnProceso) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    client.loop();
+  }
+
+  switch (factoryResetStage) {
+    case FACTORY_BUSCANDO_WIFI: {
+      if (WiFi.status() != WL_CONNECTED) {
+        if (millis() - ultimoIntentoWifiFactory > FACTORY_WIFI_RETRY) {
+          ultimoIntentoWifiFactory = millis();
+          attemptReconnectToAllNetworks();
+          mostrarMensajeFactory("Conectando el", "dispositivo a WiFi", "reintentando...");
+        }
+        if (millis() > factoryWifiDeadline) {
+          mostrarMensajeFactory("No se pudo dar", "de baja", "borra manualmente");
+          clearEEPROM();
+          reinicioSolicitado = true;
+          reinicioProgramado = millis() + 4000;
+          factoryResetStage = FACTORY_IDLE;
+          factoryResetEnProceso = false;
+          return;
+        }
+        return;
+      }
+
+      mostrarMensajeFactory("WiFi conectado", "Solicitando baja", "al servidor...");
+      factoryResetStage = FACTORY_SOLICITANDO_BAJA;
+      return;
+    }
+    case FACTORY_SOLICITANDO_BAJA: {
+      if (WiFi.status() == WL_CONNECTED && !client.connected()) {
+        reconnect();
+      }
+      bool enviado = solicitarBajaMonitorMQTT();
+      if (enviado) {
+        factoryResetStage = FACTORY_ESPERANDO_CONFIRMACION;
+        factoryConfirmDeadline = millis() + FACTORY_BAJA_TIMEOUT;
+        mostrarMensajeFactory("Solicitando baja", "al servidor...", "esperando confirmación");
+      } else {
+        if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+          factoryResetStage = FACTORY_BUSCANDO_WIFI;
+          return;
+        }
+        mostrarMensajeFactory("No se pudo enviar", "la baja por WiFi", "borra manualmente");
+        clearEEPROM();
+        reinicioSolicitado = true;
+        reinicioProgramado = millis() + 4000;
+        factoryResetStage = FACTORY_IDLE;
+        factoryResetEnProceso = false;
+      }
+      return;
+    }
+    case FACTORY_ESPERANDO_CONFIRMACION: {
+      unsigned long restante = (factoryConfirmDeadline > millis()) ? (factoryConfirmDeadline - millis()) / 1000 : 0;
+      String linea3 = "tiempo: " + String(restante) + "s";
+      mostrarMensajeFactory("Esperando baja", "del servidor...", linea3);
+
+      if (factoryConfirmDeadline > 0 && millis() > factoryConfirmDeadline) {
+        mostrarMensajeFactory("Sin confirmación", "Continuando borrado", "manual obligatorio");
+        clearEEPROM();
+        reinicioSolicitado = true;
+        reinicioProgramado = millis() + 4000;
+        factoryResetStage = FACTORY_IDLE;
+        factoryResetEnProceso = false;
+      }
+      return;
+    }
+    case FACTORY_CONFIRMADA: {
+      String linea2 = "Hora: " + horaConfirmacionBaja;
+      mostrarMensajeFactory("Dado de baja", linea2, "Reiniciando...");
+      clearEEPROM();
+      reinicioSolicitado = true;
+      reinicioProgramado = millis() + 3000;
+      factoryResetStage = FACTORY_IDLE;
+      factoryResetEnProceso = false;
+      return;
+    }
+    case FACTORY_FALLO_WIFI:
+    case FACTORY_IDLE:
+    default:
+      return;
+  }
+}
+
 void handleFactoryReset() {
-  portalEnUso = true;
-  wifiConfigInProgress = true;
-  forceAPMode = true;
-  apMode = true;
-  portalPantallaFija = true;
-
-  bool mqttEnviado = solicitarBajaMonitorMQTT();
-
-  clearEEPROM();
-  reinicioSolicitado = true;
-  reinicioProgramado = millis() + 2000;
-
-  String respuesta = mqttEnviado
-                        ? "Reinicio solicitado: baja enviada y datos borrados."
-                        : "Reinicio solicitado: datos borrados. No se pudo enviar baja (MQTT/WiFi).";
-  server.send(200, "text/plain", respuesta);
+  server.send(200, "text/plain", "Reseteo solicitado: se intentará reconectar para pedir la baja y borrar datos.");
+  iniciarFlujoFactoryReset();
 }
 
 void handleBajaMonitor() {
-  portalEnUso = true;
-  wifiConfigInProgress = true;
-  forceAPMode = true;
-  apMode = true;
-  portalPantallaFija = true;
-
-  bool mqttEnviado = solicitarBajaMonitorMQTT();
-
-  clearEEPROM();
-  reinicioSolicitado = true;
-  reinicioProgramado = millis() + 2000;
-
-  String respuesta = mqttEnviado
-                        ? "Solicitud de baja enviada y datos borrados."
-                        : "Datos borrados. No se pudo enviar la solicitud de baja (MQTT/WiFi sin conexión).";
-  server.send(200, "text/plain", respuesta);
+  server.send(410, "text/plain", "La baja directa fue deshabilitada. Usa el reseteo de fábrica para solicitarla.");
 }
 
 
@@ -2948,9 +3056,14 @@ if (strcmp(topic, "baja/0/confirmacion/") == 0) {
     if (estado == "eliminado" || estado == "baja" || estado == "confirmado") {
       Serial.println("✅ Baja MQTT del monitor confirmada; limpiando y reiniciando");
       bajaMonitorEsperandoConfirmacion = false;
-      clearEEPROM();
-      reinicioSolicitado = true;
-      reinicioProgramado = millis() + 2000;
+      if (factoryResetEnProceso) {
+        horaConfirmacionBaja = horaLegibleCorta();
+        factoryResetStage = FACTORY_CONFIRMADA;
+      } else {
+        clearEEPROM();
+        reinicioSolicitado = true;
+        reinicioProgramado = millis() + 2000;
+      }
     } else {
       Serial.printf("⚠️ Estado de baja del monitor no reconocido: %s\n", estado.c_str());
     }
@@ -5110,6 +5223,11 @@ Serial.println("Setup completado");
 void loop() {
 
   manejarBotonWifi();
+
+  if (factoryResetEnProceso) {
+    manejarFlujoFactoryReset();
+    return;
+  }
 
   // Si el portal está activo, dedicamos el ciclo completo a atenderlo y evitamos reinicios
   bool apActivo = (WiFi.getMode() & WIFI_MODE_AP) || apMode || forceAPMode;
