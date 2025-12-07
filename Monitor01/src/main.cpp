@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 84 - 2025-06-01 Corrección: el modo AP automático se bloquea tras reinicio si no hay redes guardadas; solo se activa con el botón o al fallar redes existentes.
 // 83 - 2025-05-31 Consecutivo en español: se anuncia en consola la versión activa y su resumen breve.
 // 82 - 2025-05-30 Flujo guiado de reseteo de fábrica: intenta reconectar WiFi, pide baja MQTT por 1 minuto,
 //      muestra resultado en español con hora y luego borra EEPROM antes de reiniciar.
@@ -196,8 +197,8 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 83;
-const char *RESUMEN_CONSECUTIVO = "Consecutivo activo en español";
+const uint16_t CONSECUTIVO_ACTUAL = 84;
+const char *RESUMEN_CONSECUTIVO = "Evita AP automático sin redes guardadas";
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -356,7 +357,7 @@ void reiniciarConfiguracionWiFi();
 void detenerConfiguracionWiFi();
 bool saveNetworksToEEPROM();
 bool loadNetworksFromEEPROM();
-void attemptReconnectToAllNetworks();
+bool attemptReconnectToAllNetworks();
 void handleSetID();
 void saveUserIDToEEPROM(const String& id);
 bool loadUserIDFromEEPROM();
@@ -2766,7 +2767,7 @@ void checkWiFiStatus() {
   }
 }
 
-void attemptReconnectToAllNetworks() {
+bool attemptReconnectToAllNetworks() {
   WiFi.mode(WIFI_STA);
   delay(100);
   
@@ -2797,7 +2798,7 @@ void attemptReconnectToAllNetworks() {
           Serial.println("\n✓ CONECTADO EXITOSAMENTE");
           Serial.print("IP: ");
           Serial.println(WiFi.localIP());
-          return;
+          return true;
         } else {
           Serial.println("\n✗ FALLO EN CONEXIÓN");
           checkWiFiStatus();  // ← DIAGNÓSTICO DETALLADO
@@ -2805,10 +2806,12 @@ void attemptReconnectToAllNetworks() {
       }
     }
   }
-  
+
   if (!hasNetworks) {
     Serial.println("No hay redes WiFi guardadas");
   }
+
+  return hasNetworks;
 }
 
 void debugNetworks() {
@@ -5414,17 +5417,26 @@ testLoRaPeriodico();
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("WiFi desconectado - Intentando reconexión...");
             wifiConectado = false;
-            attemptReconnectToAllNetworks();
+            bool redesDisponibles = attemptReconnectToAllNetworks();
 
             if (WiFi.status() != WL_CONNECTED) {
-                conteoReintentosWiFi++;
-                Serial.printf("Intento de reconexión fallido #%d\n", conteoReintentosWiFi);
-
-                if (conteoReintentosWiFi >= 3 && !forceAPMode) {
-                    Serial.println("⚠️  Sin WiFi tras 3 intentos. Activando portal AP para reconfigurar en español.");
-                    mostrarAvisoPortalAutomatico();
-                    reiniciarConfiguracionWiFi();
+                if (!redesDisponibles) {
                     conteoReintentosWiFi = 0;
+                    static unsigned long ultimoAvisoSinRedes = 0;
+                    if (millis() - ultimoAvisoSinRedes > 30000) {
+                        Serial.println("⚠️  No hay redes guardadas; se omite la activación automática del portal. Usa el botón WiFi para configurarlo.");
+                        ultimoAvisoSinRedes = millis();
+                    }
+                } else {
+                    conteoReintentosWiFi++;
+                    Serial.printf("Intento de reconexión fallido #%d\n", conteoReintentosWiFi);
+
+                    if (conteoReintentosWiFi >= 3 && !forceAPMode) {
+                        Serial.println("⚠️  Sin WiFi tras 3 intentos. Activando portal AP para reconfigurar en español.");
+                        mostrarAvisoPortalAutomatico();
+                        reiniciarConfiguracionWiFi();
+                        conteoReintentosWiFi = 0;
+                    }
                 }
             }
         } else if (!wifiConectado) {
