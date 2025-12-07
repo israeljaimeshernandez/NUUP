@@ -32,6 +32,8 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 81 - 2025-05-29 Corrección: al fallar 3 reintentos de WiFi se activa el portal AP automáticamente
+//      mostrando aviso en pantalla en español para permitir reconfiguración inmediata.
 // 80 - 2025-05-28 Ajuste: el check "ya estoy registrado" oculta y bloquea los datos de usuario
 //      desde que carga la página y en cada cambio, evitando cualquier captura mientras esté activo.
 // 79 - 2025-05-28 Ajuste: si el usuario marca "ya estoy registrado" los campos de nombre/teléfono/
@@ -431,6 +433,7 @@ struct Dispositivo {
 
 // Variables de estado
 bool wifiConectado = false;
+int conteoReintentosWiFi = 0;
 
 // Datos de ejemplo
 Dispositivo dispositivos[] = {
@@ -555,6 +558,7 @@ void setWifiStatus(bool conectado);
 void dibujarWifiAnimado(int centroX, int centroY, int frame);
 void mostrarConexionWifi();
 void mostrarWifiInicioTemporal();
+void mostrarAvisoPortalAutomatico();
 void iniciarAnimacionWifi();
 void detenerAnimacionWifi();
 void conectarWifi();
@@ -4445,6 +4449,20 @@ void mostrarWifiInicioTemporal() {
   }
 }
 
+void mostrarAvisoPortalAutomatico() {
+  if (!displayReady) return;
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("⚠️  Sin WiFi estable");
+  display.println("Se habilita portal AP");
+  display.println(AP_SSID);
+  display.println("Configura redes");
+  display.display();
+}
+
 // Función para iniciar animación WiFi
 void iniciarAnimacionWifi() {
   animandoWifi = true;
@@ -5250,14 +5268,29 @@ testLoRaPeriodico();
     static unsigned long lastWifiCheck = 0;
     if (millis() - lastWifiCheck > 10000) { // Cada 10 segundos
         lastWifiCheck = millis();
-        
+
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("WiFi desconectado - Intentando reconexión...");
             wifiConectado = false;
             attemptReconnectToAllNetworks();
+
+            if (WiFi.status() != WL_CONNECTED) {
+                conteoReintentosWiFi++;
+                Serial.printf("Intento de reconexión fallido #%d\n", conteoReintentosWiFi);
+
+                if (conteoReintentosWiFi >= 3 && !forceAPMode) {
+                    Serial.println("⚠️  Sin WiFi tras 3 intentos. Activando portal AP para reconfigurar en español.");
+                    mostrarAvisoPortalAutomatico();
+                    reiniciarConfiguracionWiFi();
+                    conteoReintentosWiFi = 0;
+                }
+            }
         } else if (!wifiConectado) {
             Serial.println("WiFi reconectado exitosamente");
             wifiConectado = true;
+            conteoReintentosWiFi = 0;
+        } else {
+            conteoReintentosWiFi = 0;
         }
     }
 
