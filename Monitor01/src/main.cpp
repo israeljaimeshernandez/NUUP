@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 83 - 2025-05-31 Consecutivo en español: se anuncia en consola la versión activa y su resumen breve.
 // 82 - 2025-05-30 Flujo guiado de reseteo de fábrica: intenta reconectar WiFi, pide baja MQTT por 1 minuto,
 //      muestra resultado en español con hora y luego borra EEPROM antes de reiniciar.
 // 81 - 2025-05-29 Corrección: al fallar 3 reintentos de WiFi se activa el portal AP automáticamente
@@ -193,6 +194,10 @@
 #define USER_PHONE_MAX_LEN 24
 #define USER_EMAIL_MAX_LEN 64
 #define USER_PASS_MAX_LEN 32
+
+// Indicador consecutivo del firmware
+const uint16_t CONSECUTIVO_ACTUAL = 83;
+const char *RESUMEN_CONSECUTIVO = "Consecutivo activo en español";
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -400,6 +405,7 @@ void recepcion_lora();
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
+void anunciarConsecutivo();
 
 // AGREGAR estas declaraciones:
 int contarDispositivosRegistrados();
@@ -2459,6 +2465,22 @@ String horaLegibleCorta() {
   char buffer[16];
   strftime(buffer, sizeof(buffer), "%H:%M:%S", tiempo);
   return String(buffer);
+}
+
+void anunciarConsecutivo() {
+  Serial.printf("📑 Consecutivo %d: %s\n", CONSECUTIVO_ACTUAL, RESUMEN_CONSECUTIVO);
+
+  if (!displayReady) return;
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Consecutivo " + String(CONSECUTIVO_ACTUAL));
+  display.setCursor(0, 16);
+  display.println(RESUMEN_CONSECUTIVO);
+  display.display();
+  delay(600);
 }
 
 void mostrarMensajeFactory(const String &l1, const String &l2, const String &l3) {
@@ -5039,6 +5061,8 @@ void setup() {
   displayReady = true;
   Serial.println("OLED inicializado correctamente");
   display.setTextColor(SSD1306_WHITE);
+
+  anunciarConsecutivo();
 
     // 11. Inicializar BLE
     iniciarBLE();
