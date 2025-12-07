@@ -1929,10 +1929,25 @@ void handleRoot() {
     }
 
     function deleteDevice(mac) {
-      if (confirm('¿Eliminar este dispositivo?')) {
-        fetch('/delete_device', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'mac=' + encodeURIComponent(mac) })
-          .then(response => { if (response.ok) location.reload(); });
-      }
+      if (!confirm('¿Eliminar este dispositivo?')) return;
+
+      fetch('/delete_device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'mac=' + encodeURIComponent(mac)
+      })
+      .then(async response => {
+        const message = await response.text();
+        if (response.ok) {
+          alert('Dispositivo eliminado: ' + message);
+          location.reload();
+        } else {
+          alert('No se pudo eliminar: ' + message);
+        }
+      })
+      .catch(err => {
+        alert('Error al eliminar: ' + err);
+      });
     }
 
     function toggleUserFields() {
