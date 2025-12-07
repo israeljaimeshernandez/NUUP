@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 90 - 2025-06-07 Corrección: tras bajas solicitadas desde el portal AP se reconecta a WiFi/MQTT y se envía la solicitud de baja antes del reinicio, manteniendo la animación como en BLE.
 // 89 - 2025-06-06 Corrección: bajas marcadas cierran el portal sin reactivar AP, textos simplificados (usuario, bajas y reseteo) y guía de alcance movida a configuración inicial.
 // 88 - 2025-06-05 Corrección: la página AP permite marcar dispositivos para baja masiva al guardar, dispara el mismo flujo de baja que BLE antes del reinicio y documenta cómo ajustar el alcance BLE/WiFi.
 // 87 - 2025-06-04 Corrección: la baja solicitada desde el portal AP cierra el modo AP, reanuda WiFi y ejecuta el mismo ciclo que BLE (animación, solicitud MQTT y reinicio), sumando bitácora en español.
@@ -5563,6 +5564,27 @@ testLoRaPeriodico();
         } else if (faseAnimacion == 3) { // Aviso de reinicio y esperar reinicio programado
             mostrarMensajeReinicioBaja();
             // Mantener flags hasta reinicio
+        }
+
+        // Reforzar reconexión y reenvío de bajas MQTT aun durante animación (incluye bajas desde portal AP)
+        if (!apMode && !forceAPMode) {
+            if (WiFi.status() != WL_CONNECTED) {
+                attemptReconnectToAllNetworks();
+            }
+
+            if (WiFi.status() == WL_CONNECTED) {
+                if (!client.connected()) {
+                    reconnect();
+                }
+
+                client.loop();
+
+                if (client.connected()) {
+                    solicitarAltaMonitorMQTT();
+                    procesarAltasPendientes();
+                    procesarBajasPendientes();
+                }
+            }
         }
 
         return; // Salir del loop mientras se muestra animación/resultado
