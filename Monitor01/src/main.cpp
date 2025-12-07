@@ -32,6 +32,13 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 80 - 2025-05-28 Ajuste: el check "ya estoy registrado" oculta y bloquea los datos de usuario
+//      desde que carga la página y en cada cambio, evitando cualquier captura mientras esté activo.
+// 79 - 2025-05-28 Ajuste: si el usuario marca "ya estoy registrado" los campos de nombre/teléfono/
+//      password desaparecen por completo y no se pueden capturar mientras el check esté activo.
+// 78 - 2025-05-28 Corrección: el reinicio de fábrica también envía la baja MQTT con advertencia
+//      visual, manteniendo el estilo de botones NUUP01, y el portal ya no borra los campos de
+//      nombre/teléfono/password al alternar "ya estoy registrado".
 // 77 - 2025-05-27 Consecutivo: se documenta la integración de la baja del monitor con su
 //      confirmación MQTT, reteniendo la MAC enviada, limpiando EEPROM y reiniciando tras un
 //      estado válido, alineado con la bitácora de cambios.
@@ -1597,17 +1604,20 @@ void handleRoot() {
     userSection += "<p><small>Para cambiar de usuario, realiza un reinicio de fábrica.</small></p>";
   } else {
     String checked = userFlagRegistrado ? " checked" : "";
+    String newUserFieldsStyle = userFlagRegistrado ? " style='display:none;'" : "";
+    String extraDisabled = userFlagRegistrado ? " disabled" : "";
+    String extraRequired = userFlagRegistrado ? "" : " required";
     userSection += "<p class='hint'>Marca si el usuario ya existe para buscar solo por correo. Si es nuevo, captura todos los campos.</p>";
     userSection += "<label class='combo-label'><input type='checkbox' id='userRegistered' name='user_registered' value='1'" + checked + " onchange=\"toggleUserFields()\"> Ya estoy registrado</label>";
     userSection += "<label for='correoInput'>Correo</label>";
     userSection += "<input id='correoInput' type='email' name='correo' placeholder='correo@ejemplo.com' required" + correoAttr + ">";
-    userSection += "<div id='newUserFields' class='user-extra-fields'>";
+    userSection += "<div id='newUserFields' class='user-extra-fields'" + newUserFieldsStyle + ">";
     userSection += "  <label for='nombreInput'>Nombre</label>";
-    userSection += "  <input id='nombreInput' type='text' name='nombre' placeholder='Nombre completo'" + nombreAttr + ">";
+    userSection += "  <input id='nombreInput' type='text' name='nombre' placeholder='Nombre completo'" + nombreAttr + extraDisabled + extraRequired + ">";
     userSection += "  <label for='telefonoInput'>Teléfono</label>";
-    userSection += "  <input id='telefonoInput' type='tel' name='telefono' placeholder='Teléfono'" + telefonoAttr + ">";
+    userSection += "  <input id='telefonoInput' type='tel' name='telefono' placeholder='Teléfono'" + telefonoAttr + extraDisabled + extraRequired + ">";
     userSection += "  <label for='passUserInput'>Password</label>";
-    userSection += "  <input id='passUserInput' type='password' name='pass_usuario' placeholder='Contraseña'" + passAttr + ">";
+    userSection += "  <input id='passUserInput' type='password' name='pass_usuario' placeholder='Contraseña'" + passAttr + extraDisabled + extraRequired + ">";
     userSection += "</div>";
     userSection += "<hr>";
   }
@@ -1619,9 +1629,9 @@ void handleRoot() {
   actionsSection += "  <div class='action-text'><div class='icon-badge'>🛑</div><div><strong>Dar de baja el monitor</strong><br><small>Enviará baja/0/solicitud y borrará todo el registro guardado.</small></div></div>";
   actionsSection += "  <button type='button' class='danger-btn' onclick=\"confirmBajaMonitor()\">Dar de baja dispositivo</button>";
   actionsSection += "</div>";
-  actionsSection += "<div class='action-card neutral-card'>";
-  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reinicio de fábrica</strong><br><small>Limpia completamente la EEPROM con la misma apariencia que Nuup01.</small></div></div>";
-  actionsSection += "  <button type='button' class='secondary-btn' onclick=\"factoryReset()\">Reseteo de fábrica</button>";
+  actionsSection += "<div class='action-card alert-card'>";
+  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reinicio de fábrica</strong><br><small>Enviará baja/0/solicitud, limpiará la EEPROM y reiniciará el monitor.</small></div></div>";
+  actionsSection += "  <button type='button' class='danger-btn' onclick=\"factoryReset()\">Reseteo de fábrica</button>";
   actionsSection += "</div>";
   actionsSection += "</div>";
 
@@ -1904,23 +1914,28 @@ void handleRoot() {
         if (el) {
           el.required = !hideExtras;
           el.disabled = hideExtras;
-          el.classList.toggle('locked', hideExtras);
           if (hideExtras) {
             el.value = '';
           }
+          el.classList.toggle('locked', hideExtras);
         }
       });
     }
 
+    document.addEventListener('DOMContentLoaded', () => {
+      toggleUserFields();
+    });
+
     function factoryReset() {
-      if (!confirm('Se borrará toda la EEPROM y el monitor reiniciará. ¿Seguro que deseas hacer un reinicio de fábrica?')) return;
+      const mensaje = 'Se enviará baja/0/solicitud, se limpiará toda la EEPROM y el monitor reiniciará. ¿Deseas continuar?';
+      if (!confirm(mensaje)) return;
       fetch('/factory_reset', { method: 'POST' })
-        .then(resp => {
-          if (resp.ok) {
-            alert('Reinicio de fábrica solicitado. El equipo se reiniciará.');
-            setTimeout(() => location.reload(), 1200);
-          }
-        });
+        .then(resp => resp.text().then(text => ({ ok: resp.ok, text })))
+        .then(result => {
+          alert(result.text || 'Reinicio de fábrica solicitado. El equipo se reiniciará.');
+          setTimeout(() => location.reload(), 1200);
+        })
+        .catch(() => alert('No se pudo solicitar el reinicio de fábrica.'));
     }
 
     function confirmBajaMonitor() {
@@ -2424,10 +2439,22 @@ void handleSetID() {
 }
 
 void handleFactoryReset() {
+  portalEnUso = true;
+  wifiConfigInProgress = true;
+  forceAPMode = true;
+  apMode = true;
+  portalPantallaFija = true;
+
+  bool mqttEnviado = solicitarBajaMonitorMQTT();
+
   clearEEPROM();
-  server.send(200, "text/plain", "OK");
-  delay(300);
-  ESP.restart();
+  reinicioSolicitado = true;
+  reinicioProgramado = millis() + 2000;
+
+  String respuesta = mqttEnviado
+                        ? "Reinicio solicitado: baja enviada y datos borrados."
+                        : "Reinicio solicitado: datos borrados. No se pudo enviar baja (MQTT/WiFi).";
+  server.send(200, "text/plain", respuesta);
 }
 
 void handleBajaMonitor() {
