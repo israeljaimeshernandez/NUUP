@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 86 - 2025-06-03 Corrección: el portal AP solo se abre con el botón WiFi; la pantalla inicial resume red guardada, registro MQTT y sensores.
 // 85 - 2025-06-02 Ajuste portal y bajas: usuario fijo por correo, reseteo de fábrica al final y bajas vía botón/BLE con animación y solicitud MQTT.
 // 84 - 2025-06-01 Corrección: el modo AP automático se bloquea tras reinicio si no hay redes guardadas; solo se activa con el botón o al fallar redes existentes.
 // 83 - 2025-05-31 Consecutivo en español: se anuncia en consola la versión activa y su resumen breve.
@@ -198,8 +199,8 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 85;
-const char *RESUMEN_CONSECUTIVO = "Evita AP automático sin redes guardadas";
+const uint16_t CONSECUTIVO_ACTUAL = 86;
+const char *RESUMEN_CONSECUTIVO = "Portal AP solo con botón y resumen inicial de estado";
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -2507,17 +2508,33 @@ String horaLegibleCorta() {
 void anunciarConsecutivo() {
   Serial.printf("📑 Consecutivo %d: %s\n", CONSECUTIVO_ACTUAL, RESUMEN_CONSECUTIVO);
 
+  // El consecutivo solo se documenta en consola para evitar ocupar la pantalla inicial
+}
+
+void mostrarResumenEstadoInicial() {
   if (!displayReady) return;
+
+  bool tieneRedGuardada = false;
+  for (int i = 0; i < MAX_NETWORKS; i++) {
+    if (savedNetworks[i].ssid.length() > 0) {
+      tieneRedGuardada = true;
+      break;
+    }
+  }
+
+  int sensoresRegistrados = contarDispositivosRegistrados();
 
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Consecutivo " + String(CONSECUTIVO_ACTUAL));
+  display.println(String("Red guardada: ") + (tieneRedGuardada ? "SI" : "NO"));
   display.setCursor(0, 16);
-  display.println(RESUMEN_CONSECUTIVO);
+  display.println(String("MQTT registrado: ") + (mqttConfirmed ? "SI" : "NO"));
+  display.setCursor(0, 32);
+  display.print("Sensores: ");
+  display.println(sensoresRegistrados);
   display.display();
-  delay(600);
 }
 
 void mostrarMensajeFactory(const String &l1, const String &l2, const String &l3) {
@@ -4631,9 +4648,9 @@ void mostrarAvisoPortalAutomatico() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   display.println("⚠️  Sin WiFi estable");
-  display.println("Se habilita portal AP");
-  display.println(AP_SSID);
-  display.println("Configura redes");
+  display.println("Pulsa el boton WiFi");
+  display.println("para abrir el portal");
+  display.println("y configurar redes");
   display.display();
 }
 
@@ -5273,6 +5290,8 @@ if (solicitudAltaInicialEnviada && !mqttConfirmed) {
   Serial.println("Estado MQTT: Solicitud de alta inicial ya enviada, en espera de confirmación");
 }
 
+  mostrarResumenEstadoInicial();
+
 Serial.println("Setup completado");
 
 //testWiFiConnection();
@@ -5468,9 +5487,8 @@ testLoRaPeriodico();
                     Serial.printf("Intento de reconexión fallido #%d\n", conteoReintentosWiFi);
 
                     if (conteoReintentosWiFi >= 3 && !forceAPMode) {
-                        Serial.println("⚠️  Sin WiFi tras 3 intentos. Activando portal AP para reconfigurar en español.");
+                        Serial.println("⚠️  Sin WiFi tras 3 intentos. Usa el botón WiFi para abrir el portal de configuración.");
                         mostrarAvisoPortalAutomatico();
-                        reiniciarConfiguracionWiFi();
                         conteoReintentosWiFi = 0;
                     }
                 }
