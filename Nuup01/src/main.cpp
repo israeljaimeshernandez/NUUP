@@ -39,6 +39,8 @@
 //      (rebote), IMPACTO_VENTANA_MS (ventana de conteo), IMPACTO_MUESTRAS_BASE
 //      (línea base) y los límites IMPACTO_MIN_TOQUES/IMPACTO_MAX_TOQUES según
 //      la respuesta del hardware.
+// 05 - 2025-06-05 Ajuste: consecutivo con variable de cercanía BLE ajustable,
+//      detalle de alcance WiFi/AP al crear la red y guía en español para reducir o aumentar cobertura.
 // 04 - 2025-06-04 Límite de emparejamiento BLE a ~5cm: se exige RSSI cercano,
 //      se imprime el alcance y se refuerza la bitácora en español.
 // 03 - 2025-05-26 Ventana de vigilia por impacto ahora configurable (1 minuto
@@ -158,7 +160,7 @@ bool doConnect = false;
 bool comandoPendiente = false;
 String targetDeviceName = "NUUP_Monitor";
 BLEAdvertisedDevice* myDevice;
-const int RSSI_MIN_APAREAMIENTO = -45; // dBm necesarios para estar a ~5 cm
+int RSSI_MIN_APAREAMIENTO = -45; // dBm necesarios para estar a ~5 cm (ajustable)
 
 String macRegistrada = "";
 bool esperandoDatosConfig = false;
@@ -454,7 +456,8 @@ void configurarWiFiAP() {
     
     // Configurar alcance mínimo por defecto (1 metro)
     configurarAlcanceWiFi(1);
-    
+    Serial.printf("ℹ️  Alcance AP actual: %d m (potencia %d dBm). Ajusta alcanceWiFiMaximo o llama configurarAlcanceWiFi() para modificarlo.\n", alcanceWiFiMaximo, potenciaTxWiFi);
+
     bool apStatus = WiFi.softAP(ssidAP, passwordAP);
     
     if (apStatus) {
@@ -609,7 +612,8 @@ void mostrarPaginaConfig() {
 <body>
     <div class="container">
         <h2>🔧 Configurar Dispositivo</h2>
-        
+        <p>Alcance AP: )=====" + String(alcanceWiFiMaximo) + R"=====( m (TX )=====" + String(potenciaTxWiFi) + R"=====( dBm). Ajusta alcanceWiFiMaximo/configurarAlcanceWiFi() para variar. BLE cercano si RSSI ≥ )=====" + String(RSSI_MIN_APAREAMIENTO) + R"=====( dBm.</p>
+
         <form action="/guardar" method="post" id="config-form">
             <input type="text" name="nombre" value=")=====" + String(dispositivo.nombre) + R"=====(" placeholder="Nombre del dispositivo" required>
             <input type="number" name="altura" value=")=====" + String(dispositivo.altura) + R"=====(" placeholder="Altura total (cm)" required>
@@ -1011,6 +1015,7 @@ void scanForDevices() {
     Serial.printf("   - Duración: 4 segundos\n");
     Serial.printf("   - Potencia: Máxima\n");
     Serial.printf("   - Emparejamiento solo si RSSI >= %d dBm (equivalente a ~5 cm)\n", RSSI_MIN_APAREAMIENTO);
+    Serial.println("   - Ajusta RSSI_MIN_APAREAMIENTO para acercar o alejar el rango BLE");
     Serial.println("   ═══════════════════════════════════");
     
     // Reiniciar flags

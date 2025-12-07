@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 88 - 2025-06-05 Corrección: la página AP permite marcar dispositivos para baja masiva al guardar, dispara el mismo flujo de baja que BLE antes del reinicio y documenta cómo ajustar el alcance BLE/WiFi.
 // 87 - 2025-06-04 Corrección: la baja solicitada desde el portal AP cierra el modo AP, reanuda WiFi y ejecuta el mismo ciclo que BLE (animación, solicitud MQTT y reinicio), sumando bitácora en español.
 // 86 - 2025-06-03 Corrección: el portal AP solo se abre con el botón WiFi; la pantalla inicial resume red guardada, registro MQTT y sensores.
 // 85 - 2025-06-02 Ajuste portal y bajas: usuario fijo por correo, reseteo de fábrica al final y bajas vía botón/BLE con animación y solicitud MQTT.
@@ -314,6 +315,11 @@ bool bajaMonitorEsperandoConfirmacion = false; // true cuando se envió baja/0/s
 unsigned long inicioEsperaBajaMonitor = 0;     // inicio de ventana de confirmación de baja del monitor
 String ultimaMacMonitorBaja = "";             // MAC usada en la última solicitud de baja para validar confirmación
 bool registroMonitorEEPROM = false;  // Bandera de registro general (no se confunde con activo de dispositivos)
+esp_power_level_t POTENCIA_BLE_MONITOR = ESP_PWR_LVL_N12; // Ajusta alcance BLE (eleva para más distancia)
+int RSSI_MIN_APAREAMIENTO_MONITOR = -45; // dBm objetivo (~5 cm) si se habilita proximidad por RSSI
+int alcanceWiFiAPMetrosMonitor = 5;   // Alcance estimado del AP en metros (ajustable)
+int potenciaTxWiFiAPMonitor = 11;     // dBm aplicados al AP según el alcance deseado
+wifi_power_t potenciaWiFiAPMonitor = WIFI_POWER_11dBm; // Potencia WiFi usada al iniciar el AP
 
 
 // Estructura para almacenar credenciales WIFFI
@@ -356,6 +362,7 @@ void handleDeleteNetwork();
 void handleSelectNetwork();
 void handleDeleteDevice();
 void handleBajaMonitor();
+bool iniciarBajaPortal(const String &mac);
 void reiniciarConfiguracionWiFi();
 void detenerConfiguracionWiFi();
 bool saveNetworksToEEPROM();
@@ -861,8 +868,8 @@ bool estaCerca() {
     // ⚠️ SOLUCIÓN TEMPORAL: Usar potencia BLE reducida en lugar de RSSI
     // La potencia ya está configurada en ESP_PWR_LVL_N12 (-12dBm)
     // Esto limita físicamente el alcance a ~5cm
-    
-    Serial.println("✅ Verificación de proximidad por potencia BLE reducida");
+
+    Serial.printf("✅ Verificación de proximidad por potencia BLE reducida (objetivo >= %d dBm si se activa RSSI)\n", RSSI_MIN_APAREAMIENTO_MONITOR);
     return true;
 }
 
@@ -1106,12 +1113,14 @@ void handleUnregistration(BLECharacteristic *pCharacteristic, const String &comm
 
 void iniciarBLE() {
     Serial.println("🔵 Iniciando BLE para 5cm de distancia...");
-    
+
     BLEDevice::init("NUUP_Monitor");
-    
-    // ⚡ CONFIGURACIÓN CLAVE: Potencia mínima de transmisión
-    BLEDevice::setPower(ESP_PWR_LVL_N12); // Potencia mínima (-12dBm)
-    
+
+    // ⚡ CONFIGURACIÓN CLAVE: Potencia de transmisión ajustable
+    BLEDevice::setPower(POTENCIA_BLE_MONITOR); // Ajusta POTENCIA_BLE_MONITOR para acercar/alejar
+    Serial.printf("📡 Potencia BLE del monitor: nivel %d (incrementa para más alcance, reduce para más cercanía)\n",
+                  POTENCIA_BLE_MONITOR);
+
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -1378,6 +1387,35 @@ void detenerConfiguracionWiFi() {
   WiFi.mode(WIFI_STA);
 }
 
+void configurarAlcanceWiFiAPMonitor(int metros) {
+  alcanceWiFiAPMetrosMonitor = metros;
+
+  switch (metros) {
+    case 1:
+      potenciaWiFiAPMonitor = WIFI_POWER_2dBm;
+      potenciaTxWiFiAPMonitor = 2;
+      break;
+    case 2:
+      potenciaWiFiAPMonitor = WIFI_POWER_5dBm;
+      potenciaTxWiFiAPMonitor = 5;
+      break;
+    case 10:
+      potenciaWiFiAPMonitor = WIFI_POWER_17dBm;
+      potenciaTxWiFiAPMonitor = 17;
+      break;
+    case 5:
+    default:
+      potenciaWiFiAPMonitor = WIFI_POWER_11dBm;
+      potenciaTxWiFiAPMonitor = 11;
+      break;
+  }
+
+  WiFi.setTxPower(potenciaWiFiAPMonitor);
+  Serial.printf("📶 AP Monitor01 - Alcance estimado: %d m | Potencia TX: %d dBm. Ajusta alcanceWiFiAPMetrosMonitor para cambiarlo.\n",
+                alcanceWiFiAPMetrosMonitor,
+                potenciaTxWiFiAPMonitor);
+}
+
 void registrarRutasPortal() {
   server.on("/", HTTP_ANY, handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
@@ -1405,6 +1443,7 @@ void startAPMode() {
   WiFi.softAPdisconnect(true);
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_AP_STA);
+  configurarAlcanceWiFiAPMonitor(alcanceWiFiAPMetrosMonitor);
   WiFi.softAP(AP_SSID, AP_PASS);
   dnsServer.start(53, "*", WiFi.softAPIP());
 
@@ -1618,7 +1657,7 @@ void handleRoot() {
       }
       devicesList += "<div class='network-item device-item'>";
       devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
-      devicesList += "<button type=\\\"button\\\" onclick=\\\"deleteDevice('" + escapeForJS(mac) + "')\\\">Eliminar</button>";
+      devicesList += "<label class='device-select'><input type='checkbox' name='baja_mac' value='" + escapeForHTMLAttr(mac) + "'> Seleccionar para dar de baja</label>";
       devicesList += "</div>";
     }
   }
@@ -1839,6 +1878,17 @@ void handleRoot() {
       justify-content: space-between;
       gap: 10px;
     }
+    .device-select {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #FFD700;
+      font-size: 14px;
+    }
+    .device-select input {
+      width: auto;
+      margin: 0;
+    }
     .device-info {
       display: flex;
       flex-direction: column;
@@ -1927,28 +1977,6 @@ void handleRoot() {
         fetch('/delete', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'index=' + index })
           .then(response => { if (response.ok) location.reload(); });
       }
-    }
-
-    function deleteDevice(mac) {
-      if (!confirm('¿Eliminar este dispositivo?')) return;
-
-      fetch('/delete_device', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'mac=' + encodeURIComponent(mac)
-      })
-      .then(async response => {
-        const message = await response.text();
-        if (response.ok) {
-          alert('Dispositivo eliminado: ' + message);
-          location.reload();
-        } else {
-          alert('No se pudo eliminar: ' + message);
-        }
-      })
-      .catch(err => {
-        alert('Error al eliminar: ' + err);
-      });
     }
 
     function toggleUserFields() {
@@ -2096,6 +2124,8 @@ void handleRoot() {
 
 
   html += "<form id='configForm' action='/finalizar' method='POST' novalidate>";
+  html += "<p class='hint'>Alcance AP actual: " + String(alcanceWiFiAPMetrosMonitor) + " m (TX " + String(potenciaTxWiFiAPMonitor) + " dBm). Ajusta alcanceWiFiAPMetrosMonitor en el código para acercar o alejar la cobertura.</p>";
+  html += "<p class='hint'>Emparejamiento BLE cercano (~5 cm): ajusta POTENCIA_BLE_MONITOR o RSSI_MIN_APAREAMIENTO_MONITOR para modificar el rango.</p>";
   html += userSection;
   html += R"=====(
     <div class="network-list">
@@ -2124,6 +2154,7 @@ void handleRoot() {
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
   )=====";
+  html += "<p class='hint'>Marca los dispositivos con \"Seleccionar para dar de baja\" y luego guarda configuración; se ejecutará la misma baja que BLE antes de reiniciar.</p>";
   html += devicesList;
   html += R"=====(
     </div>
@@ -2232,6 +2263,19 @@ void handleFinalizeConfig() {
   forceAPMode = true;
   apMode = true;
   portalPantallaFija = true;
+  bool cerrarAPTrasBajas = false;
+
+  String bajasMarcadas[MAX_DISPOSITIVOS];
+  int totalBajasMarcadas = 0;
+  for (int i = 0; i < server.args() && totalBajasMarcadas < MAX_DISPOSITIVOS; i++) {
+    if (server.argName(i) == "baja_mac") {
+      String macBaja = server.arg(i);
+      macBaja.trim();
+      if (macBaja.length() > 0) {
+        bajasMarcadas[totalBajasMarcadas++] = macBaja;
+      }
+    }
+  }
 
   auto liberarPortal = []() {
     portalEnUso = false;
@@ -2358,10 +2402,25 @@ void handleFinalizeConfig() {
       }
     }
   }
+
+  if (totalBajasMarcadas > 0) {
+    Serial.printf("🗑️ Baja solicitada desde portal para %d dispositivo(s). Se aplicará el mismo flujo que BLE antes del reinicio.\n", totalBajasMarcadas);
+    for (int i = 0; i < totalBajasMarcadas; i++) {
+      iniciarBajaPortal(bajasMarcadas[i]);
+    }
+    if (apMode || forceAPMode) {
+      Serial.println("🚪 Cerrando modo AP para completar las bajas vía WiFi/MQTT y retomar el ciclo normal antes del reinicio...");
+      cerrarAPTrasBajas = true;
+    }
+  }
   String redParaMensaje = redActual.length() > 0 ? redActual : "Sin red";
   mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 0, 5000);
 
   server.send(200, "text/html", "<html><body><h2>Configuración guardada</h2></body></html>");
+
+  if (cerrarAPTrasBajas) {
+    detenerConfiguracionWiFi();
+  }
 
   // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
   portalEnUso = false;
@@ -2427,6 +2486,34 @@ void prepararAnimacionBajaPortal(const String &macNormalizada, const ConfigDispo
   }
 }
 
+bool iniciarBajaPortal(const String &mac) {
+  String macNormalizada = normalizarMac(mac);
+  if (macNormalizada.isEmpty()) {
+    Serial.println("⚠️  Baja desde portal AP: MAC vacía");
+    return false;
+  }
+
+  int indice = obtenerIndiceDispositivo(macNormalizada);
+  ConfigDispositivo respaldo{};
+  if (indice >= 0) {
+    respaldo = configDispositivos[indice];
+    prepararAnimacionBajaPortal(macNormalizada, &respaldo);
+  } else {
+    Serial.println("⚠️  Baja desde portal AP: MAC no encontrada, se mostrará mensaje de error pero se cerrará el portal para reanudar el ciclo normal.");
+    solicitudBajaBLE = true;
+    ultimoNombreDispositivo = "No Registrado";
+    ultimosLitros = 0;
+    ultimaAltura = 0;
+    macBajaEnCurso = "";
+  }
+
+  bool eliminado = iniciarBajaDispositivo(macNormalizada);
+  if (!eliminado) {
+    Serial.printf("❌ No se pudo eliminar %s desde el portal\n", macNormalizada.c_str());
+  }
+  return eliminado;
+}
+
 void handleDeleteDevice() {
   if (userID.isEmpty() && userEmail.isEmpty()) {
     server.send(400, "text/plain", "Configura el usuario (correo) antes de borrar dispositivos");
@@ -2441,22 +2528,7 @@ void handleDeleteDevice() {
       return;
     }
 
-    String macNormalizada = normalizarMac(mac);
-    int indice = obtenerIndiceDispositivo(macNormalizada);
-    ConfigDispositivo respaldo{};
-    if (indice >= 0) {
-      respaldo = configDispositivos[indice];
-      prepararAnimacionBajaPortal(macNormalizada, &respaldo);
-    } else {
-      Serial.println("⚠️  Baja desde portal AP: MAC no encontrada, se mostrará mensaje de error pero se cerrará el portal para reanudar el ciclo normal.");
-      solicitudBajaBLE = true;
-      ultimoNombreDispositivo = "No Registrado";
-      ultimosLitros = 0;
-      ultimaAltura = 0;
-      macBajaEnCurso = "";
-    }
-
-    bool eliminado = iniciarBajaDispositivo(macNormalizada);
+    bool eliminado = iniciarBajaPortal(mac);
     if (eliminado) {
       server.send(200, "text/plain", "OK");
     } else {
