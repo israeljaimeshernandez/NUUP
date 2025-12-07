@@ -39,6 +39,7 @@
 //      (rebote), IMPACTO_VENTANA_MS (ventana de conteo), IMPACTO_MUESTRAS_BASE
 //      (línea base) y los límites IMPACTO_MIN_TOQUES/IMPACTO_MAX_TOQUES según
 //      la respuesta del hardware.
+// 06 - 2025-06-06 Corrección: textos de alcance movidos a configuración inicial, portal sin mensajes de alcance y consecutivo actualizado.
 // 05 - 2025-06-05 Ajuste: consecutivo con variable de cercanía BLE ajustable,
 //      detalle de alcance WiFi/AP al crear la red y guía en español para reducir o aumentar cobertura.
 // 04 - 2025-06-04 Límite de emparejamiento BLE a ~5cm: se exige RSSI cercano,
@@ -124,6 +125,10 @@ const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEP
 // --- Configuración WiFi AP ---
 const char* ssidAP = "NUUP01_Configuracion";
 const char* passwordAP = ""; // Sin contraseña
+
+// --- Alcances ajustables ---
+// BLE: RSSI_MIN_APAREAMIENTO controla la proximidad mínima (por defecto ~5 cm).
+// WiFi/AP: alcanceWiFiMaximo fija la cobertura objetivo en metros y potenciaTxWiFi define la fuerza de transmisión.
 
 // --- Variables WiFi ---
 int alcanceWiFiMaximo = 1; // metros
@@ -612,7 +617,7 @@ void mostrarPaginaConfig() {
 <body>
     <div class="container">
         <h2>🔧 Configurar Dispositivo</h2>
-        <p>Alcance AP: )=====" + String(alcanceWiFiMaximo) + R"=====( m (TX )=====" + String(potenciaTxWiFi) + R"=====( dBm). Ajusta alcanceWiFiMaximo/configurarAlcanceWiFi() para variar. BLE cercano si RSSI ≥ )=====" + String(RSSI_MIN_APAREAMIENTO) + R"=====( dBm.</p>
+        <p>Captura los datos del sensor y guarda la configuración.</p>
 
         <form action="/guardar" method="post" id="config-form">
             <input type="text" name="nombre" value=")=====" + String(dispositivo.nombre) + R"=====(" placeholder="Nombre del dispositivo" required>

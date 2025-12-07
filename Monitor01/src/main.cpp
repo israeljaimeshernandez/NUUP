@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 89 - 2025-06-06 Corrección: bajas marcadas cierran el portal sin reactivar AP, textos simplificados (usuario, bajas y reseteo) y guía de alcance movida a configuración inicial.
 // 88 - 2025-06-05 Corrección: la página AP permite marcar dispositivos para baja masiva al guardar, dispara el mismo flujo de baja que BLE antes del reinicio y documenta cómo ajustar el alcance BLE/WiFi.
 // 87 - 2025-06-04 Corrección: la baja solicitada desde el portal AP cierra el modo AP, reanuda WiFi y ejecuta el mismo ciclo que BLE (animación, solicitud MQTT y reinicio), sumando bitácora en español.
 // 86 - 2025-06-03 Corrección: el portal AP solo se abre con el botón WiFi; la pantalla inicial resume red guardada, registro MQTT y sensores.
@@ -315,6 +316,10 @@ bool bajaMonitorEsperandoConfirmacion = false; // true cuando se envió baja/0/s
 unsigned long inicioEsperaBajaMonitor = 0;     // inicio de ventana de confirmación de baja del monitor
 String ultimaMacMonitorBaja = "";             // MAC usada en la última solicitud de baja para validar confirmación
 bool registroMonitorEEPROM = false;  // Bandera de registro general (no se confunde con activo de dispositivos)
+// === Alcances ajustables ===
+// BLE monitor: POTENCIA_BLE_MONITOR controla la cercanía (N12 ≈ ~5 cm). Sube el nivel para más distancia.
+// Proximidad BLE: RSSI_MIN_APAREAMIENTO_MONITOR limita el emparejamiento a RSSI igual o mayor.
+// AP monitor: alcanceWiFiAPMetrosMonitor define la cobertura objetivo en metros y ajusta potenciaTxWiFiAPMonitor automáticamente.
 esp_power_level_t POTENCIA_BLE_MONITOR = ESP_PWR_LVL_N12; // Ajusta alcance BLE (eleva para más distancia)
 int RSSI_MIN_APAREAMIENTO_MONITOR = -45; // dBm objetivo (~5 cm) si se habilita proximidad por RSSI
 int alcanceWiFiAPMetrosMonitor = 5;   // Alcance estimado del AP en metros (ajustable)
@@ -1674,17 +1679,15 @@ void handleRoot() {
   String passAttr = ""; // No prellenar password por seguridad
 
   String userSection = "<div class='network-list'>";
-  userSection += "<h3 class='section-title'>Usuario NUUP</h3>";
+  userSection += "<h3 class='section-title'>Usuario NUUP: su correo</h3>";
   if (usuarioConfirmado) {
     String resumenCorreo = userEmail.length() > 0 ? userEmail : "(sin correo)";
-    userSection += "<p><strong>Usuario:</strong></p>";
     userSection += "<p>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
   } else {
     String checked = userFlagRegistrado ? " checked" : "";
     String newUserFieldsStyle = userFlagRegistrado ? " style='display:none;'" : "";
     String extraDisabled = userFlagRegistrado ? " disabled" : "";
     String extraRequired = userFlagRegistrado ? "" : " required";
-    userSection += "<p class='hint'>Marca si el usuario ya existe para buscar solo por correo. Si es nuevo, captura todos los campos.</p>";
     userSection += "<label class='combo-label'><input type='checkbox' id='userRegistered' name='user_registered' value='1'" + checked + " onchange=\"toggleUserFields()\"> Ya estoy registrado</label>";
     userSection += "<label for='correoInput'>Correo</label>";
     userSection += "<input id='correoInput' type='email' name='correo' placeholder='correo@ejemplo.com' required" + correoAttr + ">";
@@ -1703,7 +1706,7 @@ void handleRoot() {
   String actionsSection = "<div class='network-list actions-panel'>";
   actionsSection += "<h3 class='section-title'>Acciones del monitor</h3>";
   actionsSection += "<div class='action-card alert-card'>";
-  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reseteo de fábrica</strong><br><small>Intentará reconectar WiFi, solicitará la baja durante 1 minuto y luego borrará la EEPROM antes de reiniciar.</small></div></div>";
+  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reseteo de fábrica</strong><br><small>Solicita la baja, borra la EEPROM y reinicia.</small></div></div>";
   actionsSection += "  <button type='button' class='danger-btn' onclick=\"factoryReset()\">Reseteo de fábrica</button>";
   actionsSection += "</div>";
   actionsSection += "</div>";
@@ -2004,7 +2007,7 @@ void handleRoot() {
     });
 
     function factoryReset() {
-      const mensaje = 'Se intentará reconectar a WiFi, pedir la baja durante 1 minuto y luego borrar la EEPROM. ¿Deseas continuar?';
+      const mensaje = 'Se solicitará la baja, se borrará la EEPROM y el monitor se reiniciará. ¿Deseas continuar?';
       if (!confirm(mensaje)) return;
       fetch('/factory_reset', { method: 'POST' })
         .then(resp => resp.text().then(text => ({ ok: resp.ok, text })))
@@ -2124,8 +2127,6 @@ void handleRoot() {
 
 
   html += "<form id='configForm' action='/finalizar' method='POST' novalidate>";
-  html += "<p class='hint'>Alcance AP actual: " + String(alcanceWiFiAPMetrosMonitor) + " m (TX " + String(potenciaTxWiFiAPMonitor) + " dBm). Ajusta alcanceWiFiAPMetrosMonitor en el código para acercar o alejar la cobertura.</p>";
-  html += "<p class='hint'>Emparejamiento BLE cercano (~5 cm): ajusta POTENCIA_BLE_MONITOR o RSSI_MIN_APAREAMIENTO_MONITOR para modificar el rango.</p>";
   html += userSection;
   html += R"=====(
     <div class="network-list">
@@ -2154,7 +2155,7 @@ void handleRoot() {
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
   )=====";
-  html += "<p class='hint'>Marca los dispositivos con \"Seleccionar para dar de baja\" y luego guarda configuración; se ejecutará la misma baja que BLE antes de reiniciar.</p>";
+  html += "<p><strong>Selecciona los que desees dar de baja y guarda configuración.</strong></p>";
   html += devicesList;
   html += R"=====(
     </div>
@@ -2420,14 +2421,19 @@ void handleFinalizeConfig() {
 
   if (cerrarAPTrasBajas) {
     detenerConfiguracionWiFi();
+    portalEnUso = false;
+    portalPantallaFija = false;
+    apMode = false;
+    forceAPMode = false;
+    wifiConfigInProgress = false;
+  } else {
+    // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
+    portalEnUso = false;
+    portalPantallaFija = false;
+    apMode = true;
+    forceAPMode = true;
+    wifiConfigInProgress = false;
   }
-
-  // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
-  portalEnUso = false;
-  portalPantallaFija = false;
-  apMode = true;
-  forceAPMode = true;
-  wifiConfigInProgress = false;
 
   reinicioSolicitado = true;
   reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion;
@@ -2756,7 +2762,7 @@ void manejarFlujoFactoryReset() {
 }
 
 void handleFactoryReset() {
-  server.send(200, "text/plain", "Reseteo solicitado: se intentará reconectar para pedir la baja y borrar datos.");
+  server.send(200, "text/plain", "Reseteo solicitado: se pedirá la baja, se borrarán los datos y se reiniciará.");
   iniciarFlujoFactoryReset();
 }
 
