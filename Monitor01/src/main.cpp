@@ -32,6 +32,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 92 - 2025-06-09 Corrección: trazas detalladas de bajas pendientes (BLE/AP), limpieza de banderas al re-alta y reenvío inmediato tras reconexión MQTT para que la baja se complete aun después de reinicios.
 // 91 - 2025-06-08 Corrección: las bajas solicitadas sin WiFi (portal o BLE) se encolan en EEPROM y se reintentan al reconectar MQTT hasta confirmarlas o re-registrar el dispositivo.
 // 90 - 2025-06-07 Corrección: tras bajas solicitadas desde el portal AP se reconecta a WiFi/MQTT y se envía la solicitud de baja antes del reinicio, manteniendo la animación como en BLE.
 // 89 - 2025-06-06 Corrección: bajas marcadas cierran el portal sin reactivar AP, textos simplificados (usuario, bajas y reseteo) y guía de alcance movida a configuración inicial.
@@ -415,11 +416,15 @@ void solicitarAltaNuupMQTT(int indice, const String &mac);
 void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen);
 void procesarAltasPendientes();
 String normalizarMac(const String &macRaw);
-bool iniciarBajaDispositivo(const String &mac);
+bool iniciarBajaDispositivo(const String &mac, const char* origen = "desconocido");
 bool publicarSolicitudBaja(int indice, const String &mac);
 bool solicitarBajaMonitorMQTT();
 void procesarBajasPendientes();
 void limpiarEstadoBaja(int indice);
+int buscarSlotBajaPendiente(const String &mac);
+int contarBajasPendientesRAM();
+int contarBajasPendientesPersistentes();
+void imprimirEstadoBajasPendientes(const char* origen);
 
 void debugNetworks();
 void checkWiFiStatus();
@@ -744,7 +749,7 @@ bool procesarBajaBLE(const String &macCliente) {
     macBajaEnCurso = macBuscada;
 
     // Proceder con la eliminación protegida por MQTT
-    if (iniciarBajaDispositivo(configDispositivos[indiceEncontrado].mac)) {
+    if (iniciarBajaDispositivo(configDispositivos[indiceEncontrado].mac, "BLE")) {
         Serial.println("✅ Baja solicitada para la MAC: " + macCliente);
         imprimirDispositivosRegistrados();
 
@@ -2523,7 +2528,7 @@ bool iniciarBajaPortal(const String &mac) {
     macBajaEnCurso = "";
   }
 
-  bool eliminado = iniciarBajaDispositivo(macNormalizada);
+  bool eliminado = iniciarBajaDispositivo(macNormalizada, "Portal AP");
   if (!eliminado) {
     Serial.printf("❌ No se pudo eliminar %s desde el portal\n", macNormalizada.c_str());
   }
@@ -3449,7 +3454,10 @@ Serial.println("Subscripcion: /command");
    delay(50);
     client.subscribe((String(serial_number) + "/estatus").c_str(), 1);
 Serial.println("Subscripcion: /estatus");
-    delay(50);    
+    delay(50);
+
+    imprimirEstadoBajasPendientes("MQTT reconectado");
+    procesarBajasPendientes();
 
   } else {
     Serial.printf("Error en conexión MQTT pero wiffi conectado --> (estado: %d)\n", client.state());
@@ -3494,6 +3502,47 @@ void imprimirDispositivosRegistrados() {
   Serial.println("----------------------------------------------------");
 }
 
+int contarBajasPendientesRAM() {
+  int total = 0;
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (bajaPendienteMQTT[i]) total++;
+  }
+  return total;
+}
+
+int contarBajasPendientesPersistentes() {
+  int total = 0;
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (bajasPendientesActivas[i]) total++;
+  }
+  return total;
+}
+
+void imprimirEstadoBajasPendientes(const char* origen) {
+  int ram = contarBajasPendientesRAM();
+  int persistentes = contarBajasPendientesPersistentes();
+  Serial.printf("📌 [%s] Estado de bajas pendientes -> RAM:%d | EEPROM:%d\n", origen, ram, persistentes);
+
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (!bajaPendienteMQTT[i]) continue;
+    Serial.printf("   RAM[%02d]: MAC=%s | activo=%s | ultimo_intento=%lu | espera=%lu\n",
+                  i,
+                  configDispositivos[i].mac,
+                  configDispositivos[i].activo ? "SI" : "NO",
+                  ultimaSolicitudBaja[i],
+                  inicioEsperaBaja[i]);
+  }
+
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (!bajasPendientesActivas[i]) continue;
+    Serial.printf("   EEPROM[%02d]: MAC=%s | ultimo_intento=%lu | espera=%lu\n",
+                  i,
+                  bajasPendientesMac[i],
+                  bajasPendientesUltimoIntento[i],
+                  bajasPendientesInicioEspera[i]);
+  }
+}
+
 bool registrarDispositivo(const String &mac, byte tipo) {
   String macNormalizada = normalizarMac(mac);
 
@@ -3501,6 +3550,9 @@ bool registrarDispositivo(const String &mac, byte tipo) {
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (normalizarMac(String(configDispositivos[i].mac)) == macNormalizada) {
       Serial.println("Dispositivo ya registrado: " + macNormalizada);
+      if (bajaPendienteMQTT[i] || buscarSlotBajaPendiente(macNormalizada) != -1) {
+        Serial.println("🔁 Re-alta detectada: se limpian banderas/cola de baja pendiente");
+      }
       limpiarBajaPendientePorMac(macNormalizada);
       limpiarEstadoBaja(i);
       return true;
@@ -4083,6 +4135,7 @@ void cargarBajasPendientesEEPROM() {
   }
 
   EEPROM.end();
+  imprimirEstadoBajasPendientes("Arranque (EEPROM)");
 }
 
 void registrarBajaPendientePersistente(const String &mac) {
@@ -4100,8 +4153,11 @@ void registrarBajaPendientePersistente(const String &mac) {
   bajasPendientesActivas[slot] = true;
   bajasPendientesUltimoIntento[slot] = 0;
   bajasPendientesInicioEspera[slot] = 0;
-  Serial.printf("🗂️ Baja pendiente encolada para reintento al conectar MQTT: %s\n", bajasPendientesMac[slot]);
+  Serial.printf("🗂️ Baja pendiente encolada (slot %d) para reintento al conectar MQTT: %s\n",
+                slot,
+                bajasPendientesMac[slot]);
   guardarBajasPendientesEEPROM();
+  imprimirEstadoBajasPendientes("Encolada");
 }
 
 void limpiarBajaPendientePorMac(const String &mac) {
@@ -4163,6 +4219,8 @@ bool publicarSolicitudBaja(int indice, const String &mac) {
 bool publicarSolicitudBajaPersistente(const String &mac, int slot) {
   if (mac.length() != MAC_LEN) return false;
 
+  Serial.printf("🔁 Revisión de baja pendiente (slot %d) para %s\n", slot, mac.c_str());
+
   String registroId = userID;
   if (registroId.isEmpty()) {
     Serial.println("⚠️ No se puede solicitar baja pendiente: falta users_registro_id");
@@ -4198,8 +4256,10 @@ bool publicarSolicitudBajaPersistente(const String &mac, int slot) {
   return false;
 }
 
-bool iniciarBajaDispositivo(const String &mac) {
+bool iniciarBajaDispositivo(const String &mac, const char* origen) {
   String macNormalizada = normalizarMac(mac);
+  Serial.printf("📝 Solicitud de baja (%s) recibida para %s\n", origen, macNormalizada.c_str());
+
   int indice = obtenerIndiceDispositivo(macNormalizada);
 
   if (indice < 0) {
@@ -4208,6 +4268,9 @@ bool iniciarBajaDispositivo(const String &mac) {
   }
 
   ConfigDispositivo *config = &configDispositivos[indice];
+  Serial.printf("   Estado previo -> activo:%s | baja_RAM:%s\n",
+                config->activo ? "SI" : "NO",
+                bajaPendienteMQTT[indice] ? "SI" : "NO");
 
   // Resetear cualquier intento de alta previo para evitar estados fantasma
   solicitudAltaEnviada[indice] = false;
@@ -4216,13 +4279,16 @@ bool iniciarBajaDispositivo(const String &mac) {
   // Si nunca estuvo activo en MQTT, eliminar inmediatamente
   if (!config->activo) {
     Serial.printf("ℹ️ Dispositivo %s sin alta MQTT previa, se elimina localmente\n", macNormalizada.c_str());
-    return eliminarDispositivo(macNormalizada);
+    bool eliminadoLocal = eliminarDispositivo(macNormalizada);
+    imprimirEstadoBajasPendientes("Baja local sin alta MQTT");
+    return eliminadoLocal;
   }
 
   // Marcar como pendiente de baja y pausar publicaciones mientras enviamos la solicitud
   config->activo = false;
   bajaPendienteMQTT[indice] = true;
   registrarBajaPendientePersistente(macNormalizada);
+  imprimirEstadoBajasPendientes("Encolada desde baja activa");
 
   bool enviada = publicarSolicitudBaja(indice, macNormalizada);
   if (!enviada) {
@@ -4237,29 +4303,65 @@ bool iniciarBajaDispositivo(const String &mac) {
     Serial.printf("⚠️ No se pudo eliminar %s de EEPROM tras solicitar baja\n", macNormalizada.c_str());
   }
 
+  imprimirEstadoBajasPendientes("Tras eliminar de RAM/EEPROM");
   return eliminado || enviada;
 }
 
 void procesarBajasPendientes() {
-  if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
+  int pendientesRam = contarBajasPendientesRAM();
+  int pendientesEEPROM = contarBajasPendientesPersistentes();
+  if (pendientesRam == 0 && pendientesEEPROM == 0) return;
 
+  static unsigned long ultimoAvisoBajas = 0;
   unsigned long ahora = millis();
+  const unsigned long intervaloAviso = 5000;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: WiFi desconectado\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  if (!client.connected()) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: MQTT desconectado\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  if (!mqttConfirmed) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: monitor sin confirmar en MQTT\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  if (userID.isEmpty()) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: falta users_registro_id\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  imprimirEstadoBajasPendientes("Reenvío");
 
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (!bajaPendienteMQTT[i]) continue;
 
-    // Si seguimos dentro del tiempo de espera, no reenviar aún
     if (inicioEsperaBaja[i] != 0 && (ahora - inicioEsperaBaja[i]) < bajaConfirmTimeout) {
       continue;
     }
 
-    // Si ya pasó el timeout, permitir reenvíos cada bajaPendienteInterval
     if (ultimaSolicitudBaja[i] == 0 || (ahora - ultimaSolicitudBaja[i]) >= bajaPendienteInterval) {
       publicarSolicitudBaja(i, normalizarMac(String(configDispositivos[i].mac)));
     }
   }
 
-  // Procesar también las bajas persistentes (cuando ya se eliminó de EEPROM)
   for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
     if (!bajasPendientesActivas[i]) continue;
 
