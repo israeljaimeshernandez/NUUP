@@ -24,6 +24,66 @@
  * - Almacenamiento persistente en EEPROM (4KB)
  * - Gestión de hasta 50 dispositivos NUUP01
  * 
+ * GESTIÓN DE ALTAS Y BAJAS MQTT:
+ * 
+ * Sistema de encolamiento persistente para solicitudes de alta/baja de dispositivos
+ * que sobrevive a reinicios del ESP32, garantizando que las operaciones pendientes
+ * se completen incluso sin conectividad WiFi/MQTT temporal.
+ * 
+ * TIPOS DE DISPOSITIVOS:
+ * - Tipo 0: Monitor (este dispositivo) - Alta: alta/0/solicitud
+ * - Tipo 1: Sensor NUUP01 Tanque - Alta: alta/1/solicitud | Baja: baja/1/solicitud
+ * - Tipo 2: [Reservado futuro] - Alta: alta/2/solicitud | Baja: baja/2/solicitud
+ * - Tipo 3: [Reservado futuro] - Alta: alta/3/solicitud | Baja: baja/3/solicitud
+ * 
+ * BAJAS ENCOLADAS (Persistencia EEPROM):
+ * ┌─ Solicitud de baja ────────────────────────────────────────────────────┐
+ * │ 1. Usuario solicita baja (Portal AP / BLE)                             │
+ * │ 2. registrarBajaPendientePersistente() → Encola en EEPROM @ 3800       │
+ * │ 3. ESP32 reinicia (opcional)                                           │
+ * │ 4. cargarBajasPendientesEEPROM() → Restaura cola al arranque           │
+ * │ 5. WiFi/MQTT conectan → procesarBajasPendientes()                      │
+ * │ 6. publicarSolicitudBajaPersistente() → baja/[TIPO]/solicitud/         │
+ * │ 7. Backend responde → baja/[TIPO]/confirmacion/ con "MAC,eliminado"    │
+ * │ 8. limpiarBajaPendientePorMac() → Limpia EEPROM y RAM                  │
+ * └────────────────────────────────────────────────────────────────────────┘
+ * 
+ * ⚠️  CANCELACIÓN AUTOMÁTICA DE BAJA:
+ * - Si dispositivo se RE-REGISTRA → limpiarBajaPendientePorMac()
+ * - Escenario: Usuario solicita baja pero luego da de alta mismo sensor
+ * - Flujos: registrarDispositivo(), procesarRegistroBLE()
+ * 
+ * VALIDACIONES DE SEGURIDAD:
+ * ✓ No se permiten bajas de tipo 0 (monitor) por flujo de sensores
+ * ✓ Topics MQTT construidos dinámicamente según tipo de dispositivo
+ * ✓ Validación en publicarSolicitudBaja() y publicarSolicitudBajaPersistente()
+ * 
+ * ALTAS ENCOLADAS (Persistencia EEPROM - Planificado):
+ * ┌─ Solicitud de alta ────────────────────────────────────────────────────┐
+ * │ 1. Usuario registra dispositivo (Portal AP / BLE / LoRa)               │
+ * │ 2. registrarAltaPendientePersistente() → Encola en EEPROM @ 3900       │
+ * │ 3. ESP32 reinicia (opcional)                                           │
+ * │ 4. cargarAltasPendientesEEPROM() → Restaura cola al arranque           │
+ * │ 5. WiFi/MQTT conectan → procesarAltasPendientes()                      │
+ * │ 6. solicitarAltaNuupMQTT() → alta/[TIPO]/solicitud/                    │
+ * │ 7. Backend responde → alta/[TIPO]/confirmacion/ con "MAC,registrado"   │
+ * │ 8. limpiarAltaPendientePorMac() → Limpia EEPROM y RAM                  │
+ * └────────────────────────────────────────────────────────────────────────┘
+ * 
+ * ⚠️  CANCELACIÓN AUTOMÁTICA DE ALTA:
+ * - Si dispositivo se BORRA → limpiarAltaPendientePorMac()
+ * - Escenario: Usuario registra sensor pero luego decide eliminarlo
+ * - Flujos: eliminarDispositivo(), iniciarBajaDispositivo()
+ * 
+ * ESTRUCTURA EEPROM (4096 bytes):
+ * 0-350:   Configuración Monitor (UserID, MQTT flags, etc.)
+ * 400-699: User ID y perfil
+ * 700-2999: ConfigDispositivos (50 dispositivos × ~46 bytes)
+ * 3000-3700: Datos de usuario (nombre, email, teléfono, password)
+ * 3800-3899: Bajas pendientes (10 slots × ~18 bytes) ✅ Implementado
+ * 3900-3999: Altas pendientes (10 slots × ~18 bytes) 📋 Planificado
+ * 
+
  * COMPILADO CON: Antigravity AI - Google DeepMind
  * FECHA: 2025-12-03
  * 
@@ -422,6 +482,11 @@ bool solicitarBajaMonitorMQTT();
 void procesarBajasPendientes();
 void limpiarEstadoBaja(int indice);
 int buscarSlotBajaPendiente(const String &mac);
+int buscarSlotLibreBajaPendiente();
+void guardarBajasPendientesEEPROM();
+void cargarBajasPendientesEEPROM();
+void registrarBajaPendientePersistente(const String &mac);
+void limpiarBajaPendientePorMac(const String &mac);
 int contarBajasPendientesRAM();
 int contarBajasPendientesPersistentes();
 void imprimirEstadoBajasPendientes(const char* origen);
@@ -819,6 +884,7 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             solicitudAltaEnviada[i] = false;
             ultimaSolicitudAlta[i] = 0;
             limpiarEstadoBaja(i);
+            limpiarBajaPendientePorMac(macNormalizada);  // Cancelar cualquier baja pendiente
 
             Serial.println("✅ Datos actualizados para dispositivo existente");
             
@@ -841,19 +907,6 @@ bool procesarRegistroBLE(const String &macCliente, const String &nombre = "", in
             // ⭐⭐ GUARDAR CORRECTAMENTE todos los campos
             macNormalizada.toCharArray(configDispositivos[i].mac, MAC_LEN + 1);
             nombre.toCharArray(configDispositivos[i].nombre, 20);
-            configDispositivos[i].alturaConfig = altura;
-            configDispositivos[i].litrosConfig = litros;
-            configDispositivos[i].litrosActuales = litros; // Inicialmente igual a litros config
-            configDispositivos[i].voltaje = 0.0; // Inicializar
-            configDispositivos[i].temperatura = 0.0; // Inicializar
-            configDispositivos[i].porcentaje = 100; // Inicialmente al 100%
-            configDispositivos[i].activo = false; // Se activará tras confirmación MQTT
-            configDispositivos[i].tipoDispositivo = 1; // Tipo tanque
-            solicitudAltaEnviada[i] = false;
-            ultimaSolicitudAlta[i] = 0;
-            limpiarEstadoBaja(i);
-
-            Serial.println("✅ Nuevo dispositivo registrado con datos");
             Serial.println("📝 Nombre guardado: " + String(configDispositivos[i].nombre));
             Serial.println("📏 Altura guardada: " + String(configDispositivos[i].alturaConfig));
             Serial.println("💧 Litros guardados: " + String(configDispositivos[i].litrosConfig));
@@ -4183,6 +4236,14 @@ void limpiarEstadoBaja(int indice) {
 bool publicarSolicitudBaja(int indice, const String &mac) {
   if (indice < 0 || indice >= MAX_DISPOSITIVOS) return false;
 
+  // ⭐ VALIDACIÓN: No permitir bajas de tipo 0 (monitor)
+  byte tipoDispositivo = configDispositivos[indice].tipoDispositivo;
+  if (tipoDispositivo == 0) {
+    Serial.println("❌ ERROR: No se permiten bajas de dispositivos tipo 0 (monitor) por este flujo");
+    Serial.println("   Use solicitarBajaMonitorMQTT() para dar de baja el monitor");
+    return false;
+  }
+
   String registroId = userID;
   if (registroId.isEmpty()) {
     Serial.println("⚠️ No se puede solicitar baja: falta users_registro_id");
@@ -4199,16 +4260,21 @@ bool publicarSolicitudBaja(int indice, const String &mac) {
     return false;
   }
 
+  // Construir topic dinámicamente según el tipo de dispositivo
+  String topicBaja = "baja/" + String(tipoDispositivo) + "/solicitud/";
   String mensaje = mac + "," + registroId;
-  Serial.println("🛰️ [BAJA NUUP01] Solicitud -> MQTT");
-  Serial.println("   Tópico TX: baja/1/solicitud/");
+  
+  Serial.println("🛰️ [BAJA DISPOSITIVO] Solicitud -> MQTT");
+  Serial.println("   Tipo: " + String(tipoDispositivo));
+  Serial.println("   Tópico TX: " + topicBaja);
   Serial.println("   Payload TX: " + mensaje);
-  Serial.println("   Espera RX: baja/1/confirmacion/ con 'MAC,eliminado' para limpiar todo");
-  if (client.publish("baja/1/solicitud/", mensaje.c_str())) {
+  Serial.println("   Espera RX: baja/" + String(tipoDispositivo) + "/confirmacion/ con 'MAC,eliminado'");
+  
+  if (client.publish(topicBaja.c_str(), mensaje.c_str())) {
     ultimaSolicitudBaja[indice] = millis();
     inicioEsperaBaja[indice] = (inicioEsperaBaja[indice] == 0) ? ultimaSolicitudBaja[indice] : inicioEsperaBaja[indice];
     bajaPendienteMQTT[indice] = true;
-    Serial.printf("🗑️ Solicitud de baja MQTT enviada para %s\n", mac.c_str());
+    Serial.printf("🗑️ Solicitud de baja MQTT enviada para %s (tipo %d)\n", mac.c_str(), tipoDispositivo);
     return true;
   }
 
@@ -4237,18 +4303,36 @@ bool publicarSolicitudBajaPersistente(const String &mac, int slot) {
     return false;
   }
 
-  String mensaje = mac + "," + registroId;
-  Serial.println("🛰️ [BAJA NUUP01] Reenvío pendiente -> MQTT");
-  Serial.println("   Tópico TX: baja/1/solicitud/");
-  Serial.println("   Payload TX: " + mensaje);
-  Serial.println("   Espera RX: baja/1/confirmacion/ con 'MAC,eliminado' para limpiar todo");
+  // Buscar el tipo de dispositivo (podría ya no estar en el arreglo)
+  byte tipoDispositivo = 1; // Valor por defecto si no se encuentra
+  int indice = obtenerIndiceDispositivo(mac);
+  if (indice >= 0) {
+    tipoDispositivo = configDispositivos[indice].tipoDispositivo;
+    // No permitir tipo 0
+    if (tipoDispositivo == 0) {
+      Serial.println("❌ ERROR: Baja pendiente de tipo 0 (monitor) cancelada");
+      limpiarBajaPendientePorMac(mac);
+      return false;
+    }
+  } else {
+    Serial.println("   Dispositivo ya no existe en arreglo, asumiendo tipo 1");
+  }
 
-  if (client.publish("baja/1/solicitud/", mensaje.c_str())) {
+  String topicBaja = "baja/" + String(tipoDispositivo) + "/solicitud/";
+  String mensaje = mac + "," + registroId;
+  
+  Serial.println("🛰️ [BAJA PENDIENTE] Reenvío -> MQTT");
+  Serial.println("   Tipo: " + String(tipoDispositivo));
+  Serial.println("   Tópico TX: " + topicBaja);
+  Serial.println("   Payload TX: " + mensaje);
+  Serial.println("   Espera RX: baja/" + String(tipoDispositivo) + "/confirmacion/ con 'MAC,eliminado'");
+
+  if (client.publish(topicBaja.c_str(), mensaje.c_str())) {
     bajasPendientesUltimoIntento[slot] = millis();
     bajasPendientesInicioEspera[slot] = (bajasPendientesInicioEspera[slot] == 0)
                                            ? bajasPendientesUltimoIntento[slot]
                                            : bajasPendientesInicioEspera[slot];
-    Serial.printf("🗑️ Solicitud de baja reintentada para %s\n", mac.c_str());
+    Serial.printf("🗑️ Solicitud de baja reintentada para %s (tipo %d)\n", mac.c_str(), tipoDispositivo);
     return true;
   }
 
