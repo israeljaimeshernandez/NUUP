@@ -32,6 +32,13 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 92 - 2025-06-09 Corrección: trazas detalladas de bajas pendientes (BLE/AP), limpieza de banderas al re-alta y reenvío inmediato tras reconexión MQTT para que la baja se complete aun después de reinicios.
+// 91 - 2025-06-08 Corrección: las bajas solicitadas sin WiFi (portal o BLE) se encolan en EEPROM y se reintentan al reconectar MQTT hasta confirmarlas o re-registrar el dispositivo.
+// 90 - 2025-06-07 Corrección: tras bajas solicitadas desde el portal AP se reconecta a WiFi/MQTT y se envía la solicitud de baja antes del reinicio, manteniendo la animación como en BLE.
+// 89 - 2025-06-06 Corrección: bajas marcadas cierran el portal sin reactivar AP, textos simplificados (usuario, bajas y reseteo) y guía de alcance movida a configuración inicial.
+// 88 - 2025-06-05 Corrección: la página AP permite marcar dispositivos para baja masiva al guardar, dispara el mismo flujo de baja que BLE antes del reinicio y documenta cómo ajustar el alcance BLE/WiFi.
+// 87 - 2025-06-04 Corrección: la baja solicitada desde el portal AP cierra el modo AP, reanuda WiFi y ejecuta el mismo ciclo que BLE (animación, solicitud MQTT y reinicio), sumando bitácora en español.
+// 86 - 2025-06-03 Corrección: el portal AP solo se abre con el botón WiFi; la pantalla inicial resume red guardada, registro MQTT y sensores.
 // 85 - 2025-06-02 Ajuste portal y bajas: usuario fijo por correo, reseteo de fábrica al final y bajas vía botón/BLE con animación y solicitud MQTT.
 // 84 - 2025-06-01 Corrección: el modo AP automático se bloquea tras reinicio si no hay redes guardadas; solo se activa con el botón o al fallar redes existentes.
 // 83 - 2025-05-31 Consecutivo en español: se anuncia en consola la versión activa y su resumen breve.
@@ -184,8 +191,9 @@
 #define USER_EMAIL_ADDR 3400   // Correo electrónico del usuario
 #define USER_PASS_ADDR 3600    // Password del usuario
 #define USER_REGISTERED_FLAG_ADDR 3700 // 1 = usuario ya existe en backend
+#define BAJAS_PENDIENTES_ADDR 3800     // Lista persistente de MACs en baja pendiente
 #define EEPROM_SIZE 4096              //
-#define ALIAS_DISPOSITIVOS 2000       // 
+#define ALIAS_DISPOSITIVOS 2000       //
 
 #define MQTT_CONFIRMED_FLAG_ADDR 350  //
 #define MQTT_INITIAL_REQUEST_FLAG_ADDR 351
@@ -198,8 +206,8 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 85;
-const char *RESUMEN_CONSECUTIVO = "Evita AP automático sin redes guardadas";
+const uint16_t CONSECUTIVO_ACTUAL = 86;
+const char *RESUMEN_CONSECUTIVO = "Portal AP solo con botón y resumen inicial de estado";
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -272,6 +280,13 @@ String ultimoPayloadAltaMQTT[MAX_DISPOSITIVOS];
 String ultimoPayloadConfirmAlta[MAX_DISPOSITIVOS];
 String ultimoPayloadConfirmMonitor = "";
 
+// Lista persistente de bajas pendientes (portal AP/BLE sin WiFi)
+const int MAX_BAJAS_PERSISTENTES = 10; // Espacio reservado en EEPROM (10 MACs)
+char bajasPendientesMac[MAX_BAJAS_PERSISTENTES][MAC_LEN + 1] = {{0}};
+bool bajasPendientesActivas[MAX_BAJAS_PERSISTENTES] = {false};
+unsigned long bajasPendientesUltimoIntento[MAX_BAJAS_PERSISTENTES] = {0};
+unsigned long bajasPendientesInicioEspera[MAX_BAJAS_PERSISTENTES] = {0};
+
 
 // O si quieres hacerlo configurable via BLE/serial:
 unsigned long tiempoSinDatosConfig = 60000; // Puedes cambiar este valor
@@ -312,6 +327,15 @@ bool bajaMonitorEsperandoConfirmacion = false; // true cuando se envió baja/0/s
 unsigned long inicioEsperaBajaMonitor = 0;     // inicio de ventana de confirmación de baja del monitor
 String ultimaMacMonitorBaja = "";             // MAC usada en la última solicitud de baja para validar confirmación
 bool registroMonitorEEPROM = false;  // Bandera de registro general (no se confunde con activo de dispositivos)
+// === Alcances ajustables ===
+// BLE monitor: POTENCIA_BLE_MONITOR controla la cercanía (N12 ≈ ~5 cm). Sube el nivel para más distancia.
+// Proximidad BLE: RSSI_MIN_APAREAMIENTO_MONITOR limita el emparejamiento a RSSI igual o mayor.
+// AP monitor: alcanceWiFiAPMetrosMonitor define la cobertura objetivo en metros y ajusta potenciaTxWiFiAPMonitor automáticamente.
+esp_power_level_t POTENCIA_BLE_MONITOR = ESP_PWR_LVL_N12; // Ajusta alcance BLE (eleva para más distancia)
+int RSSI_MIN_APAREAMIENTO_MONITOR = -45; // dBm objetivo (~5 cm) si se habilita proximidad por RSSI
+int alcanceWiFiAPMetrosMonitor = 5;   // Alcance estimado del AP en metros (ajustable)
+int potenciaTxWiFiAPMonitor = 11;     // dBm aplicados al AP según el alcance deseado
+wifi_power_t potenciaWiFiAPMonitor = WIFI_POWER_11dBm; // Potencia WiFi usada al iniciar el AP
 
 
 // Estructura para almacenar credenciales WIFFI
@@ -354,6 +378,7 @@ void handleDeleteNetwork();
 void handleSelectNetwork();
 void handleDeleteDevice();
 void handleBajaMonitor();
+bool iniciarBajaPortal(const String &mac);
 void reiniciarConfiguracionWiFi();
 void detenerConfiguracionWiFi();
 bool saveNetworksToEEPROM();
@@ -391,11 +416,15 @@ void solicitarAltaNuupMQTT(int indice, const String &mac);
 void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen);
 void procesarAltasPendientes();
 String normalizarMac(const String &macRaw);
-bool iniciarBajaDispositivo(const String &mac);
+bool iniciarBajaDispositivo(const String &mac, const char* origen = "desconocido");
 bool publicarSolicitudBaja(int indice, const String &mac);
 bool solicitarBajaMonitorMQTT();
 void procesarBajasPendientes();
 void limpiarEstadoBaja(int indice);
+int buscarSlotBajaPendiente(const String &mac);
+int contarBajasPendientesRAM();
+int contarBajasPendientesPersistentes();
+void imprimirEstadoBajasPendientes(const char* origen);
 
 void debugNetworks();
 void checkWiFiStatus();
@@ -720,7 +749,7 @@ bool procesarBajaBLE(const String &macCliente) {
     macBajaEnCurso = macBuscada;
 
     // Proceder con la eliminación protegida por MQTT
-    if (iniciarBajaDispositivo(configDispositivos[indiceEncontrado].mac)) {
+    if (iniciarBajaDispositivo(configDispositivos[indiceEncontrado].mac, "BLE")) {
         Serial.println("✅ Baja solicitada para la MAC: " + macCliente);
         imprimirDispositivosRegistrados();
 
@@ -859,8 +888,8 @@ bool estaCerca() {
     // ⚠️ SOLUCIÓN TEMPORAL: Usar potencia BLE reducida en lugar de RSSI
     // La potencia ya está configurada en ESP_PWR_LVL_N12 (-12dBm)
     // Esto limita físicamente el alcance a ~5cm
-    
-    Serial.println("✅ Verificación de proximidad por potencia BLE reducida");
+
+    Serial.printf("✅ Verificación de proximidad por potencia BLE reducida (objetivo >= %d dBm si se activa RSSI)\n", RSSI_MIN_APAREAMIENTO_MONITOR);
     return true;
 }
 
@@ -1104,12 +1133,14 @@ void handleUnregistration(BLECharacteristic *pCharacteristic, const String &comm
 
 void iniciarBLE() {
     Serial.println("🔵 Iniciando BLE para 5cm de distancia...");
-    
+
     BLEDevice::init("NUUP_Monitor");
-    
-    // ⚡ CONFIGURACIÓN CLAVE: Potencia mínima de transmisión
-    BLEDevice::setPower(ESP_PWR_LVL_N12); // Potencia mínima (-12dBm)
-    
+
+    // ⚡ CONFIGURACIÓN CLAVE: Potencia de transmisión ajustable
+    BLEDevice::setPower(POTENCIA_BLE_MONITOR); // Ajusta POTENCIA_BLE_MONITOR para acercar/alejar
+    Serial.printf("📡 Potencia BLE del monitor: nivel %d (incrementa para más alcance, reduce para más cercanía)\n",
+                  POTENCIA_BLE_MONITOR);
+
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -1376,6 +1407,35 @@ void detenerConfiguracionWiFi() {
   WiFi.mode(WIFI_STA);
 }
 
+void configurarAlcanceWiFiAPMonitor(int metros) {
+  alcanceWiFiAPMetrosMonitor = metros;
+
+  switch (metros) {
+    case 1:
+      potenciaWiFiAPMonitor = WIFI_POWER_2dBm;
+      potenciaTxWiFiAPMonitor = 2;
+      break;
+    case 2:
+      potenciaWiFiAPMonitor = WIFI_POWER_5dBm;
+      potenciaTxWiFiAPMonitor = 5;
+      break;
+    case 10:
+      potenciaWiFiAPMonitor = WIFI_POWER_17dBm;
+      potenciaTxWiFiAPMonitor = 17;
+      break;
+    case 5:
+    default:
+      potenciaWiFiAPMonitor = WIFI_POWER_11dBm;
+      potenciaTxWiFiAPMonitor = 11;
+      break;
+  }
+
+  WiFi.setTxPower(potenciaWiFiAPMonitor);
+  Serial.printf("📶 AP Monitor01 - Alcance estimado: %d m | Potencia TX: %d dBm. Ajusta alcanceWiFiAPMetrosMonitor para cambiarlo.\n",
+                alcanceWiFiAPMetrosMonitor,
+                potenciaTxWiFiAPMonitor);
+}
+
 void registrarRutasPortal() {
   server.on("/", HTTP_ANY, handleRoot);
   server.on("/save", HTTP_POST, handleSaveCredentials);
@@ -1403,6 +1463,7 @@ void startAPMode() {
   WiFi.softAPdisconnect(true);
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_AP_STA);
+  configurarAlcanceWiFiAPMonitor(alcanceWiFiAPMetrosMonitor);
   WiFi.softAP(AP_SSID, AP_PASS);
   dnsServer.start(53, "*", WiFi.softAPIP());
 
@@ -1616,7 +1677,7 @@ void handleRoot() {
       }
       devicesList += "<div class='network-item device-item'>";
       devicesList += "<div class='device-info'><strong>" + nombre + "</strong><br><small>MAC: " + mac + "</small></div>";
-      devicesList += "<button type=\\\"button\\\" onclick=\\\"deleteDevice('" + escapeForJS(mac) + "')\\\">Eliminar</button>";
+      devicesList += "<label class='device-select'><input type='checkbox' name='baja_mac' value='" + escapeForHTMLAttr(mac) + "'> Seleccionar para dar de baja</label>";
       devicesList += "</div>";
     }
   }
@@ -1633,17 +1694,15 @@ void handleRoot() {
   String passAttr = ""; // No prellenar password por seguridad
 
   String userSection = "<div class='network-list'>";
-  userSection += "<h3 class='section-title'>Usuario NUUP</h3>";
+  userSection += "<h3 class='section-title'>Usuario NUUP: su correo</h3>";
   if (usuarioConfirmado) {
     String resumenCorreo = userEmail.length() > 0 ? userEmail : "(sin correo)";
-    userSection += "<p><strong>Usuario:</strong></p>";
     userSection += "<p>" + escapeForHTMLAttr(resumenCorreo) + "</p>";
   } else {
     String checked = userFlagRegistrado ? " checked" : "";
     String newUserFieldsStyle = userFlagRegistrado ? " style='display:none;'" : "";
     String extraDisabled = userFlagRegistrado ? " disabled" : "";
     String extraRequired = userFlagRegistrado ? "" : " required";
-    userSection += "<p class='hint'>Marca si el usuario ya existe para buscar solo por correo. Si es nuevo, captura todos los campos.</p>";
     userSection += "<label class='combo-label'><input type='checkbox' id='userRegistered' name='user_registered' value='1'" + checked + " onchange=\"toggleUserFields()\"> Ya estoy registrado</label>";
     userSection += "<label for='correoInput'>Correo</label>";
     userSection += "<input id='correoInput' type='email' name='correo' placeholder='correo@ejemplo.com' required" + correoAttr + ">";
@@ -1662,7 +1721,7 @@ void handleRoot() {
   String actionsSection = "<div class='network-list actions-panel'>";
   actionsSection += "<h3 class='section-title'>Acciones del monitor</h3>";
   actionsSection += "<div class='action-card alert-card'>";
-  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reseteo de fábrica</strong><br><small>Intentará reconectar WiFi, solicitará la baja durante 1 minuto y luego borrará la EEPROM antes de reiniciar.</small></div></div>";
+  actionsSection += "  <div class='action-text'><div class='icon-badge'>♻️</div><div><strong>Reseteo de fábrica</strong><br><small>Solicita la baja, borra la EEPROM y reinicia.</small></div></div>";
   actionsSection += "  <button type='button' class='danger-btn' onclick=\"factoryReset()\">Reseteo de fábrica</button>";
   actionsSection += "</div>";
   actionsSection += "</div>";
@@ -1837,6 +1896,17 @@ void handleRoot() {
       justify-content: space-between;
       gap: 10px;
     }
+    .device-select {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #FFD700;
+      font-size: 14px;
+    }
+    .device-select input {
+      width: auto;
+      margin: 0;
+    }
     .device-info {
       display: flex;
       flex-direction: column;
@@ -1927,13 +1997,6 @@ void handleRoot() {
       }
     }
 
-    function deleteDevice(mac) {
-      if (confirm('¿Eliminar este dispositivo?')) {
-        fetch('/delete_device', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'mac=' + encodeURIComponent(mac) })
-          .then(response => { if (response.ok) location.reload(); });
-      }
-    }
-
     function toggleUserFields() {
       const checkbox = document.getElementById('userRegistered');
       const extra = document.getElementById('newUserFields');
@@ -1959,7 +2022,7 @@ void handleRoot() {
     });
 
     function factoryReset() {
-      const mensaje = 'Se intentará reconectar a WiFi, pedir la baja durante 1 minuto y luego borrar la EEPROM. ¿Deseas continuar?';
+      const mensaje = 'Se solicitará la baja, se borrará la EEPROM y el monitor se reiniciará. ¿Deseas continuar?';
       if (!confirm(mensaje)) return;
       fetch('/factory_reset', { method: 'POST' })
         .then(resp => resp.text().then(text => ({ ok: resp.ok, text })))
@@ -2107,6 +2170,7 @@ void handleRoot() {
     <div class="network-list">
       <h3 class="section-title">Dispositivos registrados:</h3>
   )=====";
+  html += "<p><strong>Selecciona los que desees dar de baja y guarda configuración.</strong></p>";
   html += devicesList;
   html += R"=====(
     </div>
@@ -2215,6 +2279,19 @@ void handleFinalizeConfig() {
   forceAPMode = true;
   apMode = true;
   portalPantallaFija = true;
+  bool cerrarAPTrasBajas = false;
+
+  String bajasMarcadas[MAX_DISPOSITIVOS];
+  int totalBajasMarcadas = 0;
+  for (int i = 0; i < server.args() && totalBajasMarcadas < MAX_DISPOSITIVOS; i++) {
+    if (server.argName(i) == "baja_mac") {
+      String macBaja = server.arg(i);
+      macBaja.trim();
+      if (macBaja.length() > 0) {
+        bajasMarcadas[totalBajasMarcadas++] = macBaja;
+      }
+    }
+  }
 
   auto liberarPortal = []() {
     portalEnUso = false;
@@ -2341,17 +2418,37 @@ void handleFinalizeConfig() {
       }
     }
   }
+
+  if (totalBajasMarcadas > 0) {
+    Serial.printf("🗑️ Baja solicitada desde portal para %d dispositivo(s). Se aplicará el mismo flujo que BLE antes del reinicio.\n", totalBajasMarcadas);
+    for (int i = 0; i < totalBajasMarcadas; i++) {
+      iniciarBajaPortal(bajasMarcadas[i]);
+    }
+    if (apMode || forceAPMode) {
+      Serial.println("🚪 Cerrando modo AP para completar las bajas vía WiFi/MQTT y retomar el ciclo normal antes del reinicio...");
+      cerrarAPTrasBajas = true;
+    }
+  }
   String redParaMensaje = redActual.length() > 0 ? redActual : "Sin red";
   mostrarMensajeRedConectada(redParaMensaje, conectada, passPantalla, 0, 5000);
 
   server.send(200, "text/html", "<html><body><h2>Configuración guardada</h2></body></html>");
 
-  // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
-  portalEnUso = false;
-  portalPantallaFija = false;
-  apMode = true;
-  forceAPMode = true;
-  wifiConfigInProgress = false;
+  if (cerrarAPTrasBajas) {
+    detenerConfiguracionWiFi();
+    portalEnUso = false;
+    portalPantallaFija = false;
+    apMode = false;
+    forceAPMode = false;
+    wifiConfigInProgress = false;
+  } else {
+    // Mantener el portal atendiendo mientras esperamos el reinicio para evitar errores en el navegador
+    portalEnUso = false;
+    portalPantallaFija = false;
+    apMode = true;
+    forceAPMode = true;
+    wifiConfigInProgress = false;
+  }
 
   reinicioSolicitado = true;
   reinicioProgramado = millis() + retrasoMensajeConexion + duracionMensajeConexion;
@@ -2410,6 +2507,34 @@ void prepararAnimacionBajaPortal(const String &macNormalizada, const ConfigDispo
   }
 }
 
+bool iniciarBajaPortal(const String &mac) {
+  String macNormalizada = normalizarMac(mac);
+  if (macNormalizada.isEmpty()) {
+    Serial.println("⚠️  Baja desde portal AP: MAC vacía");
+    return false;
+  }
+
+  int indice = obtenerIndiceDispositivo(macNormalizada);
+  ConfigDispositivo respaldo{};
+  if (indice >= 0) {
+    respaldo = configDispositivos[indice];
+    prepararAnimacionBajaPortal(macNormalizada, &respaldo);
+  } else {
+    Serial.println("⚠️  Baja desde portal AP: MAC no encontrada, se mostrará mensaje de error pero se cerrará el portal para reanudar el ciclo normal.");
+    solicitudBajaBLE = true;
+    ultimoNombreDispositivo = "No Registrado";
+    ultimosLitros = 0;
+    ultimaAltura = 0;
+    macBajaEnCurso = "";
+  }
+
+  bool eliminado = iniciarBajaDispositivo(macNormalizada, "Portal AP");
+  if (!eliminado) {
+    Serial.printf("❌ No se pudo eliminar %s desde el portal\n", macNormalizada.c_str());
+  }
+  return eliminado;
+}
+
 void handleDeleteDevice() {
   if (userID.isEmpty() && userEmail.isEmpty()) {
     server.send(400, "text/plain", "Configura el usuario (correo) antes de borrar dispositivos");
@@ -2424,19 +2549,16 @@ void handleDeleteDevice() {
       return;
     }
 
-    String macNormalizada = normalizarMac(mac);
-    int indice = obtenerIndiceDispositivo(macNormalizada);
-    ConfigDispositivo respaldo{};
-    if (indice >= 0) {
-      respaldo = configDispositivos[indice];
-      prepararAnimacionBajaPortal(macNormalizada, &respaldo);
-    }
-
-    bool eliminado = iniciarBajaDispositivo(macNormalizada);
+    bool eliminado = iniciarBajaPortal(mac);
     if (eliminado) {
       server.send(200, "text/plain", "OK");
     } else {
       server.send(404, "text/plain", "Dispositivo no encontrado");
+    }
+
+    if (apMode || forceAPMode) {
+      Serial.println("🚪 Cerrando modo AP para completar la baja con WiFi/MQTT y animaciones como en BLE...");
+      detenerConfiguracionWiFi();
     }
   } else {
     server.send(400, "text/plain", "Falta parámetro mac");
@@ -2507,17 +2629,33 @@ String horaLegibleCorta() {
 void anunciarConsecutivo() {
   Serial.printf("📑 Consecutivo %d: %s\n", CONSECUTIVO_ACTUAL, RESUMEN_CONSECUTIVO);
 
+  // El consecutivo solo se documenta en consola para evitar ocupar la pantalla inicial
+}
+
+void mostrarResumenEstadoInicial() {
   if (!displayReady) return;
+
+  bool tieneRedGuardada = false;
+  for (int i = 0; i < MAX_NETWORKS; i++) {
+    if (savedNetworks[i].ssid.length() > 0) {
+      tieneRedGuardada = true;
+      break;
+    }
+  }
+
+  int sensoresRegistrados = contarDispositivosRegistrados();
 
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Consecutivo " + String(CONSECUTIVO_ACTUAL));
+  display.println(String("Red guardada: ") + (tieneRedGuardada ? "SI" : "NO"));
   display.setCursor(0, 16);
-  display.println(RESUMEN_CONSECUTIVO);
+  display.println(String("MQTT registrado: ") + (mqttConfirmed ? "SI" : "NO"));
+  display.setCursor(0, 32);
+  display.print("Sensores: ");
+  display.println(sensoresRegistrados);
   display.display();
-  delay(600);
 }
 
 void mostrarMensajeFactory(const String &l1, const String &l2, const String &l3) {
@@ -2639,7 +2777,7 @@ void manejarFlujoFactoryReset() {
 }
 
 void handleFactoryReset() {
-  server.send(200, "text/plain", "Reseteo solicitado: se intentará reconectar para pedir la baja y borrar datos.");
+  server.send(200, "text/plain", "Reseteo solicitado: se pedirá la baja, se borrarán los datos y se reiniciará.");
   iniciarFlujoFactoryReset();
 }
 
@@ -3148,18 +3286,19 @@ if (strcmp(topic, "baja/1/confirmacion/") == 0) {
     estado.trim();
 
     int indice = obtenerIndiceDispositivo(macConfirmada);
-    if (indice == -1) {
-        Serial.printf("ℹ️ Confirmación de baja para MAC no registrada: %s\n", macConfirmada.c_str());
-        return;
-    }
 
     if (estado == "eliminado" || estado == "baja" || estado == "confirmado") {
-        limpiarEstadoBaja(indice);
-        if (eliminarDispositivo(macConfirmada)) {
-            Serial.printf("✅ Baja confirmada y dispositivo %s eliminado localmente\n", macConfirmada.c_str());
+        if (indice != -1) {
+            limpiarEstadoBaja(indice);
+            if (eliminarDispositivo(macConfirmada)) {
+                Serial.printf("✅ Baja confirmada y dispositivo %s eliminado localmente\n", macConfirmada.c_str());
+            } else {
+                Serial.printf("❌ No se pudo eliminar %s tras confirmación de baja\n", macConfirmada.c_str());
+            }
         } else {
-            Serial.printf("❌ No se pudo eliminar %s tras confirmación de baja\n", macConfirmada.c_str());
+            Serial.printf("ℹ️ Confirmación de baja recibida para MAC ya eliminada: %s\n", macConfirmada.c_str());
         }
+        limpiarBajaPendientePorMac(macConfirmada);
     } else {
         Serial.printf("⚠️ Estado de baja no reconocido: %s\n", estado.c_str());
     }
@@ -3315,7 +3454,10 @@ Serial.println("Subscripcion: /command");
    delay(50);
     client.subscribe((String(serial_number) + "/estatus").c_str(), 1);
 Serial.println("Subscripcion: /estatus");
-    delay(50);    
+    delay(50);
+
+    imprimirEstadoBajasPendientes("MQTT reconectado");
+    procesarBajasPendientes();
 
   } else {
     Serial.printf("Error en conexión MQTT pero wiffi conectado --> (estado: %d)\n", client.state());
@@ -3360,6 +3502,47 @@ void imprimirDispositivosRegistrados() {
   Serial.println("----------------------------------------------------");
 }
 
+int contarBajasPendientesRAM() {
+  int total = 0;
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (bajaPendienteMQTT[i]) total++;
+  }
+  return total;
+}
+
+int contarBajasPendientesPersistentes() {
+  int total = 0;
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (bajasPendientesActivas[i]) total++;
+  }
+  return total;
+}
+
+void imprimirEstadoBajasPendientes(const char* origen) {
+  int ram = contarBajasPendientesRAM();
+  int persistentes = contarBajasPendientesPersistentes();
+  Serial.printf("📌 [%s] Estado de bajas pendientes -> RAM:%d | EEPROM:%d\n", origen, ram, persistentes);
+
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (!bajaPendienteMQTT[i]) continue;
+    Serial.printf("   RAM[%02d]: MAC=%s | activo=%s | ultimo_intento=%lu | espera=%lu\n",
+                  i,
+                  configDispositivos[i].mac,
+                  configDispositivos[i].activo ? "SI" : "NO",
+                  ultimaSolicitudBaja[i],
+                  inicioEsperaBaja[i]);
+  }
+
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (!bajasPendientesActivas[i]) continue;
+    Serial.printf("   EEPROM[%02d]: MAC=%s | ultimo_intento=%lu | espera=%lu\n",
+                  i,
+                  bajasPendientesMac[i],
+                  bajasPendientesUltimoIntento[i],
+                  bajasPendientesInicioEspera[i]);
+  }
+}
+
 bool registrarDispositivo(const String &mac, byte tipo) {
   String macNormalizada = normalizarMac(mac);
 
@@ -3367,6 +3550,10 @@ bool registrarDispositivo(const String &mac, byte tipo) {
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (normalizarMac(String(configDispositivos[i].mac)) == macNormalizada) {
       Serial.println("Dispositivo ya registrado: " + macNormalizada);
+      if (bajaPendienteMQTT[i] || buscarSlotBajaPendiente(macNormalizada) != -1) {
+        Serial.println("🔁 Re-alta detectada: se limpian banderas/cola de baja pendiente");
+      }
+      limpiarBajaPendientePorMac(macNormalizada);
       limpiarEstadoBaja(i);
       return true;
     }
@@ -3393,6 +3580,7 @@ bool registrarDispositivo(const String &mac, byte tipo) {
       bajaPendienteMQTT[i] = false;
       ultimaSolicitudBaja[i] = 0;
       inicioEsperaBaja[i] = 0;
+      limpiarBajaPendientePorMac(macNormalizada);
       return guardarDispositivos();
     }
   }
@@ -3876,6 +4064,114 @@ void solicitarAltaNuupMQTT(int indice, const String &mac) {
   }
 }
 
+int buscarSlotBajaPendiente(const String &mac) {
+  String objetivo = normalizarMac(mac);
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (!bajasPendientesActivas[i]) continue;
+    if (objetivo.equalsIgnoreCase(String(bajasPendientesMac[i]))) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int buscarSlotLibreBajaPendiente() {
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (!bajasPendientesActivas[i]) return i;
+  }
+  return -1;
+}
+
+void guardarBajasPendientesEEPROM() {
+  EEPROM.begin(EEPROM_SIZE);
+  int addr = BAJAS_PENDIENTES_ADDR;
+
+  byte count = 0;
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (bajasPendientesActivas[i]) count++;
+  }
+
+  EEPROM.write(addr++, count);
+
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    for (int j = 0; j < MAC_LEN + 1; j++) {
+      char c = (bajasPendientesActivas[i]) ? bajasPendientesMac[i][j] : '\0';
+      EEPROM.write(addr++, c);
+      if (addr >= EEPROM_SIZE) break;
+    }
+    if (addr >= EEPROM_SIZE) break;
+  }
+
+  EEPROM.commit();
+  EEPROM.end();
+  Serial.printf("💾 Bajas pendientes guardadas (%d entradas activas)\n", count);
+}
+
+void cargarBajasPendientesEEPROM() {
+  EEPROM.begin(EEPROM_SIZE);
+  int addr = BAJAS_PENDIENTES_ADDR;
+
+  byte count = EEPROM.read(addr++);
+  if (count > MAX_BAJAS_PERSISTENTES) {
+    count = MAX_BAJAS_PERSISTENTES;
+  }
+
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    char macBuf[MAC_LEN + 1] = {0};
+    for (int j = 0; j < MAC_LEN + 1 && addr < EEPROM_SIZE; j++) {
+      macBuf[j] = EEPROM.read(addr++);
+    }
+
+    if (i < count && strlen(macBuf) == MAC_LEN) {
+      strncpy(bajasPendientesMac[i], macBuf, MAC_LEN + 1);
+      bajasPendientesActivas[i] = true;
+      Serial.printf("⏳ Baja pendiente cargada: %s\n", bajasPendientesMac[i]);
+    } else {
+      bajasPendientesMac[i][0] = '\0';
+      bajasPendientesActivas[i] = false;
+    }
+    bajasPendientesUltimoIntento[i] = 0;
+    bajasPendientesInicioEspera[i] = 0;
+  }
+
+  EEPROM.end();
+  imprimirEstadoBajasPendientes("Arranque (EEPROM)");
+}
+
+void registrarBajaPendientePersistente(const String &mac) {
+  String macNormalizada = normalizarMac(mac);
+  if (macNormalizada.length() != MAC_LEN) return;
+
+  int existente = buscarSlotBajaPendiente(macNormalizada);
+  int slot = (existente != -1) ? existente : buscarSlotLibreBajaPendiente();
+  if (slot == -1) {
+    Serial.println("⚠️ No hay espacio para encolar más bajas pendientes en EEPROM");
+    return;
+  }
+
+  macNormalizada.toCharArray(bajasPendientesMac[slot], MAC_LEN + 1);
+  bajasPendientesActivas[slot] = true;
+  bajasPendientesUltimoIntento[slot] = 0;
+  bajasPendientesInicioEspera[slot] = 0;
+  Serial.printf("🗂️ Baja pendiente encolada (slot %d) para reintento al conectar MQTT: %s\n",
+                slot,
+                bajasPendientesMac[slot]);
+  guardarBajasPendientesEEPROM();
+  imprimirEstadoBajasPendientes("Encolada");
+}
+
+void limpiarBajaPendientePorMac(const String &mac) {
+  int slot = buscarSlotBajaPendiente(mac);
+  if (slot == -1) return;
+
+  bajasPendientesActivas[slot] = false;
+  bajasPendientesMac[slot][0] = '\0';
+  bajasPendientesUltimoIntento[slot] = 0;
+  bajasPendientesInicioEspera[slot] = 0;
+  guardarBajasPendientesEEPROM();
+  Serial.printf("✅ Baja pendiente confirmada/cancelada para %s\n", mac.c_str());
+}
+
 void limpiarEstadoBaja(int indice) {
   if (indice < 0 || indice >= MAX_DISPOSITIVOS) return;
 
@@ -3920,8 +4216,50 @@ bool publicarSolicitudBaja(int indice, const String &mac) {
   return false;
 }
 
-bool iniciarBajaDispositivo(const String &mac) {
+bool publicarSolicitudBajaPersistente(const String &mac, int slot) {
+  if (mac.length() != MAC_LEN) return false;
+
+  Serial.printf("🔁 Revisión de baja pendiente (slot %d) para %s\n", slot, mac.c_str());
+
+  String registroId = userID;
+  if (registroId.isEmpty()) {
+    Serial.println("⚠️ No se puede solicitar baja pendiente: falta users_registro_id");
+    return false;
+  }
+
+  if (!mqttConfirmed) {
+    Serial.println("⚠️ No se puede solicitar baja pendiente: el monitor no está confirmado en MQTT");
+    return false;
+  }
+
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+    Serial.println("⚠️ No se puede solicitar baja pendiente: MQTT desconectado");
+    return false;
+  }
+
+  String mensaje = mac + "," + registroId;
+  Serial.println("🛰️ [BAJA NUUP01] Reenvío pendiente -> MQTT");
+  Serial.println("   Tópico TX: baja/1/solicitud/");
+  Serial.println("   Payload TX: " + mensaje);
+  Serial.println("   Espera RX: baja/1/confirmacion/ con 'MAC,eliminado' para limpiar todo");
+
+  if (client.publish("baja/1/solicitud/", mensaje.c_str())) {
+    bajasPendientesUltimoIntento[slot] = millis();
+    bajasPendientesInicioEspera[slot] = (bajasPendientesInicioEspera[slot] == 0)
+                                           ? bajasPendientesUltimoIntento[slot]
+                                           : bajasPendientesInicioEspera[slot];
+    Serial.printf("🗑️ Solicitud de baja reintentada para %s\n", mac.c_str());
+    return true;
+  }
+
+  Serial.printf("❌ Error al reenviar baja pendiente para %s\n", mac.c_str());
+  return false;
+}
+
+bool iniciarBajaDispositivo(const String &mac, const char* origen) {
   String macNormalizada = normalizarMac(mac);
+  Serial.printf("📝 Solicitud de baja (%s) recibida para %s\n", origen, macNormalizada.c_str());
+
   int indice = obtenerIndiceDispositivo(macNormalizada);
 
   if (indice < 0) {
@@ -3930,6 +4268,9 @@ bool iniciarBajaDispositivo(const String &mac) {
   }
 
   ConfigDispositivo *config = &configDispositivos[indice];
+  Serial.printf("   Estado previo -> activo:%s | baja_RAM:%s\n",
+                config->activo ? "SI" : "NO",
+                bajaPendienteMQTT[indice] ? "SI" : "NO");
 
   // Resetear cualquier intento de alta previo para evitar estados fantasma
   solicitudAltaEnviada[indice] = false;
@@ -3938,12 +4279,16 @@ bool iniciarBajaDispositivo(const String &mac) {
   // Si nunca estuvo activo en MQTT, eliminar inmediatamente
   if (!config->activo) {
     Serial.printf("ℹ️ Dispositivo %s sin alta MQTT previa, se elimina localmente\n", macNormalizada.c_str());
-    return eliminarDispositivo(macNormalizada);
+    bool eliminadoLocal = eliminarDispositivo(macNormalizada);
+    imprimirEstadoBajasPendientes("Baja local sin alta MQTT");
+    return eliminadoLocal;
   }
 
   // Marcar como pendiente de baja y pausar publicaciones mientras enviamos la solicitud
   config->activo = false;
   bajaPendienteMQTT[indice] = true;
+  registrarBajaPendientePersistente(macNormalizada);
+  imprimirEstadoBajasPendientes("Encolada desde baja activa");
 
   bool enviada = publicarSolicitudBaja(indice, macNormalizada);
   if (!enviada) {
@@ -3958,25 +4303,77 @@ bool iniciarBajaDispositivo(const String &mac) {
     Serial.printf("⚠️ No se pudo eliminar %s de EEPROM tras solicitar baja\n", macNormalizada.c_str());
   }
 
+  imprimirEstadoBajasPendientes("Tras eliminar de RAM/EEPROM");
   return eliminado || enviada;
 }
 
 void procesarBajasPendientes() {
-  if (WiFi.status() != WL_CONNECTED || !client.connected()) return;
+  int pendientesRam = contarBajasPendientesRAM();
+  int pendientesEEPROM = contarBajasPendientesPersistentes();
+  if (pendientesRam == 0 && pendientesEEPROM == 0) return;
 
+  static unsigned long ultimoAvisoBajas = 0;
   unsigned long ahora = millis();
+  const unsigned long intervaloAviso = 5000;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: WiFi desconectado\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  if (!client.connected()) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: MQTT desconectado\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  if (!mqttConfirmed) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: monitor sin confirmar en MQTT\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  if (userID.isEmpty()) {
+    if (ahora - ultimoAvisoBajas > intervaloAviso) {
+      Serial.printf("⏸️  Bajas pendientes (RAM:%d/EEPROM:%d) en espera: falta users_registro_id\n", pendientesRam, pendientesEEPROM);
+      ultimoAvisoBajas = ahora;
+    }
+    return;
+  }
+
+  imprimirEstadoBajasPendientes("Reenvío");
 
   for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
     if (!bajaPendienteMQTT[i]) continue;
 
-    // Si seguimos dentro del tiempo de espera, no reenviar aún
     if (inicioEsperaBaja[i] != 0 && (ahora - inicioEsperaBaja[i]) < bajaConfirmTimeout) {
       continue;
     }
 
-    // Si ya pasó el timeout, permitir reenvíos cada bajaPendienteInterval
     if (ultimaSolicitudBaja[i] == 0 || (ahora - ultimaSolicitudBaja[i]) >= bajaPendienteInterval) {
       publicarSolicitudBaja(i, normalizarMac(String(configDispositivos[i].mac)));
+    }
+  }
+
+  for (int i = 0; i < MAX_BAJAS_PERSISTENTES; i++) {
+    if (!bajasPendientesActivas[i]) continue;
+
+    String mac = String(bajasPendientesMac[i]);
+    if (mac.length() != MAC_LEN) continue;
+
+    if (bajasPendientesInicioEspera[i] != 0 && (ahora - bajasPendientesInicioEspera[i]) < bajaConfirmTimeout) {
+      continue;
+    }
+
+    if (bajasPendientesUltimoIntento[i] == 0 || (ahora - bajasPendientesUltimoIntento[i]) >= bajaPendienteInterval) {
+      publicarSolicitudBajaPersistente(mac, i);
     }
   }
 }
@@ -4631,9 +5028,9 @@ void mostrarAvisoPortalAutomatico() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   display.println("⚠️  Sin WiFi estable");
-  display.println("Se habilita portal AP");
-  display.println(AP_SSID);
-  display.println("Configura redes");
+  display.println("Pulsa el boton WiFi");
+  display.println("para abrir el portal");
+  display.println("y configurar redes");
   display.display();
 }
 
@@ -5214,9 +5611,11 @@ LoRa.endPacket();
 Serial.println("✅ Mensaje de prueba enviado");
 
 
- //7. configura DISPOSITIVOS
+//7. configura DISPOSITIVOS
 // Cargar dispositivos registrados
-cargarDispositivos();  // 
+cargarDispositivos();  //
+// Cargar bajas pendientes persistentes (portal/BLE sin WiFi)
+cargarBajasPendientesEEPROM();
 delay(1000);
 testDispositivosRapido();  // ← Agrega esta línea solo poner para debug
 
@@ -5272,6 +5671,8 @@ if(mqttConfirmed) {
 if (solicitudAltaInicialEnviada && !mqttConfirmed) {
   Serial.println("Estado MQTT: Solicitud de alta inicial ya enviada, en espera de confirmación");
 }
+
+  mostrarResumenEstadoInicial();
 
 Serial.println("Setup completado");
 
@@ -5440,6 +5841,27 @@ testLoRaPeriodico();
             // Mantener flags hasta reinicio
         }
 
+        // Reforzar reconexión y reenvío de bajas MQTT aun durante animación (incluye bajas desde portal AP)
+        if (!apMode && !forceAPMode) {
+            if (WiFi.status() != WL_CONNECTED) {
+                attemptReconnectToAllNetworks();
+            }
+
+            if (WiFi.status() == WL_CONNECTED) {
+                if (!client.connected()) {
+                    reconnect();
+                }
+
+                client.loop();
+
+                if (client.connected()) {
+                    solicitarAltaMonitorMQTT();
+                    procesarAltasPendientes();
+                    procesarBajasPendientes();
+                }
+            }
+        }
+
         return; // Salir del loop mientras se muestra animación/resultado
     }
 
@@ -5468,9 +5890,8 @@ testLoRaPeriodico();
                     Serial.printf("Intento de reconexión fallido #%d\n", conteoReintentosWiFi);
 
                     if (conteoReintentosWiFi >= 3 && !forceAPMode) {
-                        Serial.println("⚠️  Sin WiFi tras 3 intentos. Activando portal AP para reconfigurar en español.");
+                        Serial.println("⚠️  Sin WiFi tras 3 intentos. Usa el botón WiFi para abrir el portal de configuración.");
                         mostrarAvisoPortalAutomatico();
-                        reiniciarConfiguracionWiFi();
                         conteoReintentosWiFi = 0;
                     }
                 }

@@ -39,6 +39,11 @@
 //      (rebote), IMPACTO_VENTANA_MS (ventana de conteo), IMPACTO_MUESTRAS_BASE
 //      (línea base) y los límites IMPACTO_MIN_TOQUES/IMPACTO_MAX_TOQUES según
 //      la respuesta del hardware.
+// 06 - 2025-06-06 Corrección: textos de alcance movidos a configuración inicial, portal sin mensajes de alcance y consecutivo actualizado.
+// 05 - 2025-06-05 Ajuste: consecutivo con variable de cercanía BLE ajustable,
+//      detalle de alcance WiFi/AP al crear la red y guía en español para reducir o aumentar cobertura.
+// 04 - 2025-06-04 Límite de emparejamiento BLE a ~5cm: se exige RSSI cercano,
+//      se imprime el alcance y se refuerza la bitácora en español.
 // 03 - 2025-05-26 Ventana de vigilia por impacto ahora configurable (1 minuto
 //      por defecto) con LED verde parpadeando al esperar BLE/WiFi, sólido si
 //      hay cliente en portal web y reinicio completo al finalizar la vigilia.
@@ -121,6 +126,10 @@ const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEP
 const char* ssidAP = "NUUP01_Configuracion";
 const char* passwordAP = ""; // Sin contraseña
 
+// --- Alcances ajustables ---
+// BLE: RSSI_MIN_APAREAMIENTO controla la proximidad mínima (por defecto ~5 cm).
+// WiFi/AP: alcanceWiFiMaximo fija la cobertura objetivo en metros y potenciaTxWiFi define la fuerza de transmisión.
+
 // --- Variables WiFi ---
 int alcanceWiFiMaximo = 1; // metros
 int potenciaTxWiFi = 8;    // Potencia de transmisión
@@ -156,6 +165,7 @@ bool doConnect = false;
 bool comandoPendiente = false;
 String targetDeviceName = "NUUP_Monitor";
 BLEAdvertisedDevice* myDevice;
+int RSSI_MIN_APAREAMIENTO = -45; // dBm necesarios para estar a ~5 cm (ajustable)
 
 String macRegistrada = "";
 bool esperandoDatosConfig = false;
@@ -451,7 +461,8 @@ void configurarWiFiAP() {
     
     // Configurar alcance mínimo por defecto (1 metro)
     configurarAlcanceWiFi(1);
-    
+    Serial.printf("ℹ️  Alcance AP actual: %d m (potencia %d dBm). Ajusta alcanceWiFiMaximo o llama configurarAlcanceWiFi() para modificarlo.\n", alcanceWiFiMaximo, potenciaTxWiFi);
+
     bool apStatus = WiFi.softAP(ssidAP, passwordAP);
     
     if (apStatus) {
@@ -606,7 +617,8 @@ void mostrarPaginaConfig() {
 <body>
     <div class="container">
         <h2>🔧 Configurar Dispositivo</h2>
-        
+        <p>Captura los datos del sensor y guarda la configuración.</p>
+
         <form action="/guardar" method="post" id="config-form">
             <input type="text" name="nombre" value=")=====" + String(dispositivo.nombre) + R"=====(" placeholder="Nombre del dispositivo" required>
             <input type="number" name="altura" value=")=====" + String(dispositivo.altura) + R"=====(" placeholder="Altura total (cm)" required>
@@ -831,14 +843,20 @@ void MyClientCallback::onDisconnect(BLEClient* pclient) {
 void MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice) {
     String deviceName = String(advertisedDevice.getName().c_str());
     String deviceAddress = String(advertisedDevice.getAddress().toString().c_str());
-    int rssi = advertisedDevice.getRSSI();
+  int rssi = advertisedDevice.getRSSI();
     
     Serial.printf("   📶 Dispositivo: '%s'", deviceName.c_str());
     Serial.printf(" - MAC: %s", deviceAddress.c_str());
     Serial.printf(" - RSSI: %d dBm", rssi);
     
-    if (deviceName == targetDeviceName) {
+  if (deviceName == targetDeviceName) {
         Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO!**");
+
+        if (rssi < RSSI_MIN_APAREAMIENTO) {
+            Serial.printf("      ⛔ RSSI %d dBm es demasiado débil: acércalo a ~5 cm (>= %d dBm) para emparejar.\n", rssi, RSSI_MIN_APAREAMIENTO);
+            return;
+        }
+
         advertisedDevice.getScan()->stop();
         myDevice = new BLEAdvertisedDevice(advertisedDevice);
         doConnect = true;
@@ -1001,6 +1019,8 @@ void scanForDevices() {
     Serial.printf("   - Servidor buscado: '%s'\n", targetDeviceName.c_str());
     Serial.printf("   - Duración: 4 segundos\n");
     Serial.printf("   - Potencia: Máxima\n");
+    Serial.printf("   - Emparejamiento solo si RSSI >= %d dBm (equivalente a ~5 cm)\n", RSSI_MIN_APAREAMIENTO);
+    Serial.println("   - Ajusta RSSI_MIN_APAREAMIENTO para acercar o alejar el rango BLE");
     Serial.println("   ═══════════════════════════════════");
     
     // Reiniciar flags
