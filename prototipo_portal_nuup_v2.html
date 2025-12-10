@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NUUP - Monitoreo Inteligente</title>
+    <style>
+        /* ============================================
+           VARIABLES Y RESET
+        ============================================ */
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --primary-color: #667eea;
+            --secondary-color: #764ba2;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --danger-color: #F44336;
+            --text-dark: #2c3e50;
+            --text-light: #7f8c8d;
+            --bg-light: #f8f9fa;
+            --white: #ffffff;
+            --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.15);
+            --radius: 16px;
+            --radius-sm: 8px;
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-light);
+            color: var(--text-dark);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* ============================================
+           PANTALLAS
+        ============================================ */
+        .screen {
+            display: none;
+            min-height: 100vh;
+            animation: fadeIn 0.4s ease-in-out;
+        }
+
+        .screen.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* ============================================
+           HEADER
+        ============================================ */
+        .header {
+            background: var(--primary-gradient);
+            color: var(--white);
+            padding: 20px;
+            box-shadow: var(--shadow);
+            position: relative;
+        }
+
+        .header-dashboard {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-simple {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .header-title {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .header-subtitle {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+
+        .home-name {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-top: 3px;
+        }
+
+        .notification-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: var(--white);
+            width: 45px;
+            height: 45px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            position: relative;
+            font-size: 20px;
+        }
+
+        .notification-badge {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: var(--danger-color);
+            color: var(--white);
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+        }
+
+        /* ============================================
+           CONTENT AREA
+        ============================================ */
+        .content {
+            flex: 1;
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+            width: 100%;
+            padding-bottom: 100px;
+        }
+
+        /* ============================================
+           LOADER / SPINNER
+        ============================================ */
+        .loader-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .loader-overlay.active {
+            display: flex;
+        }
+
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 6px solid rgba(255, 255, 255, 0.3);
+            border-top-color: var(--white);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .loader-text {
+            color: var(--white);
+            margin-top: 20px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        /* ============================================
+           DEVICE CARDS - MEJORADO
+        ============================================ */
+        .device-grid {
+            display: grid;
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .device-card {
+            background: var(--white);
+            padding: 20px;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            border-left: 6px solid var(--primary-color);
+            transition: var(--transition);
+        }
+
+        .device-card:hover {
+            transform: translateY(-5px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .device-card.status-ok {
+            border-left-color: var(--success-color);
+        }
+
+        .device-card.status-warning {
+            border-left-color: var(--warning-color);
+        }
+
+        .device-card.status-danger {
+            border-left-color: var(--danger-color);
+        }
+
+        .device-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+
+        .device-name {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-dark);
+        }
+
+        .device-type {
+            font-size: 12px;
+            color: var(--text-light);
+            margin-top: 3px;
+        }
+
+        .device-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--success-color);
+        }
+
+        .device-status.warning {
+            background: var(--warning-color);
+        }
+
+        .device-status.danger {
+            background: var(--danger-color);
+        }
+
+        /* NUEVO: Indicador de nivel mejorado */
+        .water-level-display {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            margin: 20px 0;
+        }
+
+        .tank-container {
+            position: relative;
+            width: 100px;
+            height: 120px;
+        }
+
+        .tank-visual {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to bottom,
+                    rgba(102, 126, 234, 0.1) 0%,
+                    rgba(102, 126, 234, 0.2) 100%);
+            border: 3px solid #667eea;
+            border-radius: 10px 10px 15px 15px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .water-fill-new {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(to top,
+                    #2196F3 0%,
+                    #4FC3F7 50%,
+                    #81D4FA 100%);
+            transition: height 1s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0 0 10px 10px;
+        }
+
+        .water-fill-new::before {
+            content: '💧';
+            font-size: 30px;
+            opacity: 0.4;
+        }
+
+        .level-percentage {
+            font-size: 52px;
+            font-weight: 700;
+            background: var(--primary-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1;
+        }
+
+        .device-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 12px 8px;
+            background: var(--bg-light);
+            border-radius: var(--radius-sm);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-light);
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-dark);
+        }
+
+        /* ============================================
+           EMPTY STATE
+        ============================================ */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .empty-icon {
+            font-size: 80px;
+            opacity: 0.3;
+            margin-bottom: 20px;
+        }
+
+        .empty-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text-dark);
+            margin-bottom: 10px;
+        }
+
+        .empty-text {
+            font-size: 14px;
+            color: var(--text-light);
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+
+        /* ============================================
+           ALERTS
+        ============================================ */
+        .alert-list {
+            display: grid;
+            gap: 12px;
+        }
+
+        .alert-item {
+            background: var(--white);
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            box-shadow: var(--shadow);
+            border-left: 4px solid var(--primary-color);
+            display: flex;
+            gap: 15px;
+            align-items: flex-start;
+        }
+
+        .alert-item.danger {
+            border-left-color: var(--danger-color);
+        }
+
+        .alert-item.warning {
+            border-left-color: var(--warning-color);
+        }
+
+        .alert-item.success {
+            border-left-color: var(--success-color);
+        }
+
+        .alert-icon {
+            font-size: 28px;
+            min-width: 40px;
+        }
+
+        .alert-content {
+            flex: 1;
+        }
+
+        .alert-title {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 5px;
+        }
+
+        .alert-text {
+            font-size: 13px;
+            color: var(--text-light);
+            margin-bottom: 5px;
+        }
+
+        .alert-time {
+            font-size: 11px;
+            color: var(--text-light);
+            opacity: 0.7;
+        }
+
+        /* ============================================
+           CONFIG SECTION
+        ============================================ */
+        .config-section {
+            background: var(--white);
+            padding: 20px;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-dark);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .form-group {
+            margin: 20px 0;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-dark);
+            margin-bottom: 8px;
+        }
+
+        .input-wrapper {
+            position: relative;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-light);
+            font-size: 18px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 14px 15px 14px 50px;
+            border: 2px solid #e0e0e0;
+            border-radius: var(--radius-sm);
+            font-size: 16px;
+            transition: var(--transition);
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-input:disabled {
+            background: #f5f5f5;
+            color: #999;
+            cursor: not-allowed;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-light);
+            margin-top: 5px;
+        }
+
+        /* ============================================
+           TOGGLE SWITCH
+        ============================================ */
+        .toggle-group {
+            background: var(--bg-light);
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 15px 0;
+        }
+
+        .toggle-label {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 60px;
+            height: 30px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: var(--transition);
+            border-radius: 30px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: var(--transition);
+            border-radius: 50%;
+        }
+
+        input:checked+.toggle-slider {
+            background: var(--primary-gradient);
+        }
+
+        input:checked+.toggle-slider:before {
+            transform: translateX(30px);
+        }
+
+        /* ============================================
+           WIFI LIST
+        ============================================ */
+        .wifi-list {
+            display: grid;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .wifi-item {
+            background: var(--bg-light);
+            padding: 15px;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            transition: var(--transition);
+            border: 2px solid transparent;
+        }
+
+        .wifi-item:hover {
+            border-color: var(--primary-color);
+            background: var(--white);
+        }
+
+        .wifi-item.selected {
+            border-color: var(--primary-color);
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(118, 75, 162, 0.05));
+        }
+
+        .wifi-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .wifi-icon {
+            font-size: 22px;
+        }
+
+        .wifi-details h3 {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .wifi-details p {
+            font-size: 12px;
+            color: var(--text-light);
+        }
+
+        .check-icon {
+            font-size: 22px;
+            color: var(--success-color);
+        }
+
+        /* ============================================
+           BUTTONS
+        ============================================ */
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-primary {
+            background: var(--primary-gradient);
+            color: var(--white);
+            box-shadow: var(--shadow);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .btn-danger {
+            background: var(--danger-color);
+            color: var(--white);
+        }
+
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+
+        /* ============================================
+           BOTTOM NAVIGATION - 3 ITEMS
+        ============================================ */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--white);
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            padding: 10px 0;
+            z-index: 100;
+        }
+
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+            padding: 10px;
+            color: var(--text-light);
+            transition: var(--transition);
+            border: none;
+            background: none;
+        }
+
+        .nav-item.active {
+            color: var(--primary-color);
+        }
+
+        .nav-icon {
+            font-size: 26px;
+        }
+
+        .nav-label {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        /* ============================================
+           ERROR MESSAGE
+        ============================================ */
+        .error-message {
+            background: #ffebee;
+            border-left: 4px solid var(--danger-color);
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            margin: 20px 0;
+            display: none;
+        }
+
+        .error-message.active {
+            display: block;
+        }
+
+        .error-title {
+            font-weight: 600;
+            color: var(--danger-color);
+            margin-bottom: 5px;
+        }
+
+        .error-text {
+            font-size: 14px;
+            color: #c62828;
+        }
+
+        /* ============================================
+           RESPONSIVE
+        ============================================ */
+        @media (min-width: 768px) {
+            .device-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- ============================================
+         LOADER OVERLAY
+    ============================================ -->
+    <div class="loader-overlay" id="loader">
+        <div style="text-align:center">
+            <div class="spinner"></div>
+            <div class="loader-text">Cargando...</div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         PANTALLA 1: INICIO (DASHBOARD)
+    ============================================ -->
+    <div class="screen active" id="screen-home">
+        <div class="header">
+            <div class="header-dashboard">
+                <div>
+                    <div class="header-title">NUUP</div>
+                    <div class="home-name" id="homeName">Mi hogar</div>
+                </div>
+                <button class="notification-btn" onclick="goToScreen('screen-alerts')">
+                    🔔
+                    <span class="notification-badge">3</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="content">
+            <!-- Dispositivos -->
+            <div class="device-grid" id="deviceGrid">
+                <!-- Dispositivo 1: OK -->
+                <div class="device-card status-ok">
+                    <div class="device-header">
+                        <div>
+                            <div class="device-name">Tinaco Principal</div>
+                            <div class="device-type">Sensor de Nivel de Agua</div>
+                        </div>
+                        <div class="device-status"></div>
+                    </div>
+
+                    <div class="water-level-display">
+                        <div class="tank-container">
+                            <div class="tank-visual">
+                                <div class="water-fill-new" style="height:77%"></div>
+                            </div>
+                        </div>
+                        <div class="level-percentage">77%</div>
+                    </div>
+
+                    <div class="device-stats">
+                        <div class="stat-item">
+                            <div class="stat-label">Litros</div>
+                            <div class="stat-value">850L</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Batería</div>
+                            <div class="stat-value">🔋 85%</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Señal</div>
+                            <div class="stat-value">📶 -62</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dispositivo 2: OK -->
+                <div class="device-card status-ok">
+                    <div class="device-header">
+                        <div>
+                            <div class="device-name">Cisterna Norte</div>
+                            <div class="device-type">Sensor de Nivel de Agua</div>
+                        </div>
+                        <div class="device-status"></div>
+                    </div>
+
+                    <div class="water-level-display">
+                        <div class="tank-container">
+                            <div class="tank-visual">
+                                <div class="water-fill-new" style="height:85%"></div>
+                            </div>
+                        </div>
+                        <div class="level-percentage">85%</div>
+                    </div>
+
+                    <div class="device-stats">
+                        <div class="stat-item">
+                            <div class="stat-label">Litros</div>
+                            <div class="stat-value">1200L</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Batería</div>
+                            <div class="stat-value">🔋 92%</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Señal</div>
+                            <div class="stat-value">📶 -58</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dispositivo 3: WARNING -->
+                <div class="device-card status-warning">
+                    <div class="device-header">
+                        <div>
+                            <div class="device-name">Tanque Azotea</div>
+                            <div class="device-type">Sensor de Nivel de Agua</div>
+                        </div>
+                        <div class="device-status warning"></div>
+                    </div>
+
+                    <div class="water-level-display">
+                        <div class="tank-container">
+                            <div class="tank-visual">
+                                <div class="water-fill-new" style="height:42%"></div>
+                            </div>
+                        </div>
+                        <div class="level-percentage">42%</div>
+                    </div>
+
+                    <div class="device-stats">
+                        <div class="stat-item">
+                            <div class="stat-label">Litros</div>
+                            <div class="stat-value">450L</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Batería</div>
+                            <div class="stat-value">🔋 68%</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Señal</div>
+                            <div class="stat-value">📶 -75</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Empty State (oculto por defecto) -->
+            <div class="empty-state" id="emptyState" style="display:none">
+                <div class="empty-icon">📡</div>
+                <div class="empty-title">No hay dispositivos</div>
+                <div class="empty-text">
+                    Agrega tu primer sensor NUUP para comenzar a monitorear el nivel de agua de tu tinaco o cisterna.
+                    <br><br>
+                    <strong>Instrucciones:</strong><br>
+                    1. Conecta el sensor al tanque<br>
+                    2. Presiona el botón del sensor<br>
+                    3. El dispositivo aparecerá automáticamente aquí
+                </div>
+                <button class="btn btn-primary" style="max-width:250px;margin:0 auto">
+                    📖 Ver Guía Completa
+                </button>
+            </div>
+        </div>
+
+        <!-- Navegación (3 items) -->
+        <div class="bottom-nav">
+            <button class="nav-item active" onclick="activateNav(0); goToScreen('screen-home')">
+                <div class="nav-icon">🏠</div>
+                <div class="nav-label">Inicio</div>
+            </button>
+            <button class="nav-item" onclick="activateNav(1); goToScreen('screen-alerts')">
+                <div class="nav-icon">🔔</div>
+                <div class="nav-label">Alertas</div>
+            </button>
+            <button class="nav-item" onclick="activateNav(2); goToScreen('screen-config')">
+                <div class="nav-icon">⚙️</div>
+                <div class="nav-label">Config</div>
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================
+         PANTALLA 2: ALERTAS
+    ============================================ -->
+    <div class="screen" id="screen-alerts">
+        <div class="header">
+            <div class="header-simple">
+                <div>
+                    <div class="header-title">Alertas</div>
+                    <div class="header-subtitle">Notificaciones recientes</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="alert-list">
+                <div class="alert-item danger">
+                    <div class="alert-icon">⚠️</div>
+                    <div class="alert-content">
+                        <div class="alert-title">Nivel Bajo</div>
+                        <div class="alert-text">Tinaco Principal está al 15%</div>
+                        <div class="alert-time">Hace 2 horas</div>
+                    </div>
+                </div>
+
+                <div class="alert-item success">
+                    <div class="alert-icon">✅</div>
+                    <div class="alert-content">
+                        <div class="alert-title">Tanque Lleno</div>
+                        <div class="alert-text">Cisterna Norte alcanzó el 95%</div>
+                        <div class="alert-time">Hace 5 horas</div>
+                    </div>
+                </div>
+
+                <div class="alert-item warning">
+                    <div class="alert-icon">🚨</div>
+                    <div class="alert-content">
+                        <div class="alert-title">Posible Fuga</div>
+                        <div class="alert-text">Se detectó consumo irregular en Tanque Azotea</div>
+                        <div class="alert-time">Ayer a las 14:30</div>
+                    </div>
+                </div>
+
+                <div class="alert-item">
+                    <div class="alert-icon">ℹ️</div>
+                    <div class="alert-content">
+                        <div class="alert-title">Dispositivo Conectado</div>
+                        <div class="alert-text">Nuevo sensor registrado: Tinaco Principal</div>
+                        <div class="alert-time">Hace 2 días</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Empty state para alertas -->
+            <div class="empty-state" id="emptyAlerts" style="display:none">
+                <div class="empty-icon">🔔</div>
+                <div class="empty-title">No hay alertas</div>
+                <div class="empty-text">
+                    Cuando tus dispositivos necesiten atención, recibirás notificaciones aquí.
+                </div>
+            </div>
+        </div>
+
+        <!-- Navegación -->
+        <div class="bottom-nav">
+            <button class="nav-item" onclick="activateNav(0); goToScreen('screen-home')">
+                <div class="nav-icon">🏠</div>
+                <div class="nav-label">Inicio</div>
+            </button>
+            <button class="nav-item active" onclick="activateNav(1); goToScreen('screen-alerts')">
+                <div class="nav-icon">🔔</div>
+                <div class="nav-label">Alertas</div>
+            </button>
+            <button class="nav-item" onclick="activateNav(2); goToScreen('screen-config')">
+                <div class="nav-icon">⚙️</div>
+                <div class="nav-label">Config</div>
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================
+         PANTALLA 3: CONFIGURACIÓN
+    ============================================ -->
+    <div class="screen" id="screen-config">
+        <div class="header">
+            <div class="header-simple">
+                <div>
+                    <div class="header-title">Configuración</div>
+                    <div class="header-subtitle">WiFi y Notificaciones</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <!-- Sección: Información General -->
+            <div class="config-section">
+                <div class="section-title">🏠 Información del Hogar</div>
+
+                <div class="form-group">
+                    <label class="form-label">Nombre del Hogar</label>
+                    <div class="input-wrapper">
+                        <span class="input-icon">🏡</span>
+                        <input type="text" class="form-input" value="Mi hogar" id="homeNameInput">
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" onclick="saveHomeName()">
+                    💾 Guardar Nombre
+                </button>
+            </div>
+
+            <!-- Sección: WiFi -->
+            <div class="config-section">
+                <div class="section-title">📶 Conexión WiFi</div>
+
+                <p style="font-size:13px;color:var(--text-light);margin-bottom:15px">
+                    El monitor funciona sin WiFi, pero conéctalo para recibir notificaciones.
+                </p>
+
+                <div class="wifi-list">
+                    <div class="wifi-item selected" onclick="selectWiFi(this)">
+                        <div class="wifi-info">
+                            <div class="wifi-icon">📶</div>
+                            <div class="wifi-details">
+                                <h3>Mi_Casa_WiFi</h3>
+                                <p>Señal fuerte</p>
+                            </div>
+                        </div>
+                        <div class="check-icon">✓</div>
+                    </div>
+
+                    <div class="wifi-item" onclick="selectWiFi(this)">
+                        <div class="wifi-info">
+                            <div class="wifi-icon">📶</div>
+                            <div class="wifi-details">
+                                <h3>INFINITUM_2.4G</h3>
+                                <p>Señal media</p>
+                            </div>
+                        </div>
+                        <div class="check-icon" style="opacity:0">✓</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Contraseña WiFi</label>
+                    <div class="input-wrapper">
+                        <span class="input-icon">🔒</span>
+                        <input type="password" class="form-input" placeholder="Ingresa la contraseña">
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" onclick="connectWiFi()">
+                    📡 Conectar a WiFi
+                </button>
+
+                <div class="error-message" id="wifiError">
+                    <div class="error-title">Error de Conexión</div>
+                    <div class="error-text">
+                        No se pudo conectar a la red. Verifica la contraseña e intenta nuevamente.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sección: WhatsApp -->
+            <div class="config-section">
+                <div class="section-title">💬 Notificaciones por WhatsApp</div>
+
+                <p style="font-size:13px;color:var(--text-light);margin-bottom:15px">
+                    Recibe alertas cuando tus dispositivos necesiten atención
+                </p>
+
+                <div class="toggle-group">
+                    <span class="toggle-label">Activar notificaciones</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="whatsappToggle" onchange="toggleWhatsApp()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div id="phoneNumberField" style="display:none">
+                    <div class="form-group">
+                        <label class="form-label">Número de Teléfono</label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">📱</span>
+                            <input type="tel" class="form-input" placeholder="10 dígitos" maxlength="10"
+                                pattern="[0-9]{10}">
+                        </div>
+                        <div class="form-hint">Solo números, sin espacios ni guiones</div>
+                    </div>
+
+                    <button class="btn btn-primary" onclick="saveWhatsApp()">
+                        💾 Guardar Configuración
+                    </button>
+                </div>
+            </div>
+
+            <!-- Sección: Reset de Fábrica -->
+            <div class="config-section">
+                <div class="section-title">🗑️ Reset de Fábrica</div>
+
+                <p style="font-size:13px;color:var(--text-light);margin-bottom:15px">
+                    Esto borrará toda la configuración y los dispositivos registrados. Esta acción no se puede deshacer.
+                </p>
+
+                <button class="btn btn-danger" onclick="factoryReset()">
+                    ⚠️ Restaurar a Valores de Fábrica
+                </button>
+            </div>
+        </div>
+
+        <!-- Navegación -->
+        <div class="bottom-nav">
+            <button class="nav-item" onclick="activateNav(0); goToScreen('screen-home')">
+                <div class="nav-icon">🏠</div>
+                <div class="nav-label">Inicio</div>
+            </button>
+            <button class="nav-item" onclick="activateNav(1); goToScreen('screen-alerts')">
+                <div class="nav-icon">🔔</div>
+                <div class="nav-label">Alertas</div>
+            </button>
+            <button class="nav-item active" onclick="activateNav(2); goToScreen('screen-config')">
+                <div class="nav-icon">⚙️</div>
+                <div class="nav-label">Config</div>
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================
+         JAVASCRIPT
+    ============================================ -->
+    <script>
+        // Navegación entre pantallas
+        function goToScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(screen => {
+                screen.classList.remove('active');
+            });
+            document.getElementById(screenId).classList.add('active');
+            window.scrollTo(0, 0);
+        }
+
+        // Activar tab de navegación
+        function activateNav(index) {
+            document.querySelectorAll('.nav-item').forEach((item, i) => {
+                if (i === index) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+        }
+
+        // Toggle WhatsApp
+        function toggleWhatsApp() {
+            const toggle = document.getElementById('whatsappToggle');
+            const phoneField = document.getElementById('phoneNumberField');
+
+            if (toggle.checked) {
+                phoneField.style.display = 'block';
+            } else {
+                phoneField.style.display = 'none';
+            }
+        }
+
+        // Guardar nombre del hogar
+        function saveHomeName() {
+            const homeName = document.getElementById('homeNameInput').value;
+            document.getElementById('homeName').textContent = homeName;
+
+            showLoader('Guardando...');
+            setTimeout(() => {
+                hideLoader();
+                alert('✅ Nombre del hogar guardado correctamente');
+            }, 1000);
+        }
+
+        // Seleccionar WiFi
+        function selectWiFi(element) {
+            document.querySelectorAll('.wifi-item').forEach(item => {
+                item.classList.remove('selected');
+                item.querySelector('.check-icon').style.opacity = '0';
+            });
+
+            element.classList.add('selected');
+            element.querySelector('.check-icon').style.opacity = '1';
+        }
+
+        // Conectar WiFi
+        function connectWiFi() {
+            showLoader('Conectando a WiFi...');
+
+            // Simular conexión
+            setTimeout(() => {
+                hideLoader();
+                const success = Math.random() > 0.3; // 70% éxito
+
+                if (success) {
+                    alert('✅ Conectado exitosamente');
+                    document.getElementById('wifiError').classList.remove('active');
+                } else {
+                    document.getElementById('wifiError').classList.add('active');
+                }
+            }, 2000);
+        }
+
+        // Guardar WhatsApp
+        function saveWhatsApp() {
+            const phone = document.querySelector('#phoneNumberField input').value;
+
+            if (phone.length !== 10) {
+                alert('❌ El número debe tener 10 dígitos');
+                return;
+            }
+
+            showLoader('Guardando...');
+            setTimeout(() => {
+                hideLoader();
+                alert('✅ Configuración de WhatsApp guardada\nRecibirás notificaciones en: +52 1 ' + phone);
+            }, 1000);
+        }
+
+        // Reset de fábrica
+        function factoryReset() {
+            if (confirm('⚠️ ¿Estás seguro?\n\nEsta acción borrará:\n• Todos los dispositivos\n• Configuración de WiFi\n• Configuración de WhatsApp\n• Nombre del hogar\n\nNo se puede deshacer.')) {
+                if (confirm('🚨 Última confirmación\n\n¿Realmente deseas restaurar a valores de fábrica?')) {
+                    showLoader('Borrando configuración...');
+                    setTimeout(() => {
+                        hideLoader();
+                        alert('✅ Configuración restaurada\nEl dispositivo se reiniciará');
+                        location.reload();
+                    }, 2000);
+                }
+            }
+        }
+
+        // Mostrar loader
+        function showLoader(text = 'Cargando...') {
+            document.getElementById('loader').classList.add('active');
+            document.querySelector('.loader-text').textContent = text;
+        }
+
+        // Ocultar loader
+        function hideLoader() {
+            document.getElementById('loader').classList.remove('active');
+        }
+
+        // Animación de llenado al cargar
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                document.querySelectorAll('.water-fill-new').forEach(fill => {
+                    const height = fill.style.height;
+                    fill.style.height = '0';
+                    setTimeout(() => {
+                        fill.style.height = height;
+                    }, 100);
+                });
+            }, 300);
+        });
+
+        // Mostrar empty state si no hay dispositivos
+        // Descomentar para ver empty state:
+        // document.getElementById('deviceGrid').style.display = 'none';
+        // document.getElementById('emptyState').style.display = 'block';
+    </script>
+</body>
+
+</html>
