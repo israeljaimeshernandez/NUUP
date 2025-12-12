@@ -92,6 +92,8 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 94 - 2025-06-10 UI: sin dispositivos muestra solo "SIN Dispositivos" y "NUUP" en pantalla, sin mensajes adicionales.
+// 93 - 2025-06-10 Ajuste: mensajes LoRa con MAC no registrada se descartan sin auto-alta ni envío MQTT, solo se avisa en consola.
 // 92 - 2025-06-09 Corrección: trazas detalladas de bajas pendientes (BLE/AP), limpieza de banderas al re-alta y reenvío inmediato tras reconexión MQTT para que la baja se complete aun después de reinicios.
 // 91 - 2025-06-08 Corrección: las bajas solicitadas sin WiFi (portal o BLE) se encolan en EEPROM y se reintentan al reconectar MQTT hasta confirmarlas o re-registrar el dispositivo.
 // 90 - 2025-06-07 Corrección: tras bajas solicitadas desde el portal AP se reconecta a WiFi/MQTT y se envía la solicitud de baja antes del reinicio, manteniendo la animación como en BLE.
@@ -266,8 +268,8 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 86;
-const char *RESUMEN_CONSECUTIVO = "Portal AP solo con botón y resumen inicial de estado";
+const uint16_t CONSECUTIVO_ACTUAL = 94;
+const char *RESUMEN_CONSECUTIVO = "Pantalla sin dispositivos simplificada (SIN Dispositivos + NUUP)";
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -4827,20 +4829,9 @@ void recepcion_lora() {
             }
 
             if (!encontrado) {
-                Serial.println("❌ DISPOSITIVO NO REGISTRADO - Intentando registrar con estado inactivo");
-                if (registrarDispositivo(mac, tipoDispositivo)) {
-                    Serial.println("✅ Dispositivo registrado automáticamente desde LoRa (activo=0)");
-                    actualizarDatosDesdeLoRa(mac, received, "");
-                    int nuevoIndice = obtenerIndiceDispositivo(mac);
-                    if (nuevoIndice >= 0) {
-                        mensajeLoRa = normalizarPayloadParaMQTT(received);
-                        nuevoMensajeLoRa = false;
-                        Serial.println("ℹ️  Dispositivo aún inactivo: datos recibidos no se publicarán hasta activación en MQTT");
-                        intentarAltaTrasRegistro(nuevoIndice, mac, "LoRa (nuevo)");
-                    }
-                } else {
-                    Serial.println("❌ No se pudo registrar el dispositivo (sin espacio)");
-                }
+                Serial.println("❌ DISPOSITIVO NO REGISTRADO - Mensaje LoRa ignorado sin auto-alta ni publicación MQTT");
+                Serial.println("ℹ️  Registre el dispositivo por BLE o portal antes de aceptar datos LoRa");
+                return;
             }
         } else {
             Serial.println("❌ ERROR: No se pudieron extraer las comas del mensaje");
@@ -5286,7 +5277,7 @@ void dibujarTituloDispositivo() {
     int cantidadDispositivos = contarDispositivosRegistrados();
     
     if (cantidadDispositivos == 0) {
-        display.println("Sin Dispositivos");
+        display.println("SIN Dispositivos");
     } else {
         Dispositivo disp = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
         
@@ -5305,10 +5296,10 @@ void dibujarContenidoPrincipal() {
     int cantidadDispositivos = contarDispositivosRegistrados();
     
     if (cantidadDispositivos == 0) {
-        // Mostrar mensaje cuando no hay dispositivos
-        display.setTextSize(1);
-        display.setCursor(10, 50);
-        display.print("Esperando dispositivos...");
+        // Mostrar etiqueta NUUP debajo del título de "SIN Dispositivos"
+        display.setTextSize(2);
+        display.setCursor((SCREEN_WIDTH - (4 * 6 * 2)) / 2, 48); // Centrado aproximado
+        display.print("NUUP");
     } else {
         Dispositivo disp = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
         
