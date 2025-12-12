@@ -31,8 +31,7 @@
  *
  ******************************************************************************/
 
-// 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistenci
-a en EEPROM.
+// 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistencia en EEPROM.
 // 01 - 2025-05-24 Ajuste de doble/triple toque para despertar, espera
 //      ampliada en modo AP tras abrir la página, envíos LoRa cada 20s y
 //      proceso de baja con parpadeo/validación extendidos.
