@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
 // 95 - 2025-06-11 LoRa: el monitor confirma solo por LoRa; la publicación MQTT sigue igual, sin ACK extra al broker.
 // 94 - 2025-06-10 UI: sin dispositivos muestra solo "SIN Dispositivos" y "NUUP" en pantalla, sin mensajes adicionales.
 // 93 - 2025-06-10 Ajuste: mensajes LoRa con MAC no registrada se descartan sin auto-alta ni envío MQTT, solo se avisa en consola.
@@ -4777,6 +4778,52 @@ void recepcion_lora() {
         Serial.print("📨 Mensaje RAW: '");
         Serial.print(received);
         Serial.println("'");
+
+        if (received.startsWith("configuracion/")) {
+            int primera = received.indexOf('/');
+            int segunda = received.indexOf('/', primera + 1);
+            int tercera = received.indexOf('/', segunda + 1);
+            int coma = received.indexOf(',', tercera + 1);
+
+            if (primera == -1 || segunda == -1 || tercera == -1 || coma == -1) {
+                Serial.println("⚠️  Mensaje de configuración con formato inválido");
+                return;
+            }
+
+            String macConfig = normalizarMac(received.substring(primera + 1, segunda));
+            String etapa = received.substring(segunda + 1, tercera);
+            uint8_t potenciaSolicitada = received.substring(coma + 1).toInt();
+
+            if (!esMacValida(macConfig)) {
+                Serial.printf("❌ MAC inválida en configuración: '%s'\n", macConfig.c_str());
+                return;
+            }
+
+            if (etapa != "solicitud") {
+                Serial.printf("⏭️  Configuración ignorada por etapa distinta: %s\n", etapa.c_str());
+                return;
+            }
+
+            bool activo = false;
+            for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+                if (normalizarMac(String(configDispositivos[i].mac)) == macConfig && configDispositivos[i].activo) {
+                    activo = true;
+                    break;
+                }
+            }
+
+            if (!activo) {
+                Serial.println("⏭️  Configuración ignorada: dispositivo no activo o no registrado");
+                return;
+            }
+
+            String respuesta = "configuracion/" + macConfig + "/confirmacion," + String(potenciaSolicitada);
+            Serial.printf("📡 Confirmando potencia LoRa a %s con %u dBm\n", macConfig.c_str(), potenciaSolicitada);
+            LoRa.beginPacket();
+            LoRa.print(respuesta);
+            LoRa.endPacket();
+            return;
+        }
         
         // Debug detallado del formato
         debugMensajeLoRa(received);
