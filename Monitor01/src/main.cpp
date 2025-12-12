@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 95 - 2025-06-11 LoRa: el monitor confirma solo por LoRa; la publicación MQTT sigue igual, sin ACK extra al broker.
 // 94 - 2025-06-10 UI: sin dispositivos muestra solo "SIN Dispositivos" y "NUUP" en pantalla, sin mensajes adicionales.
 // 93 - 2025-06-10 Ajuste: mensajes LoRa con MAC no registrada se descartan sin auto-alta ni envío MQTT, solo se avisa en consola.
 // 92 - 2025-06-09 Corrección: trazas detalladas de bajas pendientes (BLE/AP), limpieza de banderas al re-alta y reenvío inmediato tras reconexión MQTT para que la baja se complete aun después de reinicios.
@@ -269,13 +270,11 @@
 
 // Indicador consecutivo del firmware
 const uint16_t CONSECUTIVO_ACTUAL = 95;
-const char *RESUMEN_CONSECUTIVO = "ACK LoRa: NUUP/MAC/solicitud + confirmacion con nombre/altura/litros";
+const char *RESUMEN_CONSECUTIVO = "MQTT sin cambios: solo confirmación LoRa, sin ACK extra al broker";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
 const char *TOPICO_LORA_BASE = "NUUP/";                    // Prefijo MQTT para datos LoRa
-const char *SUFIJO_SOLICITUD = "/solicitud";               // Publicación de datos crudos
-const char *SUFIJO_CONFIRMACION = "/confirmacion";         // Confirmación con nombre/altura/litros
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -6024,18 +6023,10 @@ testLoRaPeriodico();
         if (nuevoMensajeLoRa) {
             asegurarMacMonitorFija("mqtt_lora");
             String macDestino = extraerMacDeMensajeLoRa(mensajeLoRa);
-            String topico = String(TOPICO_LORA_BASE) + macDestino + String(SUFIJO_SOLICITUD);
+            String topico = String(TOPICO_LORA_BASE) + macDestino;
             if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
                 Serial.print("Publicado: ");
                 Serial.println(mensajeLoRa);
-                // Confirmación MQTT con datos locales
-                ConfigDispositivo datos = obtenerConfigPorMac(macDestino);
-                String confirmacion = "CONFIRMACION," + macDestino + "," +
-                                     String(datos.nombre) + "," +
-                                     String(datos.alturaConfig, 0) + "," +
-                                     String(datos.litrosConfig, 0);
-                String topicoConf = String(TOPICO_LORA_BASE) + macDestino + String(SUFIJO_CONFIRMACION);
-                client.publish(topicoConf.c_str(), confirmacion.c_str());
             } else {
                 Serial.println("Error al publicar");
             }
