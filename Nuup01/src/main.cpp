@@ -109,6 +109,10 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 20000   // 20 segundos entre envíos LoRa (registrado)
+#define INTERVALO_ENVIO_CAMBIO 5000   // 5 segundos cuando hubo cambios recientes
+#define INTERVALO_ENVIO_FORZOSO 20000 // 20 segundos máximo sin cambios
+#define TIEMPO_ESPERA_CONFIRMACION 2000 // 2 segundos de espera por confirmación LoRa
+#define REINTENTOS_CONFIRMACION 5     // Envío inicial + 4 reintentos antes de reiniciar
 #define INTERVALO_ESCANEO_ALTA 10000  // 10 segundos (búsqueda activa extendida)
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
 #define INTERVALO_PARPADEO 62
@@ -184,6 +188,8 @@ unsigned long tiempoProgramadoEnvio = 0;
 bool botonPresionado = false;
 unsigned long tiempoInicioPresion = 0;
 unsigned long ultimoEnvioDatos = 0;
+unsigned long intervaloEnvioActual = INTERVALO_ENVIO_FORZOSO;
+String ultimoMensajeConfirmado = "";
 unsigned long ultimoCambioLedRojo = 0;
 bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
@@ -1819,7 +1825,7 @@ void setup() {
     iniciarLoRaConReintentos();
 
     // Configurar para medición
-    ultimoEnvioDatos = -INTERVALO_ENVIO_DATOS;
+    ultimoEnvioDatos = -INTERVALO_ENVIO_FORZOSO;
 
     // ⭐⭐ INICIALIZAR WiFi AP Y SERVIDOR WEB
     Serial.println("\n🌐 INICIANDO SERVICIOS WiFi...");
@@ -1828,10 +1834,10 @@ void setup() {
     Serial.println("\n🎯 ESTRATEGIA OPERATIVA:");
     Serial.println("   ==========================");
     Serial.printf("   📱 BLE: Escaneo cada %d segundos\n", INTERVALO_ESCANEO_BAJA/1000);
-    Serial.printf("   📊 Sensor: Medición cada %d segundos\n", INTERVALO_ENVIO_DATOS/1000);
+    Serial.printf("   📊 Sensor: Medición cada %d segundos (cambios) / %d segundos (forzoso)\n", INTERVALO_ENVIO_CAMBIO/1000, INTERVALO_ENVIO_FORZOSO/1000);
     Serial.printf("   🌐 WiFi: Servidor web SIEMPRE ACTIVO\n");
     Serial.printf("   📍 IP: %s\n", WiFi.softAPIP().toString().c_str());
-    Serial.printf("   😴 Sleep: %d segundos entre ciclos\n", INTERVALO_ENVIO_DATOS/1000);
+    Serial.printf("   😴 Sleep: %d segundos entre ciclos máximos\n", INTERVALO_ENVIO_FORZOSO/1000);
     Serial.println("   ==========================");
     
     Serial.println("✅ SETUP COMPLETADO - Primer escaneo BLE INMEDIATO");
@@ -2054,17 +2060,21 @@ void loop() {
     if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !wakeByImpact) {
         unsigned long tiempoDesdeMedicion = millis() - ultimoEnvioDatos;
 
-        if (ultimoEnvioDatos < 0 || tiempoDesdeMedicion >= INTERVALO_ENVIO_DATOS) {
+        if (ultimoEnvioDatos < 0 || tiempoDesdeMedicion >= intervaloEnvioActual) {
             Serial.println("\n📊 ===========================================");
             Serial.println("🎯 INICIANDO MEDICIÓN DE SENSOR");
             Serial.printf("   Tiempo desde última medición: %d seg\n", tiempoDesdeMedicion / 1000);
             Serial.println("📊 ===========================================");
             
             int distancia = obtenerDistanciaValida();
-            enviarDatos(distancia);
+            bool confirmado = enviarDatos(distancia);
+            if (!confirmado) {
+                Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
+                ESP.restart();
+            }
             ultimoEnvioDatos = millis();
 
-            Serial.printf("✅ Medición completada. Próxima en: %d segundos\n\n", INTERVALO_ENVIO_DATOS / 1000);
+            Serial.printf("✅ Medición completada. Próxima en: %d segundos\n\n", intervaloEnvioActual / 1000);
 
             Serial.println("😴 Programando deep sleep hasta el próximo ciclo LoRa...");
             wakeByImpact = false;
@@ -2083,7 +2093,7 @@ void loop() {
             unsigned long tiempoHastaProximoBLE = intervaloEscaneo - tiempoDesdeBLE;
             
             if (tiempoHastaProximoBLE > 10000) {
-                unsigned long sleepTime = INTERVALO_ENVIO_DATOS - tiempoDesdeEnvio;
+                unsigned long sleepTime = intervaloEnvioActual - tiempoDesdeEnvio;
                 
                 if (sleepTime > 5000) {
                     Serial.println("\n😴 ENTRANDO EN DEEP SLEEP...");
@@ -2304,7 +2314,60 @@ void limpiarEEPROMYReiniciar() {
     ESP.restart();
 }
 
-void enviarDatos(int distancia) {
+bool esperarConfirmacionLoRa() {
+    unsigned long inicioEspera = millis();
+
+    while (millis() - inicioEspera < TIEMPO_ESPERA_CONFIRMACION) {
+        int packetSize = LoRa.parsePacket();
+        if (packetSize) {
+            String respuesta = "";
+            while (LoRa.available()) {
+                respuesta += (char)LoRa.read();
+            }
+            respuesta.trim();
+            Serial.printf("📨 Confirmación recibida: %s\n", respuesta.c_str());
+
+            int first = respuesta.indexOf(',');
+            int second = respuesta.indexOf(',', first + 1);
+            int third = respuesta.indexOf(',', second + 1);
+            int fourth = respuesta.indexOf(',', third + 1);
+
+            if (first == -1 || second == -1 || third == -1 || fourth == -1) {
+                Serial.println("⚠️  Confirmación inválida");
+                continue;
+            }
+
+            String tipo = respuesta.substring(0, first);
+            String mac = respuesta.substring(first + 1, second);
+            String nombreNuevo = respuesta.substring(second + 1, third);
+            uint32_t alturaNueva = respuesta.substring(third + 1, fourth).toInt();
+            uint32_t litrosNuevos = respuesta.substring(fourth + 1).toInt();
+
+            if (tipo != "CONFIRMACION" || mac != macAddress) {
+                Serial.println("⏭️  Confirmación de otro dispositivo, ignorada");
+                continue;
+            }
+
+            bool cambios = nombreNuevo != String(dispositivo.nombre) ||
+                           alturaNueva != dispositivo.altura ||
+                           litrosNuevos != dispositivo.litros;
+
+            if (cambios) {
+                Serial.println("✏️  Actualizando datos desde confirmación del monitor...");
+                strlcpy(dispositivo.nombre, nombreNuevo.c_str(), sizeof(dispositivo.nombre));
+                dispositivo.altura = alturaNueva;
+                dispositivo.litros = litrosNuevos;
+                guardarDatosEnEEPROM();
+            }
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool enviarDatos(int distancia) {
     int litrosActuales = 0;
     
     if (distancia != 9999) {
@@ -2369,23 +2432,39 @@ void enviarDatos(int distancia) {
     Serial.printf("   🧠 IA - Promedio semanal: %.1f L\n", analisisActual.promedioSemanal);
     Serial.printf("   🧠 IA - Promedio mensual: %.1f L\n", analisisActual.promedioMensual);
     
-    // Envío LoRa
-    Serial.println("\n📤 INICIANDO TRANSMISIÓN LoRa...");
-    int beginResult = LoRa.beginPacket();
-    
-    if (beginResult) {
-        int printResult = LoRa.print(mensaje);
-        int endResult = LoRa.endPacket();
+    bool cambios = mensaje != ultimoMensajeConfirmado;
+    intervaloEnvioActual = cambios ? INTERVALO_ENVIO_CAMBIO : INTERVALO_ENVIO_FORZOSO;
 
-        if (endResult) {
-            Serial.println("\n🎉 TRANSMISIÓN COMPLETADA");
-            Serial.print("📨 MENSAJE: ");
-            Serial.println(mensaje);
-            parpadearLED(LED_VERDE_PIN, PARPADEO_LORA_INTERVALO_MS, DURACION_PARPADEO_LORA_MS);
+    bool confirmado = false;
+    for (int intento = 1; intento <= REINTENTOS_CONFIRMACION; intento++) {
+        Serial.printf("\n📤 INICIANDO TRANSMISIÓN LoRa (intento %d/%d)...\n", intento, REINTENTOS_CONFIRMACION);
+        int beginResult = LoRa.beginPacket();
+
+        if (beginResult) {
+            LoRa.print(mensaje);
+            int endResult = LoRa.endPacket();
+
+            if (endResult) {
+                Serial.println("\n🎉 TRANSMISIÓN COMPLETADA");
+                Serial.print("📨 MENSAJE: ");
+                Serial.println(mensaje);
+                parpadearLED(LED_VERDE_PIN, PARPADEO_LORA_INTERVALO_MS, DURACION_PARPADEO_LORA_MS);
+                if (esperarConfirmacionLoRa()) {
+                    confirmado = true;
+                    break;
+                } else {
+                    Serial.println("⌛ Sin confirmación, reintentando...");
+                }
+            }
         }
+        delay(250);
     }
-    
+
     ultimoEnvioDatos = millis();
+    if (confirmado) {
+        ultimoMensajeConfirmado = mensaje;
+    }
+    return confirmado;
 }
 
 int calcularLitros(int distancia, uint32_t alturaTotal, uint32_t litrosTotal) {
@@ -2472,16 +2551,16 @@ void prepararParaDeepSleep() {
 
     Serial.println("🛌 Preparando para deep sleep...");
 
-    unsigned long sleepTime = INTERVALO_ENVIO_DATOS;
+    unsigned long sleepTime = intervaloEnvioActual;
 
     if (registrado) {
         // Calcular tiempo de sleep exacto
         unsigned long tiempoDesdeUltimoEnvio = millis() - ultimoEnvioDatos;
-        sleepTime = INTERVALO_ENVIO_DATOS - tiempoDesdeUltimoEnvio;
+        sleepTime = intervaloEnvioActual - tiempoDesdeUltimoEnvio;
 
         // Asegurar que el tiempo de sleep sea válido
         if (sleepTime < 1000) sleepTime = 1000;
-        if (sleepTime > INTERVALO_ENVIO_DATOS) sleepTime = INTERVALO_ENVIO_DATOS;
+        if (sleepTime > intervaloEnvioActual) sleepTime = intervaloEnvioActual;
 
         esp_sleep_enable_timer_wakeup(sleepTime * 1000);
         Serial.printf("   Sleep por TIMER: %lu ms (%lu seg)\n", sleepTime, sleepTime / 1000);
