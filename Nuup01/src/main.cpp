@@ -99,7 +99,7 @@ const uint16_t IMPACTO_VENTANA_MS = 1500;
 // 02) Tiempo mínimo entre toques para evitar rebotes (ms)
 const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
 // 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
-const uint16_t IMPACTO_UMBRAL_ANALOGICO = 50;
+const uint16_t IMPACTO_UMBRAL_ANALOGICO = 25;
 // 04) Muestras usadas para estimar el nivel en reposo del sensor
 const uint8_t IMPACTO_MUESTRAS_BASE = 16;
 // 05) Cantidad mínima de toques válidos para aceptar el despertar
@@ -544,6 +544,8 @@ bool confirmarGolpesImpacto() {
     }
     uint16_t baseReposo = acumulado / IMPACTO_MUESTRAS_BASE;
     Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
+    Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u (50%% del umbral previo)\n",
+                  IMPACTO_UMBRAL_ANALOGICO);
 
     int toquesDetectados = 1; // Primer toque es el que despertó
     unsigned long inicioVentana = millis();
@@ -572,6 +574,12 @@ bool confirmarGolpesImpacto() {
     }
 
     Serial.printf("🔎 Total de toques detectados: %d\n", toquesDetectados);
+    Serial.printf("📈 Indicador de impacto: base %u, umbral -%u, toques válidos %s\n",
+                  baseReposo,
+                  IMPACTO_UMBRAL_ANALOGICO,
+                  toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES
+                      ? "✅ dentro del rango"
+                      : "❌ insuficientes/excesivos");
     return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
 }
 
