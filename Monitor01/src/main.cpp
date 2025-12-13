@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 99 - 2025-06-13 LoRa: se imprime en consola la recepción y la confirmación enviada, manteniendo trazabilidad inmediata.
 // 98 - 2025-06-13 LoRa: NUUP01 recibe confirmación clara al enviar desde la ruta nuup/MAC, normalizando el payload y deteniendo reintentos.
 // 97 - 2025-06-12 LoRa: NUUP01 recibe confirmación o error claro al responder; se documenta el ajuste en español.
 // 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
@@ -272,9 +273,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 97;
+const uint16_t CONSECUTIVO_ACTUAL = 99;
 const char *RESUMEN_CONSECUTIVO =
-    "LoRa: NUUP01 recibe confirmación o error inmediato (inactivo/no registrado) y se documenta el ajuste";
+    "LoRa: trazas claras al recibir y confirmar para que NUUP01 vea cuándo llega el paquete y su ACK";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -4781,6 +4782,7 @@ void recepcion_lora() {
         Serial.print("📨 Mensaje RAW: '");
         Serial.print(received);
         Serial.println("'");
+        Serial.printf("📥 LORA RX OK (%dB): %s\n", LoRa.packetRssi(), received.c_str());
 
         if (received.startsWith("configuracion/")) {
             int primera = received.indexOf('/');
@@ -4922,22 +4924,22 @@ void recepcion_lora() {
                         intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
 
                         String errorConfirmacion = "ERROR," + mac + ",NO_ACTIVO";
-                        Serial.printf("📡 Enviando error LoRa (no activo) a %s\n", mac.c_str());
-                        LoRa.beginPacket();
-                        LoRa.print(errorConfirmacion);
-                        LoRa.endPacket();
-                    } else {
-                        // Confirmación inmediata por LoRa con datos de EEPROM
-                        String confirmacion = "CONFIRMACION," + mac + "," +
+            Serial.printf("📡 Enviando error LoRa (no activo) a %s | %s\n", mac.c_str(), errorConfirmacion.c_str());
+            LoRa.beginPacket();
+            LoRa.print(errorConfirmacion);
+            LoRa.endPacket();
+        } else {
+            // Confirmación inmediata por LoRa con datos de EEPROM
+            String confirmacion = "CONFIRMACION," + mac + "," +
                                              String(configDispositivos[i].nombre) + "," +
                                              String(configDispositivos[i].alturaConfig, 0) + "," +
                                              String(configDispositivos[i].litrosConfig, 0);
 
-                        Serial.printf("📡 Enviando confirmación LoRa a %s\n", mac.c_str());
-                        LoRa.beginPacket();
-                        LoRa.print(confirmacion);
-                        LoRa.endPacket();
-                    }
+            Serial.printf("📡 Enviando confirmación LoRa a %s | %s\n", mac.c_str(), confirmacion.c_str());
+            LoRa.beginPacket();
+            LoRa.print(confirmacion);
+            LoRa.endPacket();
+        }
                     break;
                 }
             }
@@ -4946,13 +4948,13 @@ void recepcion_lora() {
                 Serial.println("❌ DISPOSITIVO NO REGISTRADO - Mensaje LoRa ignorado sin auto-alta ni publicación MQTT");
                 Serial.println("ℹ️  Registre el dispositivo por BLE o portal antes de aceptar datos LoRa");
 
-                String errorConfirmacion = "ERROR," + mac + ",NO_REGISTRADO";
-                Serial.printf("📡 Enviando error LoRa (no registrado) a %s\n", mac.c_str());
-                LoRa.beginPacket();
-                LoRa.print(errorConfirmacion);
-                LoRa.endPacket();
-                return;
-            }
+            String errorConfirmacion = "ERROR," + mac + ",NO_REGISTRADO";
+            Serial.printf("📡 Enviando error LoRa (no registrado) a %s | %s\n", mac.c_str(), errorConfirmacion.c_str());
+            LoRa.beginPacket();
+            LoRa.print(errorConfirmacion);
+            LoRa.endPacket();
+            return;
+        }
         } else {
             Serial.println("❌ ERROR: No se pudieron extraer las comas del mensaje");
         }
