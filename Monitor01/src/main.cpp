@@ -92,6 +92,12 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 98 - 2025-06-12 Clarifica confirmación LoRa: monitor responde CONFIRMACION,MAC,nombre,altura,litros solo por LoRa y deja trazas del payload enviado.
+// 97 - 2025-06-11 Corrección: la confirmación LoRa se verifica y reporta error si endPacket falla, dejando trazas claras cuando no se envía.
+// 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
+// 95 - 2025-06-11 LoRa: el monitor confirma solo por LoRa; la publicación MQTT sigue igual, sin ACK extra al broker.
+// 94 - 2025-06-10 UI: sin dispositivos muestra solo "SIN Dispositivos" y "NUUP" en pantalla, sin mensajes adicionales.
+// 93 - 2025-06-10 Ajuste: mensajes LoRa con MAC no registrada se descartan sin auto-alta ni envío MQTT, solo se avisa en consola.
 // 92 - 2025-06-09 Corrección: trazas detalladas de bajas pendientes (BLE/AP), limpieza de banderas al re-alta y reenvío inmediato tras reconexión MQTT para que la baja se complete aun después de reinicios.
 // 91 - 2025-06-08 Corrección: las bajas solicitadas sin WiFi (portal o BLE) se encolan en EEPROM y se reintentan al reconectar MQTT hasta confirmarlas o re-registrar el dispositivo.
 // 90 - 2025-06-07 Corrección: tras bajas solicitadas desde el portal AP se reconecta a WiFi/MQTT y se envía la solicitud de baja antes del reinicio, manteniendo la animación como en BLE.
@@ -266,8 +272,12 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 86;
-const char *RESUMEN_CONSECUTIVO = "Portal AP solo con botón y resumen inicial de estado";
+const uint16_t CONSECUTIVO_ACTUAL = 95;
+const char *RESUMEN_CONSECUTIVO = "MQTT sin cambios: solo confirmación LoRa, sin ACK extra al broker";
+
+// Tiempos y tópicos principales (ajustes rápidos)
+const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
+const char *TOPICO_LORA_BASE = "NUUP/";                    // Prefijo MQTT para datos LoRa
 
 // Configuración WiFi
 #define AP_SSID "NUUP_monitor01"// que permita el acceso directo finalmente no puede hacer nada hasta no ingresar un ID de usuario correcto "nuup"
@@ -327,7 +337,6 @@ String ultimoMensajeLoRaDispositivo[MAX_DISPOSITIVOS];
 
 // Variables para control de tiempo sin datos
 unsigned long ultimaActualizacionLoRa[MAX_DISPOSITIVOS] = {0};
-const unsigned long TIEMPO_SIN_DATOS = 300000; // 60 000 1 minuto (configurable) - puse 5 minutos
 bool mostrarSinDatos[MAX_DISPOSITIVOS] = {false};
 
 // Control de solicitudes de alta por dispositivo
@@ -428,6 +437,8 @@ const unsigned long SCAN_INTERVAL_MS = 15000;  // re-scan cada 15s en modo AP
 // Declaración de funciones
 void inicializa_eeprom();
 void iniciarLoRaConReintentos();
+ConfigDispositivo obtenerConfigPorMac(const String &macBuscada);
+String extraerMacDeMensajeLoRa(const String &mensaje);
 void clearEEPROM();
 void startAPMode();
 void registrarRutasPortal();
@@ -4715,6 +4726,25 @@ String normalizarMac(const String &macRaw) {
   return mac;
 }
 
+String extraerMacDeMensajeLoRa(const String &mensaje) {
+  int firstComma = mensaje.indexOf(',');
+  int secondComma = mensaje.indexOf(',', firstComma + 1);
+  if (firstComma == -1 || secondComma == -1) {
+    return "";
+  }
+  return normalizarMac(mensaje.substring(firstComma + 1, secondComma));
+}
+
+ConfigDispositivo obtenerConfigPorMac(const String &macBuscada) {
+  String buscada = normalizarMac(macBuscada);
+  for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+    if (normalizarMac(String(configDispositivos[i].mac)) == buscada) {
+      return configDispositivos[i];
+    }
+  }
+  return ConfigDispositivo{};
+}
+
 bool mensajeLoRaTieneDatos(const String &mensaje) {
   int commaCount = 0;
   for (int pos = 0; pos < mensaje.length(); pos++) {
@@ -4750,6 +4780,52 @@ void recepcion_lora() {
         Serial.print("📨 Mensaje RAW: '");
         Serial.print(received);
         Serial.println("'");
+
+        if (received.startsWith("configuracion/")) {
+            int primera = received.indexOf('/');
+            int segunda = received.indexOf('/', primera + 1);
+            int tercera = received.indexOf('/', segunda + 1);
+            int coma = received.indexOf(',', tercera + 1);
+
+            if (primera == -1 || segunda == -1 || tercera == -1 || coma == -1) {
+                Serial.println("⚠️  Mensaje de configuración con formato inválido");
+                return;
+            }
+
+            String macConfig = normalizarMac(received.substring(primera + 1, segunda));
+            String etapa = received.substring(segunda + 1, tercera);
+            uint8_t potenciaSolicitada = received.substring(coma + 1).toInt();
+
+            if (!esMacValida(macConfig)) {
+                Serial.printf("❌ MAC inválida en configuración: '%s'\n", macConfig.c_str());
+                return;
+            }
+
+            if (etapa != "solicitud") {
+                Serial.printf("⏭️  Configuración ignorada por etapa distinta: %s\n", etapa.c_str());
+                return;
+            }
+
+            bool activo = false;
+            for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+                if (normalizarMac(String(configDispositivos[i].mac)) == macConfig && configDispositivos[i].activo) {
+                    activo = true;
+                    break;
+                }
+            }
+
+            if (!activo) {
+                Serial.println("⏭️  Configuración ignorada: dispositivo no activo o no registrado");
+                return;
+            }
+
+            String respuesta = "configuracion/" + macConfig + "/confirmacion," + String(potenciaSolicitada);
+            Serial.printf("📡 Confirmando potencia LoRa a %s con %u dBm\n", macConfig.c_str(), potenciaSolicitada);
+            LoRa.beginPacket();
+            LoRa.print(respuesta);
+            LoRa.endPacket();
+            return;
+        }
         
         // Debug detallado del formato
         debugMensajeLoRa(received);
@@ -4821,26 +4897,33 @@ void recepcion_lora() {
                     if (!configDispositivos[i].activo) {
                         Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
                         intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
+                    } else {
+                        // Confirmación inmediata por LoRa con datos de EEPROM
+                        String confirmacion = "CONFIRMACION," + mac + "," +
+                                             String(configDispositivos[i].nombre) + "," +
+                                             String(configDispositivos[i].alturaConfig, 0) + "," +
+                                             String(configDispositivos[i].litrosConfig, 0);
+
+                        Serial.printf("📨 Payload de confirmación LoRa -> %s\n", confirmacion.c_str());
+                        Serial.printf("📡 Enviando confirmación LoRa a %s\n", mac.c_str());
+                        LoRa.beginPacket();
+                        LoRa.print(confirmacion);
+                        int resultadoConfirmacion = LoRa.endPacket();
+
+                        if (resultadoConfirmacion == 0) {
+                            Serial.println("❌ ERROR: endPacket no transmitió la confirmación LoRa; reintente o verifique antena/potencia");
+                        } else {
+                            Serial.printf("✅ Confirmación LoRa enviada (%d bytes)\n", confirmacion.length());
+                        }
                     }
                     break;
                 }
             }
 
             if (!encontrado) {
-                Serial.println("❌ DISPOSITIVO NO REGISTRADO - Intentando registrar con estado inactivo");
-                if (registrarDispositivo(mac, tipoDispositivo)) {
-                    Serial.println("✅ Dispositivo registrado automáticamente desde LoRa (activo=0)");
-                    actualizarDatosDesdeLoRa(mac, received, "");
-                    int nuevoIndice = obtenerIndiceDispositivo(mac);
-                    if (nuevoIndice >= 0) {
-                        mensajeLoRa = normalizarPayloadParaMQTT(received);
-                        nuevoMensajeLoRa = false;
-                        Serial.println("ℹ️  Dispositivo aún inactivo: datos recibidos no se publicarán hasta activación en MQTT");
-                        intentarAltaTrasRegistro(nuevoIndice, mac, "LoRa (nuevo)");
-                    }
-                } else {
-                    Serial.println("❌ No se pudo registrar el dispositivo (sin espacio)");
-                }
+                Serial.println("❌ DISPOSITIVO NO REGISTRADO - Mensaje LoRa ignorado sin auto-alta ni publicación MQTT");
+                Serial.println("ℹ️  Registre el dispositivo por BLE o portal antes de aceptar datos LoRa");
+                return;
             }
         } else {
             Serial.println("❌ ERROR: No se pudieron extraer las comas del mensaje");
@@ -5286,7 +5369,7 @@ void dibujarTituloDispositivo() {
     int cantidadDispositivos = contarDispositivosRegistrados();
     
     if (cantidadDispositivos == 0) {
-        display.println("Sin Dispositivos");
+        display.println("SIN Dispositivos");
     } else {
         Dispositivo disp = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
         
@@ -5305,10 +5388,10 @@ void dibujarContenidoPrincipal() {
     int cantidadDispositivos = contarDispositivosRegistrados();
     
     if (cantidadDispositivos == 0) {
-        // Mostrar mensaje cuando no hay dispositivos
-        display.setTextSize(1);
-        display.setCursor(10, 50);
-        display.print("Esperando dispositivos...");
+        // Mostrar etiqueta NUUP debajo del título de "SIN Dispositivos"
+        display.setTextSize(2);
+        display.setCursor((SCREEN_WIDTH - (4 * 6 * 2)) / 2, 48); // Centrado aproximado
+        display.print("NUUP");
     } else {
         Dispositivo disp = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
         
@@ -5995,12 +6078,8 @@ testLoRaPeriodico();
         // Publicar inmediatamente si hay datos y estamos conectados
         if (nuevoMensajeLoRa) {
             asegurarMacMonitorFija("mqtt_lora");
-            String miMac = macMonitorFija;
-            if (miMac.isEmpty()) {
-                miMac = WiFi.macAddress();
-                miMac.replace("-", ":");
-            }
-            String topico = "NUUP/" + miMac;
+            String macDestino = extraerMacDeMensajeLoRa(mensajeLoRa);
+            String topico = String(TOPICO_LORA_BASE) + macDestino;
             if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
                 Serial.print("Publicado: ");
                 Serial.println(mensajeLoRa);
