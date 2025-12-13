@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 98 - 2025-06-13 LoRa: NUUP01 recibe confirmación clara al enviar desde la ruta nuup/MAC, normalizando el payload y deteniendo reintentos.
 // 97 - 2025-06-12 LoRa: NUUP01 recibe confirmación o error claro al responder; se documenta el ajuste en español.
 // 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
 // 95 - 2025-06-11 LoRa: el monitor confirma solo por LoRa; la publicación MQTT sigue igual, sin ACK extra al broker.
@@ -4827,6 +4828,28 @@ void recepcion_lora() {
             return;
         }
         
+        // Normalizar payloads que lleguen como nuup/MAC,... a formato clásico "1,MAC,..."
+        if (received.startsWith("nuup/")) {
+            int slash = received.indexOf('/');
+            int coma = received.indexOf(',', slash + 1);
+
+            if (coma == -1) {
+                Serial.println("⚠️  Mensaje nuup/MAC sin datos, se descarta");
+                return;
+            }
+
+            String macNuup = normalizarMac(received.substring(slash + 1, coma));
+            if (!esMacValida(macNuup)) {
+                Serial.printf("❌ MAC inválida en formato nuup/MAC: '%s'\n", macNuup.c_str());
+                return;
+            }
+
+            String datos = received.substring(coma + 1);
+            received = "1," + macNuup + "," + datos;
+
+            Serial.printf("🔄 Formato nuup/MAC detectado, normalizado a: '%s'\n", received.c_str());
+        }
+
         // Debug detallado del formato
         debugMensajeLoRa(received);
         
