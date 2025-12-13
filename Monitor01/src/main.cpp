@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 102 - 2025-06-15 LoRa: confirmación inmediata al recibir datos de NUUP01 y trazas descriptivas.
 // 101 - 2025-06-14 LoRa: compatibilidad de confirmación reforzada, envío verificado y trazas claras aun con monitor inactivo/MQTT.
 // 100 - 2025-06-14 LoRa: se confirma siempre por LoRa con los datos recibidos (nombre/altura/litros) y se persisten cambios en EEPROM.
 // 99 - 2025-06-13 LoRa: se imprime en consola la recepción y la confirmación enviada, manteniendo trazabilidad inmediata.
@@ -4990,6 +4991,7 @@ void recepcion_lora() {
                         intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
                     }
 
+                    Serial.println("⚡ Preparando confirmación inmediata hacia NUUP01 para detener reintentos");
                     String confirmacion = "CONFIRMACION," + mac + "," +
                                              datosConfirmacion.nombre + "," +
                                              String(datosConfirmacion.alturaConfig, 0) + "," +

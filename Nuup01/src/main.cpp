@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 97 - 2025-06-15 Confirmación LoRa: espera progresiva por intento, trazas de mensajes inesperados y compatibilidad reforzada.
 // 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistencia en EEPROM.
 // 01 - 2025-05-24 Ajuste de doble/triple toque para despertar, espera
 //      ampliada en modo AP tras abrir la página, envíos LoRa cada 20s y
@@ -112,7 +113,8 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 #define INTERVALO_ENVIO_DATOS 20000      // 20 segundos entre envíos LoRa (registrado)
 #define INTERVALO_ENVIO_CAMBIO 5000      // 5 segundos cuando hubo cambios recientes
 #define INTERVALO_ENVIO_FORZOSO 20000    // 20 segundos máximo sin cambios
-#define TIEMPO_ESPERA_CONFIRMACION 2000  // 2 segundos de espera por confirmación LoRa
+#define TIEMPO_ESPERA_CONFIRMACION_INICIAL 2000  // 2 segundos base de espera por confirmación LoRa
+#define INCREMENTO_ESPERA_CONFIRMACION 500       // Aumento progresivo por intento para dar margen de sincronización
 #define REINTENTOS_CONFIRMACION 5        // Envío inicial + 4 reintentos antes de reiniciar
 #define LORA_POTENCIA_MIN_DBM 2          // Potencia mínima para el barrido dinámico
 #define LORA_POTENCIA_MAX_DBM 12         // Potencia máxima objetivo para el sensor
@@ -2336,10 +2338,16 @@ void limpiarEEPROMYReiniciar() {
     ESP.restart();
 }
 
-bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada) {
-    unsigned long inicioEspera = millis();
+unsigned long calcularVentanaConfirmacionMs(int intento) {
+    if (intento < 1) intento = 1;
+    return TIEMPO_ESPERA_CONFIRMACION_INICIAL + (intento - 1) * INCREMENTO_ESPERA_CONFIRMACION;
+}
 
-    while (millis() - inicioEspera < TIEMPO_ESPERA_CONFIRMACION) {
+bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActual) {
+    unsigned long inicioEspera = millis();
+    unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
+
+    while (millis() - inicioEspera < ventana) {
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2385,10 +2393,11 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada) {
     return false;
 }
 
-bool esperarConfirmacionLoRa() {
+bool esperarConfirmacionLoRa(int intentoActual) {
     unsigned long inicioEspera = millis();
+    unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
-    while (millis() - inicioEspera < TIEMPO_ESPERA_CONFIRMACION) {
+    while (millis() - inicioEspera < ventana) {
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2404,7 +2413,7 @@ bool esperarConfirmacionLoRa() {
             int fourth = respuesta.indexOf(',', third + 1);
 
             if (first == -1 || second == -1 || third == -1 || fourth == -1) {
-                Serial.println("⚠️  Confirmación inválida");
+                Serial.println("⚠️  Confirmación inválida: se esperaba 'CONFIRMACION,MAC,nombre,altura,litros'");
                 continue;
             }
 
@@ -2415,7 +2424,8 @@ bool esperarConfirmacionLoRa() {
             uint32_t litrosNuevos = respuesta.substring(fourth + 1).toInt();
 
             if (tipo != "CONFIRMACION" || mac != macAddress) {
-                Serial.println("⏭️  Confirmación de otro dispositivo, ignorada");
+                Serial.printf("⏭️  Confirmación no esperada: se esperaba CONFIRMACION,%s,... y llegó %s,%s,...\n",
+                              macAddress.c_str(), tipo.c_str(), mac.c_str());
                 continue;
             }
 
@@ -2519,8 +2529,9 @@ bool enviarDatos(int distancia) {
                       recalibrarPotenciaLoRa ? "dinámico" : "fijo");
 
         for (int intento = 1; intento <= REINTENTOS_CONFIRMACION; intento++) {
-            Serial.printf("📤 INICIANDO TRANSMISIÓN LoRa (nivel %u dBm, intento %d/%d)...\n",
-                          potenciaLoRaActualDbm, intento, REINTENTOS_CONFIRMACION);
+            unsigned long ventana = calcularVentanaConfirmacionMs(intento);
+            Serial.printf("📤 INICIANDO TRANSMISIÓN LoRa (nivel %u dBm, intento %d/%d, espera %lu ms)...\n",
+                          potenciaLoRaActualDbm, intento, REINTENTOS_CONFIRMACION, ventana);
             int beginResult = LoRa.beginPacket();
 
             if (beginResult) {
@@ -2532,7 +2543,7 @@ bool enviarDatos(int distancia) {
                     Serial.print("📨 MENSAJE: ");
                     Serial.println(mensaje);
                     parpadearLED(LED_VERDE_PIN, PARPADEO_LORA_INTERVALO_MS, DURACION_PARPADEO_LORA_MS);
-                    if (esperarConfirmacionLoRa()) {
+                    if (esperarConfirmacionLoRa(intento)) {
                         confirmado = true;
                         potenciaConfirmada = potenciaLoRaActualDbm;
                         break;
@@ -2541,7 +2552,7 @@ bool enviarDatos(int distancia) {
                     }
                 }
             }
-            delay(250);
+            delay(250 + intento * 150);
         }
 
         if (confirmado || !recalibrarPotenciaLoRa) {
@@ -2578,14 +2589,15 @@ bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada) {
         String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
 
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
-        Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d)\n",
-                      solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA);
+        unsigned long ventana = calcularVentanaConfirmacionMs(intento);
+        Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d, espera %lu ms)\n",
+                      solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA, ventana);
 
         if (LoRa.beginPacket()) {
             LoRa.print(solicitud);
             LoRa.endPacket();
 
-            if (esperarConfirmacionConfiguracion(potenciaConfirmada)) {
+            if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento)) {
                 Serial.println("✅ Confirmación de potencia recibida desde monitor01");
                 confirmado = true;
                 break;
