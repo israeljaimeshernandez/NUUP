@@ -279,9 +279,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 104;
+const uint16_t CONSECUTIVO_ACTUAL = 105;
 const char *RESUMEN_CONSECUTIVO =
-    "LoRa priorizado en núcleo 0: atiende RX/confirmación de inmediato y pausa BLE/WiFi/OLED hasta terminar";
+    "Corrección de compilación en la rutina prioritaria LoRa (llave extra removida) tras mover RX al núcleo 0";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -5051,7 +5051,6 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
         
         Serial.println("🎉 ===========================================\n");
     }
-}
 
 void recepcion_lora() {
     int packetSize = LoRa.parsePacket();
