@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 99 - 2026-01-14 Deep sleep forzado si no hay confirmación LoRa para evitar reinicios en ciclos de envío.
 // 98 - 2025-12-13 Impacto más sensible (umbral 50%) con indicador detallado de base/umbral y validez de toques.
 // 97 - 2025-06-15 Confirmación LoRa: espera progresiva por intento, trazas de mensajes inesperados y compatibilidad reforzada.
 // 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistencia en EEPROM.
@@ -2095,8 +2096,11 @@ void loop() {
             int distancia = obtenerDistanciaValida();
             bool confirmado = enviarDatos(distancia);
             if (!confirmado) {
-                Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
-                ESP.restart();
+                Serial.println("❌ Sin confirmación tras reintentos. Entrando en deep sleep para reintentar en el siguiente ciclo.");
+                wakeByImpact = false;
+                intervaloEnvioActual = INTERVALO_ENVIO_FORZOSO;
+                entrarDeepSleep();
+                return;
             }
             ultimoEnvioDatos = millis();
 
