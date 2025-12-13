@@ -308,7 +308,7 @@ volatile float ultimoSnrLoRaRx = 0.0; // Relación señal/ruido del último paqu
 const uint8_t REPETICIONES_CONFIRMACION_LORA = 3;          // Confirmaciones inmediatas repetidas
 const unsigned long INTERVALO_CONFIRMACION_LORA_MS = 100;  // Pausa entre confirmaciones LoRa
 volatile bool loraEnEscucha = false;                       // Estado de recepción activa para trazas
-bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrollo: debe permanecer en false en producción
+bool LORA_BIDIRECCIONAL_BORRAR = true;                    // Solo para desarrollo: debe permanecer en false en producción
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 
