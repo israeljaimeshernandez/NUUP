@@ -92,6 +92,12 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 112 - 2025-06-19 LoRa: trazas dev explican cada parámetro (TX/RSSI/SNR/tiempos) para diagnosticar envío y escucha
+// 111 - 2025-06-18 LoRa: eco bidireccional dev con trazas de espera/quality en respuestas monitor_*
+// 110 - 2025-06-18 LoRa: modo LORA_bidireccional_borrar solo para desarrollo, activable por bandera y sin impacto en producción.
+// 109 - 2025-06-18 LoRa: envío asíncrono con espera y watchdog protegido; trazas claras de modo escucha tras cada confirmación.
+// 108 - 2025-06-18 LoRa: consecutivo en español documentado en cabecera; triple confirmación inmediata con separación configurable y bitácora al cambiar estado.
+// 107 - 2025-06-18 LoRa: triple confirmación inmediata con separación configurable y estados serial solo al cambiar.
 // 106 - 2025-06-17 LoRa: respuesta inmediata con potencia/RSSI visibles y estado en consola solo al iniciar o cambiar.
 // 105 - 2025-06-16 LoRa: corrección de compilación tras refactor al núcleo 0 (llave extra removida).
 // 104 - 2025-06-16 LoRa: tarea dedicada en el segundo núcleo, prioridad máxima y pausa temporal de BLE/WiFi/OLED mientras se confirma.
@@ -280,11 +286,6 @@
 #define USER_EMAIL_MAX_LEN 64
 #define USER_PASS_MAX_LEN 32
 
-// Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 106;
-const char *RESUMEN_CONSECUTIVO =
-    "LoRa responde de inmediato con potencia/RSSI visibles y el estado solo se imprime al iniciar o cambiar";
-
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
 const char *TOPICO_LORA_BASE = "NUUP/";                    // Prefijo MQTT para datos LoRa
@@ -304,6 +305,12 @@ const char *TOPICO_LORA_BASE = "NUUP/";                    // Prefijo MQTT para 
 uint8_t potenciaLoRaMonitorDbm = 20;  // Potencia actual usada para TX LoRa
 volatile int ultimoRssiLoRaRx = 0;    // Calidad del último paquete recibido
 volatile float ultimoSnrLoRaRx = 0.0; // Relación señal/ruido del último paquete recibido
+const uint8_t REPETICIONES_CONFIRMACION_LORA = 3;          // Confirmaciones inmediatas repetidas
+const unsigned long INTERVALO_CONFIRMACION_LORA_MS = 100;  // Pausa entre confirmaciones LoRa
+volatile bool loraEnEscucha = false;                       // Estado de recepción activa para trazas
+bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrollo: debe permanecer en false en producción
+unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
+uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 
 
 //Redes guardadas
@@ -530,13 +537,14 @@ void checkWiFiStatus();
 void iniciarEscaneoRedes();
 void procesarEscaneoRedes();
 
+void reanudarRecepcionLoRa(const char *motivo);
+void LORA_bidireccional_borrar();
 void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
 void tareaLoRaCore(void *parameter);
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
-void anunciarConsecutivo();
 
 // AGREGAR estas declaraciones:
 int contarDispositivosRegistrados();
@@ -2714,12 +2722,6 @@ String horaLegibleCorta() {
   return String(buffer);
 }
 
-void anunciarConsecutivo() {
-  Serial.printf("📑 Consecutivo %d: %s\n", CONSECUTIVO_ACTUAL, RESUMEN_CONSECUTIVO);
-
-  // El consecutivo solo se documenta en consola para evitar ocupar la pantalla inicial
-}
-
 void mostrarResumenEstadoInicial() {
   if (!displayReady) return;
 
@@ -4713,6 +4715,19 @@ void iniciarLoRaConReintentos() {
   Serial.println("   - SF: 12");
   Serial.println("   - BW: 125 kHz");
   Serial.println("   - CR: 4/8");
+
+  // Escucha inmediata tras la configuración para no perder el primer paquete del NUUP01
+  reanudarRecepcionLoRa("inicio tras configuración");
+}
+
+void reanudarRecepcionLoRa(const char *motivo) {
+  LoRa.receive();
+  if (!loraEnEscucha) {
+    Serial.printf("👂 LoRa en modo escucha continua (%s)\n", motivo);
+  } else {
+    Serial.printf("🔁 LoRa vuelve a modo escucha (%s)\n", motivo);
+  }
+  loraEnEscucha = true;
 }
 
 void Reintentar_Wiffi(){
@@ -4826,41 +4841,134 @@ DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const Con
   return datos;
 }
 
-bool enviarPaqueteLoRa(const String &descripcion, const String &macDestino, const String &payload) {
-  Serial.printf("📡 Enviando %s a %s | %s | TX %u dBm | Último RSSI %d dBm (SNR %.1f dB)\n",
+bool enviarPaqueteLoRa(const String &descripcion,
+                       const String &macDestino,
+                       const String &payload,
+                       uint8_t repeticiones = REPETICIONES_CONFIRMACION_LORA,
+                       unsigned long intervaloMs = INTERVALO_CONFIRMACION_LORA_MS) {
+  bool exito = false;
+
+  Serial.printf("🚀 Encolando %s para %s con %u repeticiones cada %lums\n",
                 descripcion.c_str(),
                 macDestino.c_str(),
-                payload.c_str(),
+                repeticiones,
+                intervaloMs);
+  Serial.printf("   ↳ TX %u dBm = potencia de salida | Último RSSI %d dBm = señal recibida | SNR %.1f dB = relación señal/ruido\n",
                 potenciaLoRaMonitorDbm,
                 ultimoRssiLoRaRx,
                 ultimoSnrLoRaRx);
 
-  LoRa.setTxPower(potenciaLoRaMonitorDbm);
+  for (uint8_t intento = 1; intento <= repeticiones; intento++) {
+    Serial.printf("📡 (%u/%u) Enviando %s a %s | Payload: %s\n",
+                  intento,
+                  repeticiones,
+                  descripcion.c_str(),
+                  macDestino.c_str(),
+                  payload.c_str());
+
+    LoRa.setTxPower(potenciaLoRaMonitorDbm);
+    LoRa.idle();
+    loraEnEscucha = false;
+
+    int beginResult = LoRa.beginPacket();
+    if (!beginResult) {
+      Serial.println("❌ No se pudo iniciar el paquete LoRa para envío de confirmación");
+    } else {
+      LoRa.print(payload);
+
+      // Envío bloqueante para garantizar finalización sin depender de APIs privadas
+      int endResult = LoRa.endPacket();
+      if (!endResult) {
+        Serial.println("❌ Falló el envío LoRa (endPacket retornó 0)");
+      } else {
+        Serial.println("✅ Paquete LoRa enviado correctamente");
+        exito = true;
+      }
+    }
+
+    if (intento < repeticiones) {
+      vTaskDelay(pdMS_TO_TICKS(intervaloMs));
+    }
+  }
+
+  Serial.println("🔁 Se reanuda recepción inmediata tras respuestas duplicadas");
+  reanudarRecepcionLoRa("confirmaciones enviadas");
+  return exito;
+}
+
+void LORA_bidireccional_borrar() {
+  static unsigned long ultimaRecepcionDevMs = 0;
+  unsigned long marcaRecepcion = millis();
+
+  int packetSize = LoRa.parsePacket();
+  if (packetSize <= 0) {
+    return;
+  }
+
+  LoRaProcessingGuard guard(loraProcesando);
+
+  String recibido = "";
+  while (LoRa.available()) {
+    recibido += (char)LoRa.read();
+  }
+  recibido.trim();
+
+  ultimoRssiLoRaRx = LoRa.packetRssi();
+  ultimoSnrLoRaRx = LoRa.packetSnr();
+
+  unsigned long deltaRecepcion = ultimaRecepcionDevMs == 0 ? 0 : (marcaRecepcion - ultimaRecepcionDevMs);
+  ultimaRecepcionDevMs = marcaRecepcion;
+
+  Serial.println("\n🧪 [DEV] BIDIRECCIONAL - paquete entrante");
+  Serial.printf("📥 Contenido: '%s' | RSSI %d dBm | SNR %.1f dB\n",
+                recibido.c_str(),
+                ultimoRssiLoRaRx,
+                ultimoSnrLoRaRx);
+  if (deltaRecepcion > 0) {
+    Serial.printf("⏱️ Tiempo desde el último paquete nuup_: %lums\n", deltaRecepcion);
+  }
+  Serial.println("   ↳ RSSI = potencia recibida (más negativo es peor) | SNR = limpieza de señal (mayor es mejor) | Δt = separación entre paquetes");
+
+  uint32_t consecutivo = ++consecutivoMonitorBidireccional;
+  if (recibido.startsWith("nuup_")) {
+    uint32_t candidato = recibido.substring(5).toInt();
+    if (candidato > 0) {
+      consecutivoMonitorBidireccional = candidato;
+      consecutivo = candidato;
+    }
+  }
+
+  String respuesta = "monitor_" + String(consecutivo);
+
   LoRa.idle();
+  loraEnEscucha = false;
+  LoRa.setTxPower(potenciaLoRaMonitorDbm);
 
-  int beginResult = LoRa.beginPacket();
-  if (!beginResult) {
-    Serial.println("❌ No se pudo iniciar el paquete LoRa para envío de confirmación");
-    LoRa.receive();
-    return false;
+  Serial.printf("📤 [DEV] Respondiendo %s | TX %u dBm | Último RSSI %d dBm | SNR %.1f dB\n",
+                respuesta.c_str(),
+                potenciaLoRaMonitorDbm,
+                ultimoRssiLoRaRx,
+                ultimoSnrLoRaRx);
+  Serial.println("   ↳ TX = potencia de salida configurada | RSSI = fuerza con la que llegó nuup_* | SNR = claridad de la señal recibida");
+
+  if (LoRa.beginPacket()) {
+    LoRa.print(respuesta);
+    if (LoRa.endPacket()) {
+      unsigned long finEnvio = millis();
+      Serial.printf("✅ [DEV] Respuesta dev enviada correctamente (t=%lums desde recepción)\n", finEnvio - marcaRecepcion);
+    } else {
+      Serial.println("❌ [DEV] endPacket devolvió 0 al responder");
+    }
+  } else {
+    Serial.println("❌ [DEV] No se pudo iniciar el paquete de respuesta dev");
   }
 
-  LoRa.print(payload);
-
-  int endResult = LoRa.endPacket();
-  if (!endResult) {
-    Serial.println("❌ Falló el envío LoRa (endPacket retornó 0)");
-    LoRa.receive();
-    return false;
-  }
-
-  Serial.println("✅ Paquete LoRa enviado correctamente, reanudando recepción inmediata");
-  LoRa.receive();
-  return true;
+  reanudarRecepcionLoRa("LORA_bidireccional_borrar");
 }
 
 void tareaLoRaCore(void *parameter) {
     Serial.printf("⚡ Tarea LoRa dedicada iniciada en núcleo %d\n", xPortGetCoreID());
+    reanudarRecepcionLoRa("arranque de tarea LoRa");
 
     for (;;) {
         int packetSize = LoRa.parsePacket();
@@ -5045,6 +5153,9 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
                     Serial.printf("⚡ Preparando confirmación inmediata hacia NUUP01 (respuesta en %lums, TX %u dBm)\n",
                                   millis() - marcaRecepcionLoRa,
                                   potenciaLoRaMonitorDbm);
+                    Serial.printf("🚀 Se enviarán %u confirmaciones cada %lums para garantizar recepción. TX = potencia actual de salida, Último RSSI = potencia recibida, SNR = claridad de la señal\n",
+                                  REPETICIONES_CONFIRMACION_LORA,
+                                  INTERVALO_CONFIRMACION_LORA_MS);
                     String confirmacion = "CONFIRMACION," + mac + "," +
                                              datosConfirmacion.nombre + "," +
                                              String(datosConfirmacion.alturaConfig, 0) + "," +
@@ -5836,8 +5947,6 @@ void setup() {
   Serial.println("OLED inicializado correctamente");
   display.setTextColor(SSD1306_WHITE);
 
-  anunciarConsecutivo();
-
     // 11. Inicializar BLE
     iniciarBLE();
     
@@ -5942,22 +6051,27 @@ delay(1000);
 
 // 6. Inicialización LoRa con manejo de errores mejorado
 iniciarLoRaConReintentos();
-Serial.println("🎯 TEST LoRa - Enviando mensaje de prueba...");
-LoRa.beginPacket();
-LoRa.print("TEST_SERVER_READY");
-LoRa.endPacket();
-Serial.println("✅ Mensaje de prueba enviado");
 
-BaseType_t tareaLoRaCreada = xTaskCreatePinnedToCore(
-    tareaLoRaCore,
-    "LoRaCore",
-    8192,
-    nullptr,
-    4,
-    &tareaLoRaHandle,
-    0);
+// Se elimina el envío de prueba para no interferir con confirmaciones reales
+Serial.println("🎯 LoRa listo para escuchar (sin mensajes de prueba)");
 
-if (tareaLoRaCreada != pdPASS) {
+BaseType_t tareaLoRaCreada = pdPASS;
+if (!LORA_BIDIRECCIONAL_BORRAR) {
+    tareaLoRaCreada = xTaskCreatePinnedToCore(
+        tareaLoRaCore,
+        "LoRaCore",
+        8192,
+        nullptr,
+        4,
+        &tareaLoRaHandle,
+        0);
+}
+
+if (LORA_BIDIRECCIONAL_BORRAR) {
+    Serial.println("🧪 LORA_bidireccional_borrar ACTIVO (solo desarrollo, eliminar antes de producción)");
+    Serial.printf("⏱️ Intervalo dev: %lums\n", INTERVALO_BIDIRECCIONAL_LORA_MS);
+    tareaLoRaHandle = nullptr;
+} else if (tareaLoRaCreada != pdPASS) {
     Serial.println("⚠️  No se pudo crear la tarea LoRa en núcleo 0, se usará el loop principal como respaldo");
     tareaLoRaHandle = nullptr;
 }
@@ -6037,6 +6151,12 @@ Serial.println("Setup completado");
 
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
+
+  if (LORA_BIDIRECCIONAL_BORRAR) {
+    LORA_bidireccional_borrar();
+    delay(INTERVALO_BIDIRECCIONAL_LORA_MS);
+    return;
+  }
 
   if (loraProcesando) {
     delay(5);
@@ -6397,14 +6517,35 @@ if (dispActual.nombre != ultimoNombreMostrado ||
 
 
 
-  // DEBUG PERIÓDICO DE ESTADO
-    static unsigned long lastStateDebug = 0;
-    if (millis() - lastStateDebug > 15000) {
-        lastStateDebug = millis();
+  // DEBUG DE ESTADO: SOLO AL INICIO O CUANDO CAMBIE ALGÚN ESTADO
+    static String ultimoSnapshotEstado = "";
+    String snapshotActual = "";
+
+    bool wifiConectado = WiFi.status() == WL_CONNECTED;
+    bool mqttConectado = client.connected();
+
+    snapshotActual += wifiConectado ? "1" : "0";
+    snapshotActual += "|" + String(mqttConectado);
+    snapshotActual += "|" + String(mqttConfirmed);
+    snapshotActual += "|" + String(solicitudAltaInicialEnviada);
+    snapshotActual += "|" + String(deviceConnected);
+    snapshotActual += "|" + String(contarDispositivosRegistrados());
+    snapshotActual += "|" + String(userID);
+
+    for (int i = 0; i < MAX_DISPOSITIVOS; i++) {
+        if (String(configDispositivos[i].mac) == "") continue;
+        snapshotActual += "|" + String(configDispositivos[i].mac) + ":" +
+                          String(configDispositivos[i].activo) + ":" +
+                          String(solicitudAltaEnviada[i]) + ":" +
+                          String(bajaPendienteMQTT[i]);
+    }
+
+    if (ultimoSnapshotEstado != snapshotActual) {
+        ultimoSnapshotEstado = snapshotActual;
 
         Serial.println("\n🛰️ ===== ESTADO DE MONITOR01 =====");
-        Serial.printf("📡 WiFi: %s (RSSI %d dBm)\n", WiFi.status() == WL_CONNECTED ? "CONECTADO" : "DESCONECTADO", WiFi.RSSI());
-        Serial.printf("🔗 MQTT: %s | Confirmado: %s | Alta inicial enviada: %s\n", client.connected() ? "CONECTADO" : "DESCONECTADO", mqttConfirmed ? "SI" : "NO", solicitudAltaInicialEnviada ? "SI" : "NO");
+        Serial.printf("📡 WiFi: %s (RSSI %d dBm)\n", wifiConectado ? "CONECTADO" : "DESCONECTADO", wifiConectado ? WiFi.RSSI() : 0);
+        Serial.printf("🔗 MQTT: %s | Confirmado: %s | Alta inicial enviada: %s\n", mqttConectado ? "CONECTADO" : "DESCONECTADO", mqttConfirmed ? "SI" : "NO", solicitudAltaInicialEnviada ? "SI" : "NO");
         Serial.printf("👤 UserID: %s\n", userID.c_str());
         Serial.printf("🛂 Subscripciones: alta/0/confirmacion/, alta/1/confirmacion/, baja/1/confirmacion/, %s/command, %s/estatus\n", serial_number.c_str(), serial_number.c_str());
         Serial.printf("📱 BLE: %s\n", deviceConnected ? "CONECTADO" : "DESCONECTADO");
