@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 102 - 2025-12-19 LoRa: trazas dev explican TX/RSSI/SNR/esperas para ver condición de envío y recepción en laboratorio.
+// 101 - 2025-12-14 LoRa: eco bidireccional dev esperando confirmación monitor_* con trazas de espera/calidad.
 // 100 - 2025-12-14 LoRa: modo LORA_bidireccional_borrar de laboratorio activable por bandera y con intervalo ajustable.
 // 99 - 2025-12-14 Watchdog: espera LoRa con reseteos explícitos y pausas breves para evitar reinicios fuera de deep sleep.
 // 98 - 2025-12-13 Impacto más sensible (umbral 50%) con indicador detallado de base/umbral y validez de toques.
@@ -101,6 +103,9 @@ bool LORA_BIDIRECCIONAL_BORRAR = true;              // Mantener en false en prod
 unsigned long LORA_BIDIRECCIONAL_INTERVALO_MS = 100; // Intervalo ajustable entre envíos dev
 uint32_t consecutivoBidireccionalNuup = 0;            // Contador de mensajes dev
 unsigned long ultimoEnvioBidireccional = 0;           // Marca de tiempo dev
+unsigned long LORA_BIDIRECCIONAL_TIMEOUT_MS = 1000;   // Tiempo máximo de espera por respuesta monitor_*
+bool esperandoRespuestaBidireccional = false;         // Controla el siguiente envío hasta recibir monitor_*
+unsigned long marcaEnvioBidireccional = 0;            // Inicio de espera de respuesta
 
 // --- Calibración de sensibilidad de impacto (ajustables) ---
 // 01) Ventana máxima para capturar toques consecutivos (ms)
@@ -2428,14 +2433,15 @@ void LORA_bidireccional_borrar() {
     esp_task_wdt_reset();
 
     unsigned long ahora = millis();
-    if (ahora - ultimoEnvioBidireccional >= LORA_BIDIRECCIONAL_INTERVALO_MS) {
+    if (!esperandoRespuestaBidireccional && (ahora - ultimoEnvioBidireccional >= LORA_BIDIRECCIONAL_INTERVALO_MS)) {
         consecutivoBidireccionalNuup++;
         String payload = "nuup_" + String(consecutivoBidireccionalNuup);
 
-        Serial.printf("\n📤 [DEV] Enviando %s | TX %u dBm | Intervalo %lums\n",
+        Serial.printf("\n📤 [DEV] Enviando %s | TX %u dBm | Intervalo %lums (esperando monitor_ antes de siguiente)\n",
                       payload.c_str(),
                       potenciaLoRaActualDbm,
                       LORA_BIDIRECCIONAL_INTERVALO_MS);
+        Serial.println("   ↳ TX = potencia de salida (mayor cubre más distancia) | Intervalo = espera mínima entre envíos | Se envía el siguiente solo tras monitor_*");
 
         LoRa.idle();
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
@@ -2443,7 +2449,10 @@ void LORA_bidireccional_borrar() {
         if (LoRa.beginPacket()) {
             LoRa.print(payload);
             if (LoRa.endPacket()) {
-                Serial.println("✅ [DEV] Paquete dev transmitido");
+                marcaEnvioBidireccional = millis();
+                esperandoRespuestaBidireccional = true;
+                Serial.printf("✅ [DEV] Paquete dev transmitido, esperando monitor_* (timeout %lums)\n", LORA_BIDIRECCIONAL_TIMEOUT_MS);
+                Serial.println("   ↳ Timeout = tiempo máximo que aguardaremos la respuesta antes de reintentar");
             } else {
                 Serial.println("❌ [DEV] endPacket devolvió 0 al enviar paquete dev");
             }
@@ -2452,6 +2461,12 @@ void LORA_bidireccional_borrar() {
         }
 
         LoRa.receive();
+        ultimoEnvioBidireccional = ahora;
+    }
+
+    if (esperandoRespuestaBidireccional && (ahora - marcaEnvioBidireccional >= LORA_BIDIRECCIONAL_TIMEOUT_MS)) {
+        Serial.printf("⌛ [DEV] Sin monitor_* tras %lums, se libera para reintentar\n", ahora - marcaEnvioBidireccional);
+        esperandoRespuestaBidireccional = false;
         ultimoEnvioBidireccional = ahora;
     }
 
@@ -2466,15 +2481,26 @@ void LORA_bidireccional_borrar() {
         int rssi = LoRa.packetRssi();
         float snr = LoRa.packetSnr();
 
-        Serial.printf("📥 [DEV] Respuesta recibida: '%s' | RSSI %d dBm | SNR %.1f dB\n",
+        unsigned long esperaMs = esperandoRespuestaBidireccional ? (millis() - marcaEnvioBidireccional) : 0;
+
+        Serial.printf("📥 [DEV] Respuesta recibida: '%s' | RSSI %d dBm | SNR %.1f dB | Espera %lums\n",
                       recibido.c_str(),
                       rssi,
-                      snr);
+                      snr,
+                      esperaMs);
+        Serial.println("   ↳ RSSI = potencia recibida (menos negativo es mejor) | SNR = claridad de señal | Espera = ms desde que se envió nuup_ hasta que llegó monitor_*");
 
         if (recibido.startsWith("monitor_")) {
             uint32_t posible = recibido.substring(8).toInt();
             if (posible > consecutivoBidireccionalNuup) {
                 consecutivoBidireccionalNuup = posible;
+            }
+            if (esperandoRespuestaBidireccional) {
+                Serial.printf("✅ [DEV] monitor_* confirmado tras %lums | Próximo envío en %lums\n",
+                              esperaMs,
+                              LORA_BIDIRECCIONAL_INTERVALO_MS);
+                esperandoRespuestaBidireccional = false;
+                ultimoEnvioBidireccional = millis();
             }
         }
     }
