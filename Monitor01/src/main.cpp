@@ -92,10 +92,11 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 102 - 2025-06-15 LoRa: confirmación inmediata al recibir datos de NUUP01 y trazas descriptivas.
-// 101 - 2025-06-14 LoRa: compatibilidad de confirmación reforzada, envío verificado y trazas claras aun con monitor inactivo/MQTT.
-// 100 - 2025-06-14 LoRa: se confirma siempre por LoRa con los datos recibidos (nombre/altura/litros) y se persisten cambios en EEPROM.
-// 99 - 2025-06-13 LoRa: se imprime en consola la recepción y la confirmación enviada, manteniendo trazabilidad inmediata.
+// 104 - 2025-06-16 LoRa: tarea dedicada en el segundo núcleo, prioridad máxima y pausa temporal de BLE/WiFi/OLED mientras se confirma.
+// 103 - 2025-06-15 LoRa: confirmación inmediata al recibir datos de NUUP01 y trazas descriptivas.
+// 102 - 2025-06-14 LoRa: compatibilidad de confirmación reforzada, envío verificado y trazas claras aun con monitor inactivo/MQTT.
+// 101 - 2025-06-14 LoRa: se confirma siempre por LoRa con los datos recibidos (nombre/altura/litros) y se persisten cambios en EEPROM.
+// 100 - 2025-06-13 LoRa: se imprime en consola la recepción y la confirmación enviada, manteniendo trazabilidad inmediata.
 // 98 - 2025-06-13 LoRa: NUUP01 recibe confirmación clara al enviar desde la ruta nuup/MAC, normalizando el payload y deteniendo reintentos.
 // 97 - 2025-06-12 LoRa: NUUP01 recibe confirmación o error claro al responder; se documenta el ajuste en español.
 // 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
@@ -245,6 +246,8 @@
 //Wiffi
 #include <WiFi.h>
 #include "esp_wifi.h"  // Necesario para usar esp_wifi_set_mac()
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 //MQTT
 #include <PubSubClient.h>
@@ -276,9 +279,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 99;
+const uint16_t CONSECUTIVO_ACTUAL = 104;
 const char *RESUMEN_CONSECUTIVO =
-    "LoRa: trazas claras al recibir y confirmar para que NUUP01 vea cuándo llega el paquete y su ACK";
+    "LoRa priorizado en núcleo 0: atiende RX/confirmación de inmediato y pausa BLE/WiFi/OLED hasta terminar";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -318,6 +321,14 @@ SPIClass loraSPI(HSPI);  // Segundo SPI para LoRa
 
 volatile bool nuevoMensajeLoRa = false;
 String mensajeLoRa = "";
+volatile bool loraProcesando = false;
+TaskHandle_t tareaLoRaHandle = nullptr;
+
+struct LoRaProcessingGuard {
+    volatile bool &flag;
+    explicit LoRaProcessingGuard(volatile bool &flagRef) : flag(flagRef) { flag = true; }
+    ~LoRaProcessingGuard() { flag = false; }
+};
 
 
 typedef struct {
@@ -514,6 +525,8 @@ void iniciarEscaneoRedes();
 void procesarEscaneoRedes();
 
 void recepcion_lora();
+void procesarPaqueteLoRaRecibido(int packetSize);
+void tareaLoRaCore(void *parameter);
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
@@ -4828,26 +4841,42 @@ bool enviarPaqueteLoRa(const String &descripcion, const String &macDestino, cons
   return true;
 }
 
-void recepcion_lora() {
-    int packetSize = LoRa.parsePacket();
+void tareaLoRaCore(void *parameter) {
+    Serial.printf("⚡ Tarea LoRa dedicada iniciada en núcleo %d\n", xPortGetCoreID());
 
-    if (packetSize) {
-        Serial.println("\n🎉 ===========================================");
-        Serial.println("📡 PAQUETE LoRa DETECTADO - DEBUG COMPLETO");
-        Serial.println("🎉 ===========================================");
-        
-        String received = "";
-        while (LoRa.available()) {
-            received += (char)LoRa.read();
+    for (;;) {
+        int packetSize = LoRa.parsePacket();
+        if (packetSize) {
+            procesarPaqueteLoRaRecibido(packetSize);
         }
-        received.trim();
-        
-        Serial.printf("📊 Longitud mensaje: %d bytes\n", received.length());
-        Serial.printf("📶 RSSI: %d, SNR: %.2f\n", LoRa.packetRssi(), LoRa.packetSnr());
-        Serial.print("📨 Mensaje RAW: '");
-        Serial.print(received);
-        Serial.println("'");
-        Serial.printf("📥 LORA RX OK (%dB): %s\n", LoRa.packetRssi(), received.c_str());
+
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
+void procesarPaqueteLoRaRecibido(int packetSize) {
+    if (packetSize <= 0) {
+        return;
+    }
+
+    LoRaProcessingGuard guard(loraProcesando);
+
+    Serial.println("\n🎉 ===========================================");
+    Serial.println("📡 PAQUETE LoRa DETECTADO - DEBUG COMPLETO");
+    Serial.println("🎉 ===========================================");
+
+    String received = "";
+    while (LoRa.available()) {
+        received += (char)LoRa.read();
+    }
+    received.trim();
+
+    Serial.printf("📊 Longitud mensaje: %d bytes\n", received.length());
+    Serial.printf("📶 RSSI: %d, SNR: %.2f\n", LoRa.packetRssi(), LoRa.packetSnr());
+    Serial.print("📨 Mensaje RAW: '");
+    Serial.print(received);
+    Serial.println("'");
+    Serial.printf("📥 LORA RX OK (%dB): %s\n", LoRa.packetRssi(), received.c_str());
 
         if (received.startsWith("configuracion/")) {
             int primera = received.indexOf('/');
@@ -5021,6 +5050,13 @@ void recepcion_lora() {
         }
         
         Serial.println("🎉 ===========================================\n");
+    }
+}
+
+void recepcion_lora() {
+    int packetSize = LoRa.parsePacket();
+    if (packetSize) {
+        procesarPaqueteLoRaRecibido(packetSize);
     }
 }
 
@@ -5868,6 +5904,20 @@ LoRa.print("TEST_SERVER_READY");
 LoRa.endPacket();
 Serial.println("✅ Mensaje de prueba enviado");
 
+BaseType_t tareaLoRaCreada = xTaskCreatePinnedToCore(
+    tareaLoRaCore,
+    "LoRaCore",
+    8192,
+    nullptr,
+    4,
+    &tareaLoRaHandle,
+    0);
+
+if (tareaLoRaCreada != pdPASS) {
+    Serial.println("⚠️  No se pudo crear la tarea LoRa en núcleo 0, se usará el loop principal como respaldo");
+    tareaLoRaHandle = nullptr;
+}
+
 
 //7. configura DISPOSITIVOS
 // Cargar dispositivos registrados
@@ -5943,6 +5993,19 @@ Serial.println("Setup completado");
 
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
+
+  if (loraProcesando) {
+    delay(5);
+    return;
+  }
+
+  if (tareaLoRaHandle == nullptr) {
+    recepcion_lora();
+    if (loraProcesando) {
+      delay(5);
+      return;
+    }
+  }
 
   manejarBotonWifi();
 
