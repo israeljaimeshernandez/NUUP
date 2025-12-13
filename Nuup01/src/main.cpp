@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 99 - 2025-12-14 Watchdog: espera LoRa con reseteos explícitos y pausas breves para evitar reinicios fuera de deep sleep.
 // 98 - 2025-12-13 Impacto más sensible (umbral 50%) con indicador detallado de base/umbral y validez de toques.
 // 97 - 2025-06-15 Confirmación LoRa: espera progresiva por intento, trazas de mensajes inesperados y compatibilidad reforzada.
 // 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistencia en EEPROM.
@@ -2357,6 +2358,8 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
     while (millis() - inicioEspera < ventana) {
+        esp_task_wdt_reset();
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2397,6 +2400,8 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
 
             return true;
         }
+
+        delay(5);
     }
 
     return false;
@@ -2407,6 +2412,8 @@ bool esperarConfirmacionLoRa(int intentoActual) {
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
     while (millis() - inicioEspera < ventana) {
+        esp_task_wdt_reset();
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2452,6 +2459,8 @@ bool esperarConfirmacionLoRa(int intentoActual) {
 
             return true;
         }
+
+        delay(5);
     }
 
     return false;
@@ -2562,6 +2571,7 @@ bool enviarDatos(int distancia) {
                     }
                 }
             }
+            esp_task_wdt_reset();
             delay(250 + intento * 150);
         }
 
