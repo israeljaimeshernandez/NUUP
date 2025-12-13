@@ -2518,6 +2518,7 @@ bool enviarDatos(int distancia) {
 
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
+    bool ajustarPotenciaTrasDespertar = wakeByImpact || recalibrarPotenciaLoRa;
     uint8_t potenciaInicio = recalibrarPotenciaLoRa ? LORA_POTENCIA_MIN_DBM : potenciaLoRaActualDbm;
     uint8_t potenciaFin = recalibrarPotenciaLoRa ? LORA_POTENCIA_MAX_DBM : potenciaLoRaActualDbm;
 
@@ -2570,7 +2571,9 @@ bool enviarDatos(int distancia) {
         dispositivo.potenciaLoRaDbm = potenciaConfirmada;
         guardarDatosEnEEPROM();
         recalibrarPotenciaLoRa = false;
-        intercambiarPotenciaConMonitor(potenciaConfirmada);
+        if (ajustarPotenciaTrasDespertar) {
+            intercambiarPotenciaConMonitor(potenciaConfirmada);
+        }
     } else if (recalibrarPotenciaLoRa) {
         dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
         potenciaLoRaActualDbm = dispositivo.potenciaLoRaDbm;
