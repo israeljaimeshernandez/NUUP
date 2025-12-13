@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 112 - 2025-06-19 LoRa: trazas dev explican cada parámetro (TX/RSSI/SNR/tiempos) para diagnosticar envío y escucha
 // 111 - 2025-06-18 LoRa: eco bidireccional dev con trazas de espera/quality en respuestas monitor_*
 // 110 - 2025-06-18 LoRa: modo LORA_bidireccional_borrar solo para desarrollo, activable por bandera y sin impacto en producción.
 // 109 - 2025-06-18 LoRa: envío asíncrono con espera y watchdog protegido; trazas claras de modo escucha tras cada confirmación.
@@ -4926,6 +4927,7 @@ void LORA_bidireccional_borrar() {
   if (deltaRecepcion > 0) {
     Serial.printf("⏱️ Tiempo desde el último paquete nuup_: %lums\n", deltaRecepcion);
   }
+  Serial.println("   ↳ RSSI = potencia recibida (más negativo es peor) | SNR = limpieza de señal (mayor es mejor) | Δt = separación entre paquetes");
 
   uint32_t consecutivo = ++consecutivoMonitorBidireccional;
   if (recibido.startsWith("nuup_")) {
@@ -4947,6 +4949,7 @@ void LORA_bidireccional_borrar() {
                 potenciaLoRaMonitorDbm,
                 ultimoRssiLoRaRx,
                 ultimoSnrLoRaRx);
+  Serial.println("   ↳ TX = potencia de salida configurada | RSSI = fuerza con la que llegó nuup_* | SNR = claridad de la señal recibida");
 
   if (LoRa.beginPacket()) {
     LoRa.print(respuesta);

@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 102 - 2025-12-19 LoRa: trazas dev explican TX/RSSI/SNR/esperas para ver condición de envío y recepción en laboratorio.
 // 101 - 2025-12-14 LoRa: eco bidireccional dev esperando confirmación monitor_* con trazas de espera/calidad.
 // 100 - 2025-12-14 LoRa: modo LORA_bidireccional_borrar de laboratorio activable por bandera y con intervalo ajustable.
 // 99 - 2025-12-14 Watchdog: espera LoRa con reseteos explícitos y pausas breves para evitar reinicios fuera de deep sleep.
@@ -2440,6 +2441,7 @@ void LORA_bidireccional_borrar() {
                       payload.c_str(),
                       potenciaLoRaActualDbm,
                       LORA_BIDIRECCIONAL_INTERVALO_MS);
+        Serial.println("   ↳ TX = potencia de salida (mayor cubre más distancia) | Intervalo = espera mínima entre envíos | Se envía el siguiente solo tras monitor_*");
 
         LoRa.idle();
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
@@ -2450,6 +2452,7 @@ void LORA_bidireccional_borrar() {
                 marcaEnvioBidireccional = millis();
                 esperandoRespuestaBidireccional = true;
                 Serial.printf("✅ [DEV] Paquete dev transmitido, esperando monitor_* (timeout %lums)\n", LORA_BIDIRECCIONAL_TIMEOUT_MS);
+                Serial.println("   ↳ Timeout = tiempo máximo que aguardaremos la respuesta antes de reintentar");
             } else {
                 Serial.println("❌ [DEV] endPacket devolvió 0 al enviar paquete dev");
             }
@@ -2485,6 +2488,7 @@ void LORA_bidireccional_borrar() {
                       rssi,
                       snr,
                       esperaMs);
+        Serial.println("   ↳ RSSI = potencia recibida (menos negativo es mejor) | SNR = claridad de señal | Espera = ms desde que se envió nuup_ hasta que llegó monitor_*");
 
         if (recibido.startsWith("monitor_")) {
             uint32_t posible = recibido.substring(8).toInt();
