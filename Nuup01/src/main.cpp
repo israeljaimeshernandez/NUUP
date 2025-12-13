@@ -31,11 +31,6 @@
  *
  ******************************************************************************/
 
-// 103 - 2026-01-16 Parpadeo dual a 150ms limitado al ajuste de potencia y se restauran estados previos de LEDs BLE/WiFi.
-// 102 - 2026-01-16 Ajuste de potencia al inicio tras despertar por impacto con parpadeo dual durante la solicitud.
-// 101 - 2026-01-16 Ajuste de potencia solo tras despertar por impacto para evitar solicitudes innecesarias.
-// 100 - 2026-01-15 Alimentar watchdog durante espera de confirmaciones LoRa para evitar reinicios por WDT.
-// 99 - 2026-01-14 Deep sleep forzado si no hay confirmación LoRa para evitar reinicios en ciclos de envío.
 // 98 - 2025-12-13 Impacto más sensible (umbral 50%) con indicador detallado de base/umbral y validez de toques.
 // 97 - 2025-06-15 Confirmación LoRa: espera progresiva por intento, trazas de mensajes inesperados y compatibilidad reforzada.
 // 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistencia en EEPROM.
@@ -209,12 +204,6 @@ bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool recalibrarPotenciaLoRa = false;
-bool ajustePotenciaImpactoRealizado = false;
-bool parpadeoAjustePotenciaActivo = false;
-unsigned long ultimoParpadeoAjustePotencia = 0;
-bool estadoParpadeoAjustePotencia = false;
-bool estadoPrevioLedVerde = LOW;
-bool estadoPrevioLedRojo = LOW;
 
 unsigned long tiempoInicioRegistro = 0;
 #define TIMEOUT_REGISTRO_COMPLETO 10000
@@ -251,7 +240,6 @@ RTC_DATA_ATTR bool esperaDespuesBaja = false;
 #define SECUENCIA_INTERVALO_PARPADEO 200
 #define PARPADEO_LED_RAPIDO_MS 250
 #define PARPADEO_LED_LENTO_MS 1000
-#define PARPADEO_AJUSTE_POTENCIA_MS 150
 #define DURACION_PARPADEO_PROCESO_BAJA_MS 5000
 #define DURACION_PARPADEO_FINAL_BAJA_MS 10000
 #define PARPADEO_LORA_INTERVALO_MS 100
@@ -329,10 +317,6 @@ void imprimirDatosDispositivo();
 void limpiarEEPROMYReiniciar();
 bool enviarDatos(int distancia);
 bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada);
-bool realizarAjustePotenciaInicial(uint8_t potenciaObjetivo);
-void iniciarParpadeoAjustePotencia();
-void detenerParpadeoAjustePotencia();
-void actualizarParpadeoAjustePotencia();
 float measureDistance();
 int obtenerDistanciaValida();
 int calcularLitros(int distancia, uint32_t alturaTotal, uint32_t litrosTotal);
@@ -1371,34 +1355,6 @@ void parpadearLED(int pin, unsigned long intervalo, unsigned long duracion) {
     digitalWrite(pin, LOW);
 }
 
-void iniciarParpadeoAjustePotencia() {
-    parpadeoAjustePotenciaActivo = true;
-    ultimoParpadeoAjustePotencia = millis();
-    estadoParpadeoAjustePotencia = false;
-    estadoPrevioLedVerde = digitalRead(LED_VERDE_PIN);
-    estadoPrevioLedRojo = digitalRead(LED_ROJO_PIN);
-    digitalWrite(LED_VERDE_PIN, LOW);
-    digitalWrite(LED_ROJO_PIN, LOW);
-}
-
-void actualizarParpadeoAjustePotencia() {
-    if (!parpadeoAjustePotenciaActivo) return;
-
-    unsigned long ahora = millis();
-    if (ahora - ultimoParpadeoAjustePotencia >= PARPADEO_AJUSTE_POTENCIA_MS) {
-        estadoParpadeoAjustePotencia = !estadoParpadeoAjustePotencia;
-        digitalWrite(LED_VERDE_PIN, estadoParpadeoAjustePotencia);
-        digitalWrite(LED_ROJO_PIN, estadoParpadeoAjustePotencia);
-        ultimoParpadeoAjustePotencia = ahora;
-    }
-}
-
-void detenerParpadeoAjustePotencia() {
-    parpadeoAjustePotenciaActivo = false;
-    digitalWrite(LED_VERDE_PIN, estadoPrevioLedVerde);
-    digitalWrite(LED_ROJO_PIN, estadoPrevioLedRojo);
-}
-
 void ejecutarSecuenciaLED(String tipoOperacion) {
     Serial.println("\n🎭 INICIANDO SECUENCIA LED - " + tipoOperacion);
     Serial.println("   Fase 1: 💡 LED FIJO (" + String(SECUENCIA_LED_FIJO/1000) + " segundos)");
@@ -1790,7 +1746,6 @@ void setup() {
 
     if (wakeByImpact) {
         Serial.println("⚡ Wake por sensor de impacto - habilitando BLE/WiFi solo en este ciclo");
-        ajustePotenciaImpactoRealizado = false;
     }
 
     // Inicializar EEPROM
@@ -1895,24 +1850,12 @@ void setup() {
     Serial.println("📡 INICIANDO LoRa...");
     iniciarLoRaConReintentos();
 
-    // Ajuste de potencia inmediato tras despertar por impacto
-    if (wakeByImpact && !ajustePotenciaImpactoRealizado) {
-        bool ajusteConfirmado = realizarAjustePotenciaInicial(potenciaLoRaActualDbm);
-        ajustePotenciaImpactoRealizado = true;
-        if (!ajusteConfirmado) {
-            Serial.println("⚠️  Ajuste de potencia inicial sin confirmación - se continuará con el flujo normal");
-        }
-    }
-
     // Configurar para medición
     ultimoEnvioDatos = -INTERVALO_ENVIO_FORZOSO;
 
     // ⭐⭐ INICIALIZAR WiFi AP Y SERVIDOR WEB
     Serial.println("\n🌐 INICIANDO SERVICIOS WiFi...");
     configurarWiFiAP();
-    if (parpadeoAjustePotenciaActivo) {
-        detenerParpadeoAjustePotencia();
-    }
 
     Serial.println("\n🎯 ESTRATEGIA OPERATIVA:");
     Serial.println("   ==========================");
@@ -2152,11 +2095,8 @@ void loop() {
             int distancia = obtenerDistanciaValida();
             bool confirmado = enviarDatos(distancia);
             if (!confirmado) {
-                Serial.println("❌ Sin confirmación tras reintentos. Entrando en deep sleep para reintentar en el siguiente ciclo.");
-                wakeByImpact = false;
-                intervaloEnvioActual = INTERVALO_ENVIO_FORZOSO;
-                entrarDeepSleep();
-                return;
+                Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
+                ESP.restart();
             }
             ultimoEnvioDatos = millis();
 
@@ -2417,9 +2357,6 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
     while (millis() - inicioEspera < ventana) {
-        esp_task_wdt_reset();
-        actualizarParpadeoAjustePotencia();
-
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2460,8 +2397,6 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
 
             return true;
         }
-
-        delay(10);
     }
 
     return false;
@@ -2472,8 +2407,6 @@ bool esperarConfirmacionLoRa(int intentoActual) {
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
     while (millis() - inicioEspera < ventana) {
-        esp_task_wdt_reset();
-
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2594,7 +2527,7 @@ bool enviarDatos(int distancia) {
 
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
-    bool ajustarPotenciaTrasDespertar = wakeByImpact && !ajustePotenciaImpactoRealizado;
+    bool ajustarPotenciaTrasDespertar = wakeByImpact || recalibrarPotenciaLoRa;
     uint8_t potenciaInicio = recalibrarPotenciaLoRa ? LORA_POTENCIA_MIN_DBM : potenciaLoRaActualDbm;
     uint8_t potenciaFin = recalibrarPotenciaLoRa ? LORA_POTENCIA_MAX_DBM : potenciaLoRaActualDbm;
 
@@ -2629,7 +2562,6 @@ bool enviarDatos(int distancia) {
                     }
                 }
             }
-            esp_task_wdt_reset();
             delay(250 + intento * 150);
         }
 
@@ -2672,7 +2604,6 @@ bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada) {
         unsigned long ventana = calcularVentanaConfirmacionMs(intento);
         Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d, espera %lu ms)\n",
                       solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA, ventana);
-        actualizarParpadeoAjustePotencia();
 
         if (LoRa.beginPacket()) {
             LoRa.print(solicitud);
@@ -2684,23 +2615,12 @@ bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada) {
                 break;
             }
         }
-        esp_task_wdt_reset();
-        actualizarParpadeoAjustePotencia();
         delay(200);
     }
 
     if (!confirmado) {
         Serial.println("⚠️  No se obtuvo confirmación de configuración tras los reintentos (continuando sin error crítico)");
     }
-
-    return confirmado;
-}
-
-bool realizarAjustePotenciaInicial(uint8_t potenciaObjetivo) {
-    Serial.println("⚙️ Iniciando ciclo de ajuste de potencia tras wake por impacto...");
-    iniciarParpadeoAjustePotencia();
-
-    bool confirmado = intercambiarPotenciaConMonitor(potenciaObjetivo);
 
     return confirmado;
 }
