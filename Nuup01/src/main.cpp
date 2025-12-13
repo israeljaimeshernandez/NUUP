@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 103 - 2025-12-21 LoRa: alineación completa con Monitor01 (sync word, preámbulo, BW/SF/CR) y bitácora de comparativa; modo
+//      bidireccional dev queda apagado por defecto.
 // 102 - 2025-12-19 LoRa: trazas dev explican TX/RSSI/SNR/esperas para ver condición de envío y recepción en laboratorio.
 // 101 - 2025-12-14 LoRa: eco bidireccional dev esperando confirmación monitor_* con trazas de espera/calidad.
 // 100 - 2025-12-14 LoRa: modo LORA_bidireccional_borrar de laboratorio activable por bandera y con intervalo ajustable.
@@ -99,13 +101,14 @@ unsigned long tiempoInicioConfiguracion = 0;
 #define LORA_DIO0 -1
 
 // Modo de laboratorio (eliminar al liberar): eco bidireccional LoRa
-bool LORA_BIDIRECCIONAL_BORRAR = true;              // Mantener en false en producción
+bool LORA_BIDIRECCIONAL_BORRAR = false;              // Mantener en false en producción
 unsigned long LORA_BIDIRECCIONAL_INTERVALO_MS = 100; // Intervalo ajustable entre envíos dev
-uint32_t consecutivoBidireccionalNuup = 0;            // Contador de mensajes dev
-unsigned long ultimoEnvioBidireccional = 0;           // Marca de tiempo dev
-unsigned long LORA_BIDIRECCIONAL_TIMEOUT_MS = 1000;   // Tiempo máximo de espera por respuesta monitor_*
-bool esperandoRespuestaBidireccional = false;         // Controla el siguiente envío hasta recibir monitor_*
-unsigned long marcaEnvioBidireccional = 0;            // Inicio de espera de respuesta
+uint32_t consecutivoBidireccionalNuup = 0;           // Contador de mensajes dev
+unsigned long ultimoEnvioBidireccional = 0;          // Marca de tiempo dev
+// El monitor responde ~1.2s después de recibir; dejamos 2s para no cortar la respuesta por timeout
+unsigned long LORA_BIDIRECCIONAL_TIMEOUT_MS = 2000;  // Tiempo máximo de espera por respuesta monitor_*
+bool esperandoRespuestaBidireccional = false;        // Controla el siguiente envío hasta recibir monitor_*
+unsigned long marcaEnvioBidireccional = 0;           // Inicio de espera de respuesta
 
 // --- Calibración de sensibilidad de impacto (ajustables) ---
 // 01) Ventana máxima para capturar toques consecutivos (ms)
@@ -1866,6 +1869,8 @@ void setup() {
     if (LORA_BIDIRECCIONAL_BORRAR) {
         Serial.println("🧪 LORA_bidireccional_borrar ACTIVO (solo desarrollo, eliminar antes de producción)");
         Serial.printf("⏱️ Intervalo dev: %lums\n", LORA_BIDIRECCIONAL_INTERVALO_MS);
+    } else {
+        Serial.println("🛑 Modo dev LORA_bidireccional_borrar DESACTIVADO (producción)");
     }
 
     // Configurar para medición
@@ -2462,6 +2467,9 @@ void LORA_bidireccional_borrar() {
 
         LoRa.receive();
         ultimoEnvioBidireccional = ahora;
+        // Actualizamos el reloj base para las comprobaciones posteriores dentro de la misma llamada
+        // y evitar desbordes (ahora < marcaEnvioBidireccional) inmediatamente después de enviar.
+        ahora = millis();
     }
 
     if (esperandoRespuestaBidireccional && (ahora - marcaEnvioBidireccional >= LORA_BIDIRECCIONAL_TIMEOUT_MS)) {
@@ -2872,10 +2880,12 @@ void iniciarLoRaConReintentos() {
         LoRa.setSpreadingFactor(12);
         LoRa.setSignalBandwidth(125E3);
         LoRa.setCodingRate4(8);
-        
+        LoRa.setSyncWord(0x12);
+        LoRa.setPreambleLength(8);
+
         // Configurar callback
         LoRa.onTxDone(onTxDone);
-        
+
         // Mostrar configuración (valores estáticos ya que no hay funciones get)
         Serial.println("📊 CONFIGURACIÓN LoRa APLICADA:");
         Serial.println("   Frecuencia: 433.0 MHz");
@@ -2885,7 +2895,8 @@ void iniciarLoRaConReintentos() {
         Serial.println("   Coding Rate: 4/8");
         Serial.println("   Sync Word: 0x12");
         Serial.println("   Preamble Length: 8");
-        
+        Serial.println("📐 Alineación LoRa con Monitor01: Frec 433 MHz | SF12 | BW 125 kHz | CR 4/8 | Sync 0x12 | Preámbulo 8 | RX en modo continuo");
+
         digitalWrite(LED_PIN, LOW);
     } else {
         Serial.println("🚨 ERROR CRÍTICO: No se pudo inicializar LoRa después de 10 intentos");
