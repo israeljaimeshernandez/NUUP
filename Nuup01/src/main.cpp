@@ -99,13 +99,14 @@ unsigned long tiempoInicioConfiguracion = 0;
 #define LORA_DIO0 -1
 
 // Modo de laboratorio (eliminar al liberar): eco bidireccional LoRa
-bool LORA_BIDIRECCIONAL_BORRAR = true;              // Mantener en false en producción
+bool LORA_BIDIRECCIONAL_BORRAR = true;               // Mantener en false en producción
 unsigned long LORA_BIDIRECCIONAL_INTERVALO_MS = 100; // Intervalo ajustable entre envíos dev
-uint32_t consecutivoBidireccionalNuup = 0;            // Contador de mensajes dev
-unsigned long ultimoEnvioBidireccional = 0;           // Marca de tiempo dev
-unsigned long LORA_BIDIRECCIONAL_TIMEOUT_MS = 1000;   // Tiempo máximo de espera por respuesta monitor_*
-bool esperandoRespuestaBidireccional = false;         // Controla el siguiente envío hasta recibir monitor_*
-unsigned long marcaEnvioBidireccional = 0;            // Inicio de espera de respuesta
+uint32_t consecutivoBidireccionalNuup = 0;           // Contador de mensajes dev
+unsigned long ultimoEnvioBidireccional = 0;          // Marca de tiempo dev
+// El monitor responde ~1.2s después de recibir; dejamos 2s para no cortar la respuesta por timeout
+unsigned long LORA_BIDIRECCIONAL_TIMEOUT_MS = 2000;  // Tiempo máximo de espera por respuesta monitor_*
+bool esperandoRespuestaBidireccional = false;        // Controla el siguiente envío hasta recibir monitor_*
+unsigned long marcaEnvioBidireccional = 0;           // Inicio de espera de respuesta
 
 // --- Calibración de sensibilidad de impacto (ajustables) ---
 // 01) Ventana máxima para capturar toques consecutivos (ms)
