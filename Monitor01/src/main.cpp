@@ -92,6 +92,12 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 102 - 2025-06-15 LoRa: confirmación inmediata al recibir datos de NUUP01 y trazas descriptivas.
+// 101 - 2025-06-14 LoRa: compatibilidad de confirmación reforzada, envío verificado y trazas claras aun con monitor inactivo/MQTT.
+// 100 - 2025-06-14 LoRa: se confirma siempre por LoRa con los datos recibidos (nombre/altura/litros) y se persisten cambios en EEPROM.
+// 99 - 2025-06-13 LoRa: se imprime en consola la recepción y la confirmación enviada, manteniendo trazabilidad inmediata.
+// 98 - 2025-06-13 LoRa: NUUP01 recibe confirmación clara al enviar desde la ruta nuup/MAC, normalizando el payload y deteniendo reintentos.
+// 97 - 2025-06-12 LoRa: NUUP01 recibe confirmación o error claro al responder; se documenta el ajuste en español.
 // 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
 // 95 - 2025-06-11 LoRa: el monitor confirma solo por LoRa; la publicación MQTT sigue igual, sin ACK extra al broker.
 // 94 - 2025-06-10 UI: sin dispositivos muestra solo "SIN Dispositivos" y "NUUP" en pantalla, sin mensajes adicionales.
@@ -270,8 +276,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 95;
-const char *RESUMEN_CONSECUTIVO = "MQTT sin cambios: solo confirmación LoRa, sin ACK extra al broker";
+const uint16_t CONSECUTIVO_ACTUAL = 99;
+const char *RESUMEN_CONSECUTIVO =
+    "LoRa: trazas claras al recibir y confirmar para que NUUP01 vea cuándo llega el paquete y su ACK";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -4759,6 +4766,68 @@ bool mensajeLoRaTieneDatos(const String &mensaje) {
   return true;
 }
 
+struct DatosConfirmacionLoRa {
+  String nombre;
+  float alturaConfig;
+  float litrosConfig;
+  bool origenMensaje;
+};
+
+DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config) {
+  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosConfig, false};
+
+  int commas[8];
+  int commaCount = 0;
+
+  for (int pos = 0; pos < mensaje.length() && commaCount < 8; pos++) {
+    if (mensaje.charAt(pos) == ',') {
+      commas[commaCount] = pos;
+      commaCount++;
+    }
+  }
+
+  if (commaCount >= 6) {
+    String alturaConfigStr = mensaje.substring(commas[4] + 1, commas[5]);
+    String litrosConfigStr = mensaje.substring(commas[5] + 1, commas[6]);
+
+    datos.alturaConfig = alturaConfigStr.toFloat();
+    datos.litrosConfig = litrosConfigStr.toFloat();
+    datos.origenMensaje = true;
+
+    if (commaCount >= 7) {
+      String nombreExtraido = mensaje.substring(commas[6] + 1, commas[7]);
+      nombreExtraido.trim();
+      if (nombreExtraido.length() > 0) {
+        datos.nombre = nombreExtraido;
+      }
+    }
+  }
+
+  return datos;
+}
+
+bool enviarPaqueteLoRa(const String &descripcion, const String &macDestino, const String &payload) {
+  Serial.printf("📡 Enviando %s a %s | %s\n", descripcion.c_str(), macDestino.c_str(), payload.c_str());
+
+  int beginResult = LoRa.beginPacket();
+  if (!beginResult) {
+    Serial.println("❌ No se pudo iniciar el paquete LoRa para envío de confirmación");
+    return false;
+  }
+
+  LoRa.print(payload);
+
+  int endResult = LoRa.endPacket();
+  if (!endResult) {
+    Serial.println("❌ Falló el envío LoRa (endPacket retornó 0)");
+    return false;
+  }
+
+  Serial.println("✅ Paquete LoRa enviado correctamente");
+  LoRa.receive();
+  return true;
+}
+
 void recepcion_lora() {
     int packetSize = LoRa.parsePacket();
 
@@ -4778,6 +4847,7 @@ void recepcion_lora() {
         Serial.print("📨 Mensaje RAW: '");
         Serial.print(received);
         Serial.println("'");
+        Serial.printf("📥 LORA RX OK (%dB): %s\n", LoRa.packetRssi(), received.c_str());
 
         if (received.startsWith("configuracion/")) {
             int primera = received.indexOf('/');
@@ -4825,6 +4895,28 @@ void recepcion_lora() {
             return;
         }
         
+        // Normalizar payloads que lleguen como nuup/MAC,... a formato clásico "1,MAC,..."
+        if (received.startsWith("nuup/")) {
+            int slash = received.indexOf('/');
+            int coma = received.indexOf(',', slash + 1);
+
+            if (coma == -1) {
+                Serial.println("⚠️  Mensaje nuup/MAC sin datos, se descarta");
+                return;
+            }
+
+            String macNuup = normalizarMac(received.substring(slash + 1, coma));
+            if (!esMacValida(macNuup)) {
+                Serial.printf("❌ MAC inválida en formato nuup/MAC: '%s'\n", macNuup.c_str());
+                return;
+            }
+
+            String datos = received.substring(coma + 1);
+            received = "1," + macNuup + "," + datos;
+
+            Serial.printf("🔄 Formato nuup/MAC detectado, normalizado a: '%s'\n", received.c_str());
+        }
+
         // Debug detallado del formato
         debugMensajeLoRa(received);
         
@@ -4892,20 +4984,25 @@ void recepcion_lora() {
                     actualizarDatosDesdeLoRa(mac, received, "");
                     mensajeLoRa = normalizarPayloadParaMQTT(received);
                     nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
-                    if (!configDispositivos[i].activo) {
-                        Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
-                        intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
-                    } else {
-                        // Confirmación inmediata por LoRa con datos de EEPROM
-                        String confirmacion = "CONFIRMACION," + mac + "," +
-                                             String(configDispositivos[i].nombre) + "," +
-                                             String(configDispositivos[i].alturaConfig, 0) + "," +
-                                             String(configDispositivos[i].litrosConfig, 0);
+                    DatosConfirmacionLoRa datosConfirmacion = construirConfirmacionLoRa(received, configDispositivos[i]);
 
-                        Serial.printf("📡 Enviando confirmación LoRa a %s\n", mac.c_str());
-                        LoRa.beginPacket();
-                        LoRa.print(confirmacion);
-                        LoRa.endPacket();
+                    if (!configDispositivos[i].activo) {
+                        Serial.println("ℹ️  Dispositivo inactivo: se confirma por LoRa y se agenda alta si aplica");
+                        intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
+                    }
+
+                    Serial.println("⚡ Preparando confirmación inmediata hacia NUUP01 para detener reintentos");
+                    String confirmacion = "CONFIRMACION," + mac + "," +
+                                             datosConfirmacion.nombre + "," +
+                                             String(datosConfirmacion.alturaConfig, 0) + "," +
+                                             String(datosConfirmacion.litrosConfig, 0);
+
+                    if (!datosConfirmacion.origenMensaje) {
+                        Serial.println("ℹ️  Confirmación armada con datos locales al no encontrar campos completos en el mensaje");
+                    }
+
+                    if (!enviarPaqueteLoRa("confirmación LoRa", mac, confirmacion)) {
+                        Serial.println("⚠️  Revisa la potencia o interferencias: la confirmación podría no haber salido");
                     }
                     break;
                 }
@@ -4914,6 +5011,9 @@ void recepcion_lora() {
             if (!encontrado) {
                 Serial.println("❌ DISPOSITIVO NO REGISTRADO - Mensaje LoRa ignorado sin auto-alta ni publicación MQTT");
                 Serial.println("ℹ️  Registre el dispositivo por BLE o portal antes de aceptar datos LoRa");
+
+                String errorConfirmacion = "ERROR," + mac + ",NO_REGISTRADO";
+                enviarPaqueteLoRa("error LoRa (no registrado)", mac, errorConfirmacion);
                 return;
             }
         } else {
