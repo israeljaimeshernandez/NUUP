@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 98 - 2025-12-13 Impacto más sensible (umbral 50%) con indicador detallado de base/umbral y validez de toques.
 // 97 - 2025-06-15 Confirmación LoRa: espera progresiva por intento, trazas de mensajes inesperados y compatibilidad reforzada.
 // 96 - 2025-06-11 Potencia LoRa: barrido dinámico 2-12 dBm tras impacto, confirmación configuracion/MAC/confirmacion y persistencia en EEPROM.
 // 01 - 2025-05-24 Ajuste de doble/triple toque para despertar, espera
@@ -99,7 +100,7 @@ const uint16_t IMPACTO_VENTANA_MS = 1500;
 // 02) Tiempo mínimo entre toques para evitar rebotes (ms)
 const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
 // 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
-const uint16_t IMPACTO_UMBRAL_ANALOGICO = 50;
+const uint16_t IMPACTO_UMBRAL_ANALOGICO = 25;
 // 04) Muestras usadas para estimar el nivel en reposo del sensor
 const uint8_t IMPACTO_MUESTRAS_BASE = 16;
 // 05) Cantidad mínima de toques válidos para aceptar el despertar
@@ -544,6 +545,8 @@ bool confirmarGolpesImpacto() {
     }
     uint16_t baseReposo = acumulado / IMPACTO_MUESTRAS_BASE;
     Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
+    Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u (50%% del umbral previo)\n",
+                  IMPACTO_UMBRAL_ANALOGICO);
 
     int toquesDetectados = 1; // Primer toque es el que despertó
     unsigned long inicioVentana = millis();
@@ -572,6 +575,12 @@ bool confirmarGolpesImpacto() {
     }
 
     Serial.printf("🔎 Total de toques detectados: %d\n", toquesDetectados);
+    Serial.printf("📈 Indicador de impacto: base %u, umbral -%u, toques válidos %s\n",
+                  baseReposo,
+                  IMPACTO_UMBRAL_ANALOGICO,
+                  toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES
+                      ? "✅ dentro del rango"
+                      : "❌ insuficientes/excesivos");
     return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
 }
 
@@ -2518,6 +2527,7 @@ bool enviarDatos(int distancia) {
 
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
+    bool ajustarPotenciaTrasDespertar = wakeByImpact || recalibrarPotenciaLoRa;
     uint8_t potenciaInicio = recalibrarPotenciaLoRa ? LORA_POTENCIA_MIN_DBM : potenciaLoRaActualDbm;
     uint8_t potenciaFin = recalibrarPotenciaLoRa ? LORA_POTENCIA_MAX_DBM : potenciaLoRaActualDbm;
 
@@ -2570,7 +2580,9 @@ bool enviarDatos(int distancia) {
         dispositivo.potenciaLoRaDbm = potenciaConfirmada;
         guardarDatosEnEEPROM();
         recalibrarPotenciaLoRa = false;
-        intercambiarPotenciaConMonitor(potenciaConfirmada);
+        if (ajustarPotenciaTrasDespertar) {
+            intercambiarPotenciaConMonitor(potenciaConfirmada);
+        }
     } else if (recalibrarPotenciaLoRa) {
         dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
         potenciaLoRaActualDbm = dispositivo.potenciaLoRaDbm;
