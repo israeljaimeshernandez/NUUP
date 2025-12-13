@@ -270,8 +270,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 95;
-const char *RESUMEN_CONSECUTIVO = "MQTT sin cambios: solo confirmación LoRa, sin ACK extra al broker";
+const uint16_t CONSECUTIVO_ACTUAL = 96;
+const char *RESUMEN_CONSECUTIVO =
+    "Corrección LoRa: se responde siempre al NUUP01 con confirmación o error (no activo/sin registrar)";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -4895,6 +4896,12 @@ void recepcion_lora() {
                     if (!configDispositivos[i].activo) {
                         Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
                         intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
+
+                        String errorConfirmacion = "ERROR," + mac + ",NO_ACTIVO";
+                        Serial.printf("📡 Enviando error LoRa (no activo) a %s\n", mac.c_str());
+                        LoRa.beginPacket();
+                        LoRa.print(errorConfirmacion);
+                        LoRa.endPacket();
                     } else {
                         // Confirmación inmediata por LoRa con datos de EEPROM
                         String confirmacion = "CONFIRMACION," + mac + "," +
@@ -4914,6 +4921,12 @@ void recepcion_lora() {
             if (!encontrado) {
                 Serial.println("❌ DISPOSITIVO NO REGISTRADO - Mensaje LoRa ignorado sin auto-alta ni publicación MQTT");
                 Serial.println("ℹ️  Registre el dispositivo por BLE o portal antes de aceptar datos LoRa");
+
+                String errorConfirmacion = "ERROR," + mac + ",NO_REGISTRADO";
+                Serial.printf("📡 Enviando error LoRa (no registrado) a %s\n", mac.c_str());
+                LoRa.beginPacket();
+                LoRa.print(errorConfirmacion);
+                LoRa.endPacket();
                 return;
             }
         } else {
