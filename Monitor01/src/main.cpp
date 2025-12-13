@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 97 - 2025-06-12 LoRa: NUUP01 recibe confirmación o error claro al responder; se documenta el ajuste en español.
 // 96 - 2025-06-11 Potencia LoRa: monitor responde configuracion/MAC/solicitud confirmando nivel solicitado y mantiene TX al máximo.
 // 95 - 2025-06-11 LoRa: el monitor confirma solo por LoRa; la publicación MQTT sigue igual, sin ACK extra al broker.
 // 94 - 2025-06-10 UI: sin dispositivos muestra solo "SIN Dispositivos" y "NUUP" en pantalla, sin mensajes adicionales.
@@ -270,9 +271,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 96;
+const uint16_t CONSECUTIVO_ACTUAL = 97;
 const char *RESUMEN_CONSECUTIVO =
-    "Corrección LoRa: se responde siempre al NUUP01 con confirmación o error (no activo/sin registrar)";
+    "LoRa: NUUP01 recibe confirmación o error inmediato (inactivo/no registrado) y se documenta el ajuste";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
