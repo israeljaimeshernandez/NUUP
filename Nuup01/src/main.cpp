@@ -1719,8 +1719,9 @@ void setup() {
     esp_task_wdt_init(30, true);
     esp_task_wdt_add(NULL);
 
-    // ⭐ VERIFICAR CAUSA DE WAKEUP
+    // ⭐ VERIFICAR CAUSA DE WAKEUP (solo válido tras deep sleep)
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    bool wakeFromDeepSleep = esp_reset_reason() == ESP_RST_DEEPSLEEP;
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
@@ -1729,7 +1730,7 @@ void setup() {
     switch(wakeup_reason) {
         case ESP_SLEEP_WAKEUP_EXT0:
             Serial.println("📅 Wakeup por BOTÓN");
-            wakeByImpact = true;
+            wakeByImpact = wakeFromDeepSleep; // Solo cuenta si venimos de deep sleep
             break;
         case ESP_SLEEP_WAKEUP_TIMER:
             Serial.println("⏰ Wakeup por TIMER - Ciclo normal");
@@ -1741,6 +1742,8 @@ void setup() {
 
     if (wakeByImpact) {
         Serial.println("⚡ Wake por sensor de impacto - habilitando BLE/WiFi solo en este ciclo");
+    } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 && !wakeFromDeepSleep) {
+        Serial.println("ℹ️  Pulsación detectada en arranque en frío: se ignora ajuste de potencia inicial");
     }
 
     // Inicializar EEPROM
