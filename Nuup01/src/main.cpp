@@ -111,15 +111,15 @@ const uint8_t IMPACTO_MAX_TOQUES = 3;
 const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 
 // --- Tiempos ÚNICOS ---
-#define INTERVALO_ENVIO_DATOS 30000      // 20 segundos entre envíos LoRa (registrado)
+#define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
 #define INTERVALO_ENVIO_CAMBIO 5000      // 5 segundos cuando hubo cambios recientes
-#define INTERVALO_ENVIO_FORZOSO 20000    // 20 segundos máximo sin cambios
+#define INTERVALO_ENVIO_FORZOSO 30000    // 20 segundos máximo sin cambios
 #define TIEMPO_ESPERA_CONFIRMACION_INICIAL 4000  // 2 segundos base de espera por confirmación LoRa
 #define INCREMENTO_ESPERA_CONFIRMACION 500       // Aumento progresivo por intento para dar margen de sincronización
 #define REINTENTOS_CONFIRMACION 5        // Envío inicial + 4 reintentos antes de reiniciar
-#define LORA_POTENCIA_MIN_DBM 2          // Potencia mínima para el barrido dinámico
+#define LORA_POTENCIA_MIN_DBM 6          // Potencia mínima para el barrido dinámico
 #define LORA_POTENCIA_MAX_DBM 12         // Potencia máxima objetivo para el sensor
-#define LORA_POTENCIA_DEFECTO_DBM 2      // Potencia por defecto si no hay confirmaciones
+#define LORA_POTENCIA_DEFECTO_DBM 6      // Potencia por defecto si no hay confirmaciones
 #define REINTENTOS_CONFIG_POTENCIA 5     // Veces que se intercambia configuracion/MAC/confirmacion
 #define INTERVALO_ESCANEO_ALTA 10000  // 10 segundos (búsqueda activa extendida)
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
