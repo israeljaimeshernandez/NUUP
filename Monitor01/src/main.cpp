@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 110 - 2025-06-18 LoRa: modo LORA_bidireccional_borrar solo para desarrollo, activable por bandera y sin impacto en producción.
 // 109 - 2025-06-18 LoRa: envío asíncrono con espera y watchdog protegido; trazas claras de modo escucha tras cada confirmación.
 // 108 - 2025-06-18 LoRa: consecutivo en español documentado en cabecera; triple confirmación inmediata con separación configurable y bitácora al cambiar estado.
 // 107 - 2025-06-18 LoRa: triple confirmación inmediata con separación configurable y estados serial solo al cambiar.
@@ -305,6 +306,9 @@ volatile float ultimoSnrLoRaRx = 0.0; // Relación señal/ruido del último paqu
 const uint8_t REPETICIONES_CONFIRMACION_LORA = 3;          // Confirmaciones inmediatas repetidas
 const unsigned long INTERVALO_CONFIRMACION_LORA_MS = 100;  // Pausa entre confirmaciones LoRa
 volatile bool loraEnEscucha = false;                       // Estado de recepción activa para trazas
+bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrollo: debe permanecer en false en producción
+unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
+uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 
 
 //Redes guardadas
@@ -532,6 +536,7 @@ void iniciarEscaneoRedes();
 void procesarEscaneoRedes();
 
 void reanudarRecepcionLoRa(const char *motivo);
+void LORA_bidireccional_borrar();
 void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
 void tareaLoRaCore(void *parameter);
@@ -4889,6 +4894,64 @@ bool enviarPaqueteLoRa(const String &descripcion,
   return exito;
 }
 
+void LORA_bidireccional_borrar() {
+  int packetSize = LoRa.parsePacket();
+  if (packetSize <= 0) {
+    return;
+  }
+
+  LoRaProcessingGuard guard(loraProcesando);
+
+  String recibido = "";
+  while (LoRa.available()) {
+    recibido += (char)LoRa.read();
+  }
+  recibido.trim();
+
+  ultimoRssiLoRaRx = LoRa.packetRssi();
+  ultimoSnrLoRaRx = LoRa.packetSnr();
+
+  Serial.println("\n🧪 [DEV] BIDIRECCIONAL - paquete entrante");
+  Serial.printf("📥 Contenido: '%s' | RSSI %d dBm | SNR %.1f dB\n",
+                recibido.c_str(),
+                ultimoRssiLoRaRx,
+                ultimoSnrLoRaRx);
+
+  uint32_t consecutivo = ++consecutivoMonitorBidireccional;
+  if (recibido.startsWith("nuup_")) {
+    uint32_t candidato = recibido.substring(5).toInt();
+    if (candidato > 0) {
+      consecutivoMonitorBidireccional = candidato;
+      consecutivo = candidato;
+    }
+  }
+
+  String respuesta = "monitor_" + String(consecutivo);
+
+  LoRa.idle();
+  loraEnEscucha = false;
+  LoRa.setTxPower(potenciaLoRaMonitorDbm);
+
+  Serial.printf("📤 [DEV] Respondiendo %s | TX %u dBm | Último RSSI %d dBm | SNR %.1f dB\n",
+                respuesta.c_str(),
+                potenciaLoRaMonitorDbm,
+                ultimoRssiLoRaRx,
+                ultimoSnrLoRaRx);
+
+  if (LoRa.beginPacket()) {
+    LoRa.print(respuesta);
+    if (LoRa.endPacket()) {
+      Serial.println("✅ [DEV] Respuesta dev enviada correctamente");
+    } else {
+      Serial.println("❌ [DEV] endPacket devolvió 0 al responder");
+    }
+  } else {
+    Serial.println("❌ [DEV] No se pudo iniciar el paquete de respuesta dev");
+  }
+
+  reanudarRecepcionLoRa("LORA_bidireccional_borrar");
+}
+
 void tareaLoRaCore(void *parameter) {
     Serial.printf("⚡ Tarea LoRa dedicada iniciada en núcleo %d\n", xPortGetCoreID());
     reanudarRecepcionLoRa("arranque de tarea LoRa");
@@ -5978,16 +6041,23 @@ iniciarLoRaConReintentos();
 // Se elimina el envío de prueba para no interferir con confirmaciones reales
 Serial.println("🎯 LoRa listo para escuchar (sin mensajes de prueba)");
 
-BaseType_t tareaLoRaCreada = xTaskCreatePinnedToCore(
-    tareaLoRaCore,
-    "LoRaCore",
-    8192,
-    nullptr,
-    4,
-    &tareaLoRaHandle,
-    0);
+BaseType_t tareaLoRaCreada = pdPASS;
+if (!LORA_BIDIRECCIONAL_BORRAR) {
+    tareaLoRaCreada = xTaskCreatePinnedToCore(
+        tareaLoRaCore,
+        "LoRaCore",
+        8192,
+        nullptr,
+        4,
+        &tareaLoRaHandle,
+        0);
+}
 
-if (tareaLoRaCreada != pdPASS) {
+if (LORA_BIDIRECCIONAL_BORRAR) {
+    Serial.println("🧪 LORA_bidireccional_borrar ACTIVO (solo desarrollo, eliminar antes de producción)");
+    Serial.printf("⏱️ Intervalo dev: %lums\n", INTERVALO_BIDIRECCIONAL_LORA_MS);
+    tareaLoRaHandle = nullptr;
+} else if (tareaLoRaCreada != pdPASS) {
     Serial.println("⚠️  No se pudo crear la tarea LoRa en núcleo 0, se usará el loop principal como respaldo");
     tareaLoRaHandle = nullptr;
 }
@@ -6067,6 +6137,12 @@ Serial.println("Setup completado");
 
 // Modificar el loop principal para manejar ambas animaciones
 void loop() {
+
+  if (LORA_BIDIRECCIONAL_BORRAR) {
+    LORA_bidireccional_borrar();
+    delay(INTERVALO_BIDIRECCIONAL_LORA_MS);
+    return;
+  }
 
   if (loraProcesando) {
     delay(5);
