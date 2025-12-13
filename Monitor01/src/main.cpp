@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 108 - 2025-06-18 LoRa: consecutivo en español documentado en cabecera; triple confirmación inmediata con separación configurable y bitácora al cambiar estado.
 // 107 - 2025-06-18 LoRa: triple confirmación inmediata con separación configurable y estados serial solo al cambiar.
 // 106 - 2025-06-17 LoRa: respuesta inmediata con potencia/RSSI visibles y estado en consola solo al iniciar o cambiar.
 // 105 - 2025-06-16 LoRa: corrección de compilación tras refactor al núcleo 0 (llave extra removida).
@@ -280,11 +281,6 @@
 #define USER_PHONE_MAX_LEN 24
 #define USER_EMAIL_MAX_LEN 64
 #define USER_PASS_MAX_LEN 32
-
-// Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 108;
-const char *RESUMEN_CONSECUTIVO =
-    "Corrige el flujo LoRa tras moverlo al segundo núcleo: escucha permanente, sin TX de prueba y bitácora en español";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -539,7 +535,6 @@ void tareaLoRaCore(void *parameter);
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
-void anunciarConsecutivo();
 
 // AGREGAR estas declaraciones:
 int contarDispositivosRegistrados();
@@ -2715,12 +2710,6 @@ String horaLegibleCorta() {
   char buffer[16];
   strftime(buffer, sizeof(buffer), "%H:%M:%S", tiempo);
   return String(buffer);
-}
-
-void anunciarConsecutivo() {
-  Serial.printf("📑 Consecutivo %d: %s\n", CONSECUTIVO_ACTUAL, RESUMEN_CONSECUTIVO);
-
-  // El consecutivo solo se documenta en consola para evitar ocupar la pantalla inicial
 }
 
 void mostrarResumenEstadoInicial() {
@@ -5864,8 +5853,6 @@ void setup() {
   displayReady = true;
   Serial.println("OLED inicializado correctamente");
   display.setTextColor(SSD1306_WHITE);
-
-  anunciarConsecutivo();
 
     // 11. Inicializar BLE
     iniciarBLE();
