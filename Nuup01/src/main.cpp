@@ -97,7 +97,7 @@ unsigned long tiempoInicioConfiguracion = 0;
 #define LORA_DIO0 -1
 
 // Modo de laboratorio (eliminar al liberar): eco bidireccional LoRa
-bool LORA_BIDIRECCIONAL_BORRAR = false;              // Mantener en false en producción
+bool LORA_BIDIRECCIONAL_BORRAR = true;              // Mantener en false en producción
 unsigned long LORA_BIDIRECCIONAL_INTERVALO_MS = 100; // Intervalo ajustable entre envíos dev
 uint32_t consecutivoBidireccionalNuup = 0;            // Contador de mensajes dev
 unsigned long ultimoEnvioBidireccional = 0;           // Marca de tiempo dev
