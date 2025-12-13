@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 109 - 2025-06-18 LoRa: envío asíncrono con espera y watchdog protegido; trazas claras de modo escucha tras cada confirmación.
 // 108 - 2025-06-18 LoRa: consecutivo en español documentado en cabecera; triple confirmación inmediata con separación configurable y bitácora al cambiar estado.
 // 107 - 2025-06-18 LoRa: triple confirmación inmediata con separación configurable y estados serial solo al cambiar.
 // 106 - 2025-06-17 LoRa: respuesta inmediata con potencia/RSSI visibles y estado en consola solo al iniciar o cambiar.
@@ -303,6 +304,7 @@ volatile int ultimoRssiLoRaRx = 0;    // Calidad del último paquete recibido
 volatile float ultimoSnrLoRaRx = 0.0; // Relación señal/ruido del último paquete recibido
 const uint8_t REPETICIONES_CONFIRMACION_LORA = 3;          // Confirmaciones inmediatas repetidas
 const unsigned long INTERVALO_CONFIRMACION_LORA_MS = 100;  // Pausa entre confirmaciones LoRa
+volatile bool loraEnEscucha = false;                       // Estado de recepción activa para trazas
 
 
 //Redes guardadas
@@ -529,6 +531,8 @@ void checkWiFiStatus();
 void iniciarEscaneoRedes();
 void procesarEscaneoRedes();
 
+void reanudarRecepcionLoRa(const char *motivo);
+bool esperarFinTransmisionLoRa(uint32_t timeoutMs = 2500);
 void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
 void tareaLoRaCore(void *parameter);
@@ -4707,7 +4711,29 @@ void iniciarLoRaConReintentos() {
   Serial.println("   - CR: 4/8");
 
   // Escucha inmediata tras la configuración para no perder el primer paquete del NUUP01
+  reanudarRecepcionLoRa("inicio tras configuración");
+}
+
+void reanudarRecepcionLoRa(const char *motivo) {
   LoRa.receive();
+  if (!loraEnEscucha) {
+    Serial.printf("👂 LoRa en modo escucha continua (%s)\n", motivo);
+  } else {
+    Serial.printf("🔁 LoRa vuelve a modo escucha (%s)\n", motivo);
+  }
+  loraEnEscucha = true;
+}
+
+bool esperarFinTransmisionLoRa(uint32_t timeoutMs) {
+  unsigned long inicio = millis();
+  while (LoRa.isTransmitting()) {
+    vTaskDelay(pdMS_TO_TICKS(5));
+    if (millis() - inicio > timeoutMs) {
+      Serial.println("⚠️  Tiempo de espera agotado mientras se transmitía LoRa");
+      return false;
+    }
+  }
+  return true;
 }
 
 void Reintentar_Wiffi(){
@@ -4848,6 +4874,7 @@ bool enviarPaqueteLoRa(const String &descripcion,
 
     LoRa.setTxPower(potenciaLoRaMonitorDbm);
     LoRa.idle();
+    loraEnEscucha = false;
 
     int beginResult = LoRa.beginPacket();
     if (!beginResult) {
@@ -4855,12 +4882,16 @@ bool enviarPaqueteLoRa(const String &descripcion,
     } else {
       LoRa.print(payload);
 
-      int endResult = LoRa.endPacket();
+      int endResult = LoRa.endPacket(true);
       if (!endResult) {
         Serial.println("❌ Falló el envío LoRa (endPacket retornó 0)");
       } else {
-        Serial.println("✅ Paquete LoRa enviado correctamente");
-        exito = true;
+        if (!esperarFinTransmisionLoRa()) {
+          Serial.println("⚠️  Transmisión LoRa tardó demasiado, revisa interferencias o potencia");
+        } else {
+          Serial.println("✅ Paquete LoRa enviado correctamente");
+          exito = true;
+        }
       }
     }
 
@@ -4870,12 +4901,13 @@ bool enviarPaqueteLoRa(const String &descripcion,
   }
 
   Serial.println("🔁 Se reanuda recepción inmediata tras respuestas duplicadas");
-  LoRa.receive();
+  reanudarRecepcionLoRa("confirmaciones enviadas");
   return exito;
 }
 
 void tareaLoRaCore(void *parameter) {
     Serial.printf("⚡ Tarea LoRa dedicada iniciada en núcleo %d\n", xPortGetCoreID());
+    reanudarRecepcionLoRa("arranque de tarea LoRa");
 
     for (;;) {
         int packetSize = LoRa.parsePacket();
