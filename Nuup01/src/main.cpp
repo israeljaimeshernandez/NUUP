@@ -2462,6 +2462,9 @@ void LORA_bidireccional_borrar() {
 
         LoRa.receive();
         ultimoEnvioBidireccional = ahora;
+        // Actualizamos el reloj base para las comprobaciones posteriores dentro de la misma llamada
+        // y evitar desbordes (ahora < marcaEnvioBidireccional) inmediatamente después de enviar.
+        ahora = millis();
     }
 
     if (esperandoRespuestaBidireccional && (ahora - marcaEnvioBidireccional >= LORA_BIDIRECCIONAL_TIMEOUT_MS)) {
