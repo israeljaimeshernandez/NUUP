@@ -114,7 +114,7 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
 #define INTERVALO_ENVIO_CAMBIO 5000      // 5 segundos cuando hubo cambios recientes
 #define INTERVALO_ENVIO_FORZOSO 30000    // 20 segundos máximo sin cambios
-#define TIEMPO_ESPERA_CONFIRMACION_INICIAL 4000  // 2 segundos base de espera por confirmación LoRa
+#define TIEMPO_ESPERA_CONFIRMACION_INICIAL 6000  // 2 segundos base de espera por confirmación LoRa
 #define INCREMENTO_ESPERA_CONFIRMACION 500       // Aumento progresivo por intento para dar margen de sincronización
 #define REINTENTOS_CONFIRMACION 5        // Envío inicial + 4 reintentos antes de reiniciar
 #define LORA_POTENCIA_MIN_DBM 6          // Potencia mínima para el barrido dinámico
