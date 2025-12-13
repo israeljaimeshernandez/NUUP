@@ -282,9 +282,9 @@
 #define USER_PASS_MAX_LEN 32
 
 // Indicador consecutivo del firmware
-const uint16_t CONSECUTIVO_ACTUAL = 107;
+const uint16_t CONSECUTIVO_ACTUAL = 108;
 const char *RESUMEN_CONSECUTIVO =
-    "LoRa confirma tres veces cada 100 ms (configurable) y solo imprime el estado completo cuando realmente cambia";
+    "Corrige el flujo LoRa tras moverlo al segundo núcleo: escucha permanente, sin TX de prueba y bitácora en español";
 
 // Tiempos y tópicos principales (ajustes rápidos)
 const unsigned long TIEMPO_SIN_DATOS = 120000;              // 2 minutos sin recibir LoRa → mostrar "SIN DATOS"
@@ -4716,6 +4716,9 @@ void iniciarLoRaConReintentos() {
   Serial.println("   - SF: 12");
   Serial.println("   - BW: 125 kHz");
   Serial.println("   - CR: 4/8");
+
+  // Escucha inmediata tras la configuración para no perder el primer paquete del NUUP01
+  LoRa.receive();
 }
 
 void Reintentar_Wiffi(){
@@ -5968,11 +5971,9 @@ delay(1000);
 
 // 6. Inicialización LoRa con manejo de errores mejorado
 iniciarLoRaConReintentos();
-Serial.println("🎯 TEST LoRa - Enviando mensaje de prueba...");
-LoRa.beginPacket();
-LoRa.print("TEST_SERVER_READY");
-LoRa.endPacket();
-Serial.println("✅ Mensaje de prueba enviado");
+
+// Se elimina el envío de prueba para no interferir con confirmaciones reales
+Serial.println("🎯 LoRa listo para escuchar (sin mensajes de prueba)");
 
 BaseType_t tareaLoRaCreada = xTaskCreatePinnedToCore(
     tareaLoRaCore,
