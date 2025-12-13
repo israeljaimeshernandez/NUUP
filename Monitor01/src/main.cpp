@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 114 - 2025-06-22 LoRa: reanudar escucha tras el test periódico para no dejar al monitor sordo frente a confirmaciones
 // 113 - 2025-06-21 LoRa: alineación y bitácora cruzada con Nuup01 (SyncWord/Preámbulo/BW/SF/CR) dejando apagado el eco bidireccional por defecto
 // 112 - 2025-06-19 LoRa: trazas dev explican cada parámetro (TX/RSSI/SNR/tiempos) para diagnosticar envío y escucha
 // 111 - 2025-06-18 LoRa: eco bidireccional dev con trazas de espera/quality en respuestas monitor_*
@@ -1361,16 +1362,19 @@ void testLoRaPeriodico() {
     static unsigned long lastTest = 0;
     if (millis() - lastTest > 30000) { // Cada 30 segundos
         lastTest = millis();
-        
+
         Serial.println("\n🔧 TEST PERIÓDICO LoRa:");
         Serial.printf("   - Free Heap: %d bytes\n", ESP.getFreeHeap());
         Serial.printf("   - Paquetes recibidos: %s\n", nuevoMensajeLoRa ? "SI" : "NO");
-        
+
         // Test de envío
         LoRa.beginPacket();
         LoRa.print("SERVER_ALIVE_" + String(millis()));
         LoRa.endPacket();
         Serial.println("   - Mensaje test enviado");
+
+        // Reanudar escucha inmediata para no bloquear confirmaciones reales
+        reanudarRecepcionLoRa("testLoRaPeriodico");
     }
 }
 
