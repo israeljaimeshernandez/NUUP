@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 103 - 2026-01-16 Parpadeo dual a 150ms limitado al ajuste de potencia y se restauran estados previos de LEDs BLE/WiFi.
 // 102 - 2026-01-16 Ajuste de potencia al inicio tras despertar por impacto con parpadeo dual durante la solicitud.
 // 101 - 2026-01-16 Ajuste de potencia solo tras despertar por impacto para evitar solicitudes innecesarias.
 // 100 - 2026-01-15 Alimentar watchdog durante espera de confirmaciones LoRa para evitar reinicios por WDT.
@@ -212,6 +213,8 @@ bool ajustePotenciaImpactoRealizado = false;
 bool parpadeoAjustePotenciaActivo = false;
 unsigned long ultimoParpadeoAjustePotencia = 0;
 bool estadoParpadeoAjustePotencia = false;
+bool estadoPrevioLedVerde = LOW;
+bool estadoPrevioLedRojo = LOW;
 
 unsigned long tiempoInicioRegistro = 0;
 #define TIMEOUT_REGISTRO_COMPLETO 10000
@@ -1372,6 +1375,8 @@ void iniciarParpadeoAjustePotencia() {
     parpadeoAjustePotenciaActivo = true;
     ultimoParpadeoAjustePotencia = millis();
     estadoParpadeoAjustePotencia = false;
+    estadoPrevioLedVerde = digitalRead(LED_VERDE_PIN);
+    estadoPrevioLedRojo = digitalRead(LED_ROJO_PIN);
     digitalWrite(LED_VERDE_PIN, LOW);
     digitalWrite(LED_ROJO_PIN, LOW);
 }
@@ -1390,8 +1395,8 @@ void actualizarParpadeoAjustePotencia() {
 
 void detenerParpadeoAjustePotencia() {
     parpadeoAjustePotenciaActivo = false;
-    digitalWrite(LED_VERDE_PIN, LOW);
-    digitalWrite(LED_ROJO_PIN, LOW);
+    digitalWrite(LED_VERDE_PIN, estadoPrevioLedVerde);
+    digitalWrite(LED_ROJO_PIN, estadoPrevioLedRojo);
 }
 
 void ejecutarSecuenciaLED(String tipoOperacion) {
