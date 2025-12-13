@@ -532,7 +532,6 @@ void iniciarEscaneoRedes();
 void procesarEscaneoRedes();
 
 void reanudarRecepcionLoRa(const char *motivo);
-bool esperarFinTransmisionLoRa(uint32_t timeoutMs = 2500);
 void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
 void tareaLoRaCore(void *parameter);
@@ -4724,18 +4723,6 @@ void reanudarRecepcionLoRa(const char *motivo) {
   loraEnEscucha = true;
 }
 
-bool esperarFinTransmisionLoRa(uint32_t timeoutMs) {
-  unsigned long inicio = millis();
-  while (LoRa.isTransmitting()) {
-    vTaskDelay(pdMS_TO_TICKS(5));
-    if (millis() - inicio > timeoutMs) {
-      Serial.println("⚠️  Tiempo de espera agotado mientras se transmitía LoRa");
-      return false;
-    }
-  }
-  return true;
-}
-
 void Reintentar_Wiffi(){
     // Reintentar conexión periódicamente
     if (millis() - lastReconnectAttempt > reconnectInterval) {
@@ -4882,16 +4869,13 @@ bool enviarPaqueteLoRa(const String &descripcion,
     } else {
       LoRa.print(payload);
 
-      int endResult = LoRa.endPacket(true);
+      // Envío bloqueante para garantizar finalización sin depender de APIs privadas
+      int endResult = LoRa.endPacket();
       if (!endResult) {
         Serial.println("❌ Falló el envío LoRa (endPacket retornó 0)");
       } else {
-        if (!esperarFinTransmisionLoRa()) {
-          Serial.println("⚠️  Transmisión LoRa tardó demasiado, revisa interferencias o potencia");
-        } else {
-          Serial.println("✅ Paquete LoRa enviado correctamente");
-          exito = true;
-        }
+        Serial.println("✅ Paquete LoRa enviado correctamente");
+        exito = true;
       }
     }
 
