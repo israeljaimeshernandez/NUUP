@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 101 - 2025-06-14 LoRa: compatibilidad de confirmación reforzada, envío verificado y trazas claras aun con monitor inactivo/MQTT.
 // 100 - 2025-06-14 LoRa: se confirma siempre por LoRa con los datos recibidos (nombre/altura/litros) y se persisten cambios en EEPROM.
 // 99 - 2025-06-13 LoRa: se imprime en consola la recepción y la confirmación enviada, manteniendo trazabilidad inmediata.
 // 98 - 2025-06-13 LoRa: NUUP01 recibe confirmación clara al enviar desde la ruta nuup/MAC, normalizando el payload y deteniendo reintentos.
@@ -4804,6 +4805,28 @@ DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const Con
   return datos;
 }
 
+bool enviarPaqueteLoRa(const String &descripcion, const String &macDestino, const String &payload) {
+  Serial.printf("📡 Enviando %s a %s | %s\n", descripcion.c_str(), macDestino.c_str(), payload.c_str());
+
+  int beginResult = LoRa.beginPacket();
+  if (!beginResult) {
+    Serial.println("❌ No se pudo iniciar el paquete LoRa para envío de confirmación");
+    return false;
+  }
+
+  LoRa.print(payload);
+
+  int endResult = LoRa.endPacket();
+  if (!endResult) {
+    Serial.println("❌ Falló el envío LoRa (endPacket retornó 0)");
+    return false;
+  }
+
+  Serial.println("✅ Paquete LoRa enviado correctamente");
+  LoRa.receive();
+  return true;
+}
+
 void recepcion_lora() {
     int packetSize = LoRa.parsePacket();
 
@@ -4963,7 +4986,7 @@ void recepcion_lora() {
                     DatosConfirmacionLoRa datosConfirmacion = construirConfirmacionLoRa(received, configDispositivos[i]);
 
                     if (!configDispositivos[i].activo) {
-                        Serial.println("⏭️  Dispositivo inactivo: no se envía a MQTT ni se solicita alta desde LoRa");
+                        Serial.println("ℹ️  Dispositivo inactivo: se confirma por LoRa y se agenda alta si aplica");
                         intentarAltaTrasRegistro(i, mac, "LoRa (existente)");
                     }
 
@@ -4972,14 +4995,13 @@ void recepcion_lora() {
                                              String(datosConfirmacion.alturaConfig, 0) + "," +
                                              String(datosConfirmacion.litrosConfig, 0);
 
-                    Serial.printf("📡 Enviando confirmación LoRa a %s | %s\n", mac.c_str(), confirmacion.c_str());
                     if (!datosConfirmacion.origenMensaje) {
                         Serial.println("ℹ️  Confirmación armada con datos locales al no encontrar campos completos en el mensaje");
                     }
 
-                    LoRa.beginPacket();
-                    LoRa.print(confirmacion);
-                    LoRa.endPacket();
+                    if (!enviarPaqueteLoRa("confirmación LoRa", mac, confirmacion)) {
+                        Serial.println("⚠️  Revisa la potencia o interferencias: la confirmación podría no haber salido");
+                    }
                     break;
                 }
             }
@@ -4988,13 +5010,10 @@ void recepcion_lora() {
                 Serial.println("❌ DISPOSITIVO NO REGISTRADO - Mensaje LoRa ignorado sin auto-alta ni publicación MQTT");
                 Serial.println("ℹ️  Registre el dispositivo por BLE o portal antes de aceptar datos LoRa");
 
-            String errorConfirmacion = "ERROR," + mac + ",NO_REGISTRADO";
-            Serial.printf("📡 Enviando error LoRa (no registrado) a %s | %s\n", mac.c_str(), errorConfirmacion.c_str());
-            LoRa.beginPacket();
-            LoRa.print(errorConfirmacion);
-            LoRa.endPacket();
-            return;
-        }
+                String errorConfirmacion = "ERROR," + mac + ",NO_REGISTRADO";
+                enviarPaqueteLoRa("error LoRa (no registrado)", mac, errorConfirmacion);
+                return;
+            }
         } else {
             Serial.println("❌ ERROR: No se pudieron extraer las comas del mensaje");
         }
