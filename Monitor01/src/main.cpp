@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 111 - 2025-06-18 LoRa: eco bidireccional dev con trazas de espera/quality en respuestas monitor_*
 // 110 - 2025-06-18 LoRa: modo LORA_bidireccional_borrar solo para desarrollo, activable por bandera y sin impacto en producción.
 // 109 - 2025-06-18 LoRa: envío asíncrono con espera y watchdog protegido; trazas claras de modo escucha tras cada confirmación.
 // 108 - 2025-06-18 LoRa: consecutivo en español documentado en cabecera; triple confirmación inmediata con separación configurable y bitácora al cambiar estado.
@@ -4895,6 +4896,9 @@ bool enviarPaqueteLoRa(const String &descripcion,
 }
 
 void LORA_bidireccional_borrar() {
+  static unsigned long ultimaRecepcionDevMs = 0;
+  unsigned long marcaRecepcion = millis();
+
   int packetSize = LoRa.parsePacket();
   if (packetSize <= 0) {
     return;
@@ -4911,11 +4915,17 @@ void LORA_bidireccional_borrar() {
   ultimoRssiLoRaRx = LoRa.packetRssi();
   ultimoSnrLoRaRx = LoRa.packetSnr();
 
+  unsigned long deltaRecepcion = ultimaRecepcionDevMs == 0 ? 0 : (marcaRecepcion - ultimaRecepcionDevMs);
+  ultimaRecepcionDevMs = marcaRecepcion;
+
   Serial.println("\n🧪 [DEV] BIDIRECCIONAL - paquete entrante");
   Serial.printf("📥 Contenido: '%s' | RSSI %d dBm | SNR %.1f dB\n",
                 recibido.c_str(),
                 ultimoRssiLoRaRx,
                 ultimoSnrLoRaRx);
+  if (deltaRecepcion > 0) {
+    Serial.printf("⏱️ Tiempo desde el último paquete nuup_: %lums\n", deltaRecepcion);
+  }
 
   uint32_t consecutivo = ++consecutivoMonitorBidireccional;
   if (recibido.startsWith("nuup_")) {
@@ -4941,7 +4951,8 @@ void LORA_bidireccional_borrar() {
   if (LoRa.beginPacket()) {
     LoRa.print(respuesta);
     if (LoRa.endPacket()) {
-      Serial.println("✅ [DEV] Respuesta dev enviada correctamente");
+      unsigned long finEnvio = millis();
+      Serial.printf("✅ [DEV] Respuesta dev enviada correctamente (t=%lums desde recepción)\n", finEnvio - marcaRecepcion);
     } else {
       Serial.println("❌ [DEV] endPacket devolvió 0 al responder");
     }
