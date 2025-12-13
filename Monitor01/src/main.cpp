@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 113 - 2025-06-21 LoRa: alineación y bitácora cruzada con Nuup01 (SyncWord/Preámbulo/BW/SF/CR) dejando apagado el eco bidireccional por defecto
 // 112 - 2025-06-19 LoRa: trazas dev explican cada parámetro (TX/RSSI/SNR/tiempos) para diagnosticar envío y escucha
 // 111 - 2025-06-18 LoRa: eco bidireccional dev con trazas de espera/quality en respuestas monitor_*
 // 110 - 2025-06-18 LoRa: modo LORA_bidireccional_borrar solo para desarrollo, activable por bandera y sin impacto en producción.
@@ -4715,6 +4716,9 @@ void iniciarLoRaConReintentos() {
   Serial.println("   - SF: 12");
   Serial.println("   - BW: 125 kHz");
   Serial.println("   - CR: 4/8");
+  Serial.println("   - Sync Word: 0x12");
+  Serial.println("   - Preámbulo: 8");
+  Serial.println("📐 Alineación esperada con Nuup01: Frec 433 MHz | SF12 | BW 125 kHz | CR 4/8 | Sync 0x12 | Preámbulo 8 | RX inmediato tras configurar");
 
   // Escucha inmediata tras la configuración para no perder el primer paquete del NUUP01
   reanudarRecepcionLoRa("inicio tras configuración");
@@ -6071,9 +6075,12 @@ if (LORA_BIDIRECCIONAL_BORRAR) {
     Serial.println("🧪 LORA_bidireccional_borrar ACTIVO (solo desarrollo, eliminar antes de producción)");
     Serial.printf("⏱️ Intervalo dev: %lums\n", INTERVALO_BIDIRECCIONAL_LORA_MS);
     tareaLoRaHandle = nullptr;
-} else if (tareaLoRaCreada != pdPASS) {
-    Serial.println("⚠️  No se pudo crear la tarea LoRa en núcleo 0, se usará el loop principal como respaldo");
-    tareaLoRaHandle = nullptr;
+} else {
+    Serial.println("🛑 Modo dev LORA_bidireccional_borrar DESACTIVADO (producción)");
+    if (tareaLoRaCreada != pdPASS) {
+        Serial.println("⚠️  No se pudo crear la tarea LoRa en núcleo 0, se usará el loop principal como respaldo");
+        tareaLoRaHandle = nullptr;
+    }
 }
 
 
