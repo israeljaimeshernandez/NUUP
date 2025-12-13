@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 100 - 2026-01-15 Alimentar watchdog durante espera de confirmaciones LoRa para evitar reinicios por WDT.
 // 99 - 2026-01-14 Deep sleep forzado si no hay confirmación LoRa para evitar reinicios en ciclos de envío.
 // 98 - 2025-12-13 Impacto más sensible (umbral 50%) con indicador detallado de base/umbral y validez de toques.
 // 97 - 2025-06-15 Confirmación LoRa: espera progresiva por intento, trazas de mensajes inesperados y compatibilidad reforzada.
@@ -2361,6 +2362,8 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
     while (millis() - inicioEspera < ventana) {
+        esp_task_wdt_reset();
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2411,6 +2414,8 @@ bool esperarConfirmacionLoRa(int intentoActual) {
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
     while (millis() - inicioEspera < ventana) {
+        esp_task_wdt_reset();
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2566,6 +2571,7 @@ bool enviarDatos(int distancia) {
                     }
                 }
             }
+            esp_task_wdt_reset();
             delay(250 + intento * 150);
         }
 
@@ -2619,6 +2625,7 @@ bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada) {
                 break;
             }
         }
+        esp_task_wdt_reset();
         delay(200);
     }
 
