@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 109 - 2025-12-27 LoRa: se vuelve a aceptar la confirmación antigua CONFIRMACION,<MAC>,... sin marcar error para
+//      detener los reintentos mientras el monitor migra al formato detallado.
 // 108 - 2025-12-26 LoRa: todos los ciclos parten de la potencia por defecto (2 dBm) y se descartan arranques en 6 dBm para
 //      solicitudes y envíos iniciales.
 // 107 - 2025-12-26 LoRa: arranque del sensor fijado a 2 dBm y trazas mantienen solo el formato configuracion/MAC/confirmacion,<dBm>
@@ -2482,9 +2484,28 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
             }
 
             if (respuesta.startsWith("CONFIRMACION")) {
-                Serial.printf("⚠️  Confirmación en formato antiguo ignorada: %s (se espera configuracion/%s/confirmacion,<dBm>)\n",
-                              respuesta.c_str(), macAddress.c_str());
-                continue;
+                // Formato antiguo: CONFIRMACION,MAC,Nombre,Altura,Litros
+                int primera = respuesta.indexOf(',');
+                int segunda = respuesta.indexOf(',', primera + 1);
+
+                if (primera == -1 || segunda == -1) {
+                    Serial.printf("⚠️  Confirmación antigua mal formada: %s\n", respuesta.c_str());
+                    continue;
+                }
+
+                String mac = respuesta.substring(primera + 1, segunda);
+                mac.trim();
+
+                if (mac != macAddress) {
+                    Serial.println("⏭️  Confirmación antigua de otra MAC");
+                    continue;
+                }
+
+                potenciaConfirmadaRx = potenciaEsperada;
+                configuracionPotenciaFinalizada = true;
+                Serial.printf("✅ Confirmación antigua aceptada para %s, se mantiene %u dBm solicitados\n",
+                              mac.c_str(), potenciaConfirmadaRx);
+                return true;
             }
 
             Serial.println("⏭️  Mensaje recibido no corresponde a confirmación de configuración");
