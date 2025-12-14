@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 105 - 2025-12-23 LoRa: la confirmación de potencia se alinea al formato configuracion/MAC/confirmacion,<dBm> y se adopta
+//      el nivel devuelto como nuevo valor activo.
 // 104 - 2025-12-22 LoRa: ajuste de potencia acepta CONFIRMACION,<MAC> del monitor y el barrido tras impacto arranca en la
 //      potencia vigente antes de subir progresivamente a la máxima.
 // 103 - 2025-12-21 LoRa: alineación completa con Monitor01 (sync word, preámbulo, BW/SF/CR) y bitácora de comparativa; modo
@@ -334,7 +336,7 @@ void leerDatosDeEEPROM();
 void imprimirDatosDispositivo();
 void limpiarEEPROMYReiniciar();
 bool enviarDatos(int distancia);
-bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada);
+bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada);
 float measureDistance();
 int obtenerDistanciaValida();
 int calcularLitros(int distancia, uint32_t alturaTotal, uint32_t litrosTotal);
@@ -2378,7 +2380,7 @@ unsigned long calcularVentanaConfirmacionMs(int intento) {
     return TIEMPO_ESPERA_CONFIRMACION_INICIAL + (intento - 1) * INCREMENTO_ESPERA_CONFIRMACION;
 }
 
-bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActual) {
+bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActual, uint8_t &potenciaConfirmadaRx) {
     unsigned long inicioEspera = millis();
     unsigned long ventana = calcularVentanaConfirmacionMs(intentoActual);
 
@@ -2416,33 +2418,14 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
                 }
 
                 if (potencia != potenciaEsperada) {
-                    Serial.printf("⚠️  Potencia confirmada %u dBm no coincide con esperada %u dBm\n", potencia, potenciaEsperada);
+                    Serial.printf("⚠️  Potencia confirmada %u dBm no coincide con esperada %u dBm (se adoptará la devuelta)\n",
+                                  potencia, potenciaEsperada);
                 }
 
-                Serial.printf("✅ Confirmación detallada recibida (potencia solicitada: %u dBm)\n", potenciaEsperada);
-                return true;
-            }
+                potenciaConfirmadaRx = potencia;
 
-            if (respuesta.startsWith("CONFIRMACION")) {
-                int primerComa = respuesta.indexOf(',');
-                if (primerComa == -1) {
-                    Serial.println("⚠️  Formato CONFIRMACION sin MAC");
-                    continue;
-                }
-
-                int segundaComa = respuesta.indexOf(',', primerComa + 1);
-                String macConfirmada = segundaComa == -1 ?
-                                       respuesta.substring(primerComa + 1) :
-                                       respuesta.substring(primerComa + 1, segundaComa);
-                macConfirmada.trim();
-
-                if (!macConfirmada.equalsIgnoreCase(macAddress)) {
-                    Serial.println("⏭️  Confirmación simple pertenece a otra MAC, se ignora");
-                    continue;
-                }
-
-                Serial.printf("✅ Confirmación simple recibida para %s (potencia solicitada: %u dBm)\n",
-                              macConfirmada.c_str(), potenciaEsperada);
+                Serial.printf("✅ Confirmación detallada recibida en formato configuracion/%s/confirmacion,%u dBm\n",
+                              mac.c_str(), potenciaConfirmadaRx);
                 return true;
             }
 
@@ -2721,7 +2704,14 @@ bool enviarDatos(int distancia) {
         guardarDatosEnEEPROM();
         recalibrarPotenciaLoRa = false;
         if (ajustarPotenciaTrasDespertar) {
-            intercambiarPotenciaConMonitor(potenciaConfirmada);
+            uint8_t potenciaAntesIntercambio = potenciaConfirmada;
+            if (intercambiarPotenciaConMonitor(potenciaConfirmada) && potenciaConfirmada != potenciaAntesIntercambio) {
+                dispositivo.potenciaLoRaDbm = potenciaConfirmada;
+                potenciaLoRaActualDbm = potenciaConfirmada;
+                LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
+                guardarDatosEnEEPROM();
+                Serial.printf("💾 Potencia actualizada tras confirmación del monitor: %u dBm\n", potenciaConfirmada);
+            }
         }
     } else if (recalibrarPotenciaLoRa) {
         dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
@@ -2734,11 +2724,12 @@ bool enviarDatos(int distancia) {
     return confirmado;
 }
 
-bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada) {
+bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
     bool confirmado = false;
 
     for (int intento = 1; intento <= REINTENTOS_CONFIG_POTENCIA; intento++) {
         String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
+        uint8_t potenciaConfirmadaRx = potenciaConfirmada;
 
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
         unsigned long ventana = calcularVentanaConfirmacionMs(intento);
@@ -2749,8 +2740,9 @@ bool intercambiarPotenciaConMonitor(uint8_t potenciaConfirmada) {
             LoRa.print(solicitud);
             LoRa.endPacket();
 
-            if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento)) {
-                Serial.println("✅ Confirmación de potencia recibida desde monitor01");
+            if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento, potenciaConfirmadaRx)) {
+                Serial.printf("✅ Confirmación de potencia recibida: %u dBm\n", potenciaConfirmadaRx);
+                potenciaConfirmada = potenciaConfirmadaRx;
                 confirmado = true;
                 break;
             }
