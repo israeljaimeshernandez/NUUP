@@ -313,6 +313,7 @@ volatile bool loraEnEscucha = false;                       // Estado de recepci�
 bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrollo: debe permanecer en false en producción
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
+uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
 
 
 //Redes guardadas
@@ -337,7 +338,6 @@ SPIClass loraSPI(HSPI);  // Segundo SPI para LoRa
 volatile bool nuevoMensajeLoRa = false;
 String mensajeLoRa = "";
 volatile bool loraProcesando = false;
-TaskHandle_t tareaLoRaHandle = nullptr;
 
 struct LoRaProcessingGuard {
     volatile bool &flag;
@@ -543,7 +543,8 @@ void reanudarRecepcionLoRa(const char *motivo);
 void LORA_bidireccional_borrar();
 void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
-void tareaLoRaCore(void *parameter);
+void imprimirResumenLoRa(const char *motivo);
+void imprimirDetalleParametrosLoRa();
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
@@ -4723,6 +4724,9 @@ void iniciarLoRaConReintentos() {
   Serial.println("   - Sync Word: 0x12");
   Serial.println("   - Preámbulo: 8");
   Serial.println("📐 Alineación esperada con Nuup01: Frec 433 MHz | SF12 | BW 125 kHz | CR 4/8 | Sync 0x12 | Preámbulo 8 | RX inmediato tras configurar");
+  Serial.println("ℹ️  Potencia recomendada: 17-20 dBm para máxima distancia; bajar a 10-14 dBm en pruebas cercanas para evitar saturar el receptor.");
+  Serial.println("ℹ️  SF/BW/CR arriba explican alcance vs velocidad: mantener SF12/BW125/CR4/8 para robustez mientras depuramos confirmaciones.");
+  Serial.println("ℹ️  Confirmaciones configuradas: 3 envíos separados 100ms (se puede ajustar en constantes REPETICIONES_CONFIRMACION_LORA / INTERVALO_CONFIRMACION_LORA_MS).");
 
   // Escucha inmediata tras la configuración para no perder el primer paquete del NUUP01
   reanudarRecepcionLoRa("inicio tras configuración");
@@ -4736,6 +4740,31 @@ void reanudarRecepcionLoRa(const char *motivo) {
     Serial.printf("🔁 LoRa vuelve a modo escucha (%s)\n", motivo);
   }
   loraEnEscucha = true;
+}
+
+void imprimirDetalleParametrosLoRa() {
+  Serial.println("📡 Parámetros LoRa activos y explicación rápida:");
+  Serial.printf("   - Potencia TX: %u dBm (mín 2, máx 20). Recomendado 17-20 dBm para máxima distancia; 10-14 dBm para pruebas cercanas.\n",
+                potenciaLoRaMonitorDbm);
+  Serial.println("   - SF12 = más alcance y sensibilidad, pero menor velocidad. (Rango: SF7-SF12)");
+  Serial.println("   - BW 125 kHz = equilibrio entre alcance y velocidad. (Rango: 7.8 kHz a 500 kHz)");
+  Serial.println("   - CR 4/8 = robustez alta contra errores. (Rango: 4/5 a 4/8)");
+  Serial.println("   - SyncWord 0x12 = red privada NUUP (evita interferencias con redes públicas)");
+  Serial.println("   - Preámbulo 8 = tiempo de sincronía; subir a 12-16 en entornos con ruido o gateways lejanos.");
+  Serial.println("   - Confirmaciones inmediatas: 3 envíos separados 100ms para asegurar recepción sin perder la escucha.");
+}
+
+void imprimirResumenLoRa(const char *motivo) {
+  Serial.println("\n📝 RESUMEN LoRa en español (modo escucha continuo)");
+  Serial.printf("   - Motivo del resumen: %s\n", motivo);
+  Serial.println("   - Núcleo dedicado desactivado: toda la escucha corre en el loop principal para priorizar sensores.");
+  Serial.printf("   - Confirmaciones duplicadas: %u veces cada %lums (ajustables en REPETICIONES_CONFIRMACION_LORA / INTERVALO_CONFIRMACION_LORA_MS).\n",
+                REPETICIONES_CONFIRMACION_LORA,
+                INTERVALO_CONFIRMACION_LORA_MS);
+  Serial.printf("   - Consecutivo de confirmaciones TX (reinicia al encender): %lu\n", consecutivoConfirmacionesLoRa);
+  Serial.println("   - La radio permanece en receive() salvo breves pausas para imprimir o enviar.");
+  imprimirDetalleParametrosLoRa();
+  Serial.println();
 }
 
 void Reintentar_Wiffi(){
@@ -4855,6 +4884,7 @@ bool enviarPaqueteLoRa(const String &descripcion,
                        uint8_t repeticiones = REPETICIONES_CONFIRMACION_LORA,
                        unsigned long intervaloMs = INTERVALO_CONFIRMACION_LORA_MS) {
   bool exito = false;
+  uint32_t consecutivoEnvio = ++consecutivoConfirmacionesLoRa;
 
   Serial.printf("🚀 Encolando %s para %s con %u repeticiones cada %lums\n",
                 descripcion.c_str(),
@@ -4865,6 +4895,7 @@ bool enviarPaqueteLoRa(const String &descripcion,
                 potenciaLoRaMonitorDbm,
                 ultimoRssiLoRaRx,
                 ultimoSnrLoRaRx);
+  Serial.printf("   ↳ Consecutivo de confirmación: #%lu (se reinicia al arrancar)\n", consecutivoEnvio);
 
   for (uint8_t intento = 1; intento <= repeticiones; intento++) {
     Serial.printf("📡 (%u/%u) Enviando %s a %s | Payload: %s\n",
@@ -4974,20 +5005,6 @@ void LORA_bidireccional_borrar() {
   reanudarRecepcionLoRa("LORA_bidireccional_borrar");
 }
 
-void tareaLoRaCore(void *parameter) {
-    Serial.printf("⚡ Tarea LoRa dedicada iniciada en núcleo %d\n", xPortGetCoreID());
-    reanudarRecepcionLoRa("arranque de tarea LoRa");
-
-    for (;;) {
-        int packetSize = LoRa.parsePacket();
-        if (packetSize) {
-            procesarPaqueteLoRaRecibido(packetSize);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(2));
-    }
-}
-
 void procesarPaqueteLoRaRecibido(int packetSize) {
     if (packetSize <= 0) {
         return;
@@ -5015,6 +5032,8 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
     Serial.print(received);
     Serial.println("'");
     Serial.printf("📥 LORA RX OK (%dB): %s\n", LoRa.packetRssi(), received.c_str());
+    Serial.println("🧭 Detalle de parámetros activos durante esta recepción/envío:");
+    imprimirDetalleParametrosLoRa();
 
         if (received.startsWith("configuracion/")) {
             int primera = received.indexOf('/');
@@ -6062,30 +6081,7 @@ iniciarLoRaConReintentos();
 
 // Se elimina el envío de prueba para no interferir con confirmaciones reales
 Serial.println("🎯 LoRa listo para escuchar (sin mensajes de prueba)");
-
-BaseType_t tareaLoRaCreada = pdPASS;
-if (!LORA_BIDIRECCIONAL_BORRAR) {
-    tareaLoRaCreada = xTaskCreatePinnedToCore(
-        tareaLoRaCore,
-        "LoRaCore",
-        8192,
-        nullptr,
-        4,
-        &tareaLoRaHandle,
-        0);
-}
-
-if (LORA_BIDIRECCIONAL_BORRAR) {
-    Serial.println("🧪 LORA_bidireccional_borrar ACTIVO (solo desarrollo, eliminar antes de producción)");
-    Serial.printf("⏱️ Intervalo dev: %lums\n", INTERVALO_BIDIRECCIONAL_LORA_MS);
-    tareaLoRaHandle = nullptr;
-} else {
-    Serial.println("🛑 Modo dev LORA_bidireccional_borrar DESACTIVADO (producción)");
-    if (tareaLoRaCreada != pdPASS) {
-        Serial.println("⚠️  No se pudo crear la tarea LoRa en núcleo 0, se usará el loop principal como respaldo");
-        tareaLoRaHandle = nullptr;
-    }
-}
+imprimirResumenLoRa("arranque en núcleo único");
 
 
 //7. configura DISPOSITIVOS
@@ -6172,14 +6168,6 @@ void loop() {
   if (loraProcesando) {
     delay(5);
     return;
-  }
-
-  if (tareaLoRaHandle == nullptr) {
-    recepcion_lora();
-    if (loraProcesando) {
-      delay(5);
-      return;
-    }
   }
 
   manejarBotonWifi();
