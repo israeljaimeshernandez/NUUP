@@ -132,8 +132,8 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
-#define INTERVALO_ENVIO_CAMBIO 5000      // 5 segundos cuando hubo cambios recientes
-#define INTERVALO_ENVIO_FORZOSO 30000    // 20 segundos máximo sin cambios
+#define INTERVALO_ENVIO_CAMBIO 20000     // 20 segundos para revisar cambios
+#define INTERVALO_ENVIO_FORZOSO 60000    // 60 segundos (1 minuto) sin cambios antes de envío forzoso
 #define TIEMPO_ESPERA_CONFIRMACION_INICIAL 6000  // 2 segundos base de espera por confirmación LoRa
 #define INCREMENTO_ESPERA_CONFIRMACION 500       // Aumento progresivo por intento para dar margen de sincronización
 #define REINTENTOS_CONFIRMACION 5        // Envío inicial + 4 reintentos antes de reiniciar
@@ -224,6 +224,9 @@ bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool recalibrarPotenciaLoRa = false;
+bool forzarEnvioPorTiempo = false;
+bool envioLoRaEjecutado = false;
+unsigned long ultimaMedicionMs = 0;
 
 unsigned long tiempoInicioRegistro = 0;
 #define TIMEOUT_REGISTRO_COMPLETO 10000
@@ -252,6 +255,9 @@ RTC_DATA_ATTR bool solicitudBajaPendiente = false;
 RTC_DATA_ATTR unsigned long ultimoWakeup = 0;
 RTC_DATA_ATTR unsigned long tiempoFinBaja = 0;
 RTC_DATA_ATTR bool esperaDespuesBaja = false;
+RTC_DATA_ATTR unsigned long tiempoSinEnvioConfirmado = 0;   // Acumulado en ms desde el último LoRa confirmado
+RTC_DATA_ATTR unsigned long ultimoSleepProgramadoMs = 0;     // Último intervalo de sleep real ejecutado
+#define INTERVALO_MIN_ACTIVO_ULTRA_MS 250                     // Permanencia mínima despierto para medición
 #define TIEMPO_ESPERA_DESPUES_BAJA 15000
 
 // Configuración LED
@@ -1750,6 +1756,11 @@ void setup() {
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
+
+    // Acumular el tiempo dormido previo para el conteo forzoso
+    tiempoSinEnvioConfirmado += ultimoSleepProgramadoMs;
+    ultimoSleepProgramadoMs = 0;
+    Serial.printf("⏱️ Acumulado sin envío confirmado: %lus\n", tiempoSinEnvioConfirmado / 1000);
     
     // Mostrar causa del wakeup
     switch(wakeup_reason) {
@@ -1874,7 +1885,8 @@ void setup() {
     }
 
     // Configurar para medición
-    ultimoEnvioDatos = -INTERVALO_ENVIO_FORZOSO;
+    ultimoEnvioDatos = 0;
+    ultimaMedicionMs = 0;
 
     // ⭐⭐ INICIALIZAR WiFi AP Y SERVIDOR WEB
     Serial.println("\n🌐 INICIANDO SERVICIOS WiFi...");
@@ -2112,21 +2124,38 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
     if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && (!wakeByImpact || recalibrarPotenciaLoRa)) {
-        unsigned long tiempoDesdeMedicion = millis() - ultimoEnvioDatos;
+        unsigned long tiempoActual = millis();
+        unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActual;
+        bool vencioRevision = (ultimaMedicionMs == 0) || (tiempoActual - ultimaMedicionMs >= INTERVALO_ENVIO_CAMBIO);
+        bool vencioForzoso = tiempoSinEnvioActual >= INTERVALO_ENVIO_FORZOSO;
 
-        if (ultimoEnvioDatos < 0 || tiempoDesdeMedicion >= intervaloEnvioActual) {
+        if (vencioRevision || vencioForzoso) {
             Serial.println("\n📊 ===========================================");
             Serial.println("🎯 INICIANDO MEDICIÓN DE SENSOR");
-            Serial.printf("   Tiempo desde última medición: %d seg\n", tiempoDesdeMedicion / 1000);
+            Serial.printf("   Tiempo desde última revisión: %d seg\n", (ultimaMedicionMs == 0 ? 0 : (tiempoActual - ultimaMedicionMs) / 1000));
             Serial.println("📊 ===========================================");
-            
+
+            ultimaMedicionMs = tiempoActual;
+            forzarEnvioPorTiempo = vencioForzoso;
+            envioLoRaEjecutado = false;
+
             int distancia = obtenerDistanciaValida();
             bool confirmado = enviarDatos(distancia);
-            if (!confirmado) {
+            ultimoEnvioDatos = millis();
+
+            if (!confirmado && envioLoRaEjecutado) {
                 Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
                 ESP.restart();
             }
-            ultimoEnvioDatos = millis();
+
+            unsigned long tiempoSinEnvioDespues = (confirmado && envioLoRaEjecutado) ? 0 : tiempoSinEnvioActual;
+            tiempoSinEnvioConfirmado = tiempoSinEnvioDespues;
+
+            unsigned long restanteForzoso = (tiempoSinEnvioConfirmado >= INTERVALO_ENVIO_FORZOSO)
+                                               ? INTERVALO_ENVIO_CAMBIO
+                                               : (INTERVALO_ENVIO_FORZOSO - tiempoSinEnvioConfirmado);
+            intervaloEnvioActual = min<unsigned long>(INTERVALO_ENVIO_CAMBIO, restanteForzoso);
+            ultimoSleepProgramadoMs = intervaloEnvioActual;
 
             Serial.printf("✅ Medición completada. Próxima en: %d segundos\n\n", intervaloEnvioActual / 1000);
 
@@ -2645,7 +2674,21 @@ bool enviarDatos(int distancia) {
     Serial.printf("   🧠 IA - Promedio mensual: %.1f L\n", analisisActual.promedioMensual);
     
     bool cambios = mensaje != ultimoMensajeConfirmado;
-    intervaloEnvioActual = cambios ? INTERVALO_ENVIO_CAMBIO : INTERVALO_ENVIO_FORZOSO;
+    bool enviarAhora = cambios || forzarEnvioPorTiempo;
+
+    if (!enviarAhora) {
+        Serial.println("⏸️  Sin cambios en la medición. No se envía LoRa para ahorrar energía.");
+        forzarEnvioPorTiempo = false;
+        envioLoRaEjecutado = false;
+        return true;
+    }
+
+    if (forzarEnvioPorTiempo && !cambios) {
+        Serial.println("⏰ Envío forzoso tras periodo sin cambios: sincronizando con Monitor01");
+    }
+
+    envioLoRaEjecutado = true;
+    forzarEnvioPorTiempo = false;
 
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
@@ -2697,7 +2740,6 @@ bool enviarDatos(int distancia) {
         }
     }
 
-    ultimoEnvioDatos = millis();
     if (confirmado) {
         ultimoMensajeConfirmado = mensaje;
         dispositivo.potenciaLoRaDbm = potenciaConfirmada;
@@ -2852,10 +2894,13 @@ void prepararParaDeepSleep() {
         if (sleepTime < 1000) sleepTime = 1000;
         if (sleepTime > intervaloEnvioActual) sleepTime = intervaloEnvioActual;
 
+        ultimoSleepProgramadoMs = sleepTime;
+
         esp_sleep_enable_timer_wakeup(sleepTime * 1000);
         Serial.printf("   Sleep por TIMER: %lu ms (%lu seg)\n", sleepTime, sleepTime / 1000);
     } else {
         // Sin alta: solo despertar por impacto
+        ultimoSleepProgramadoMs = 0;
         Serial.println("   Sleep sin alta - esperando impacto para despertar");
     }
 
