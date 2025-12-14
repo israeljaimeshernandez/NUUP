@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 110 - 2025-12-28 Impacto: sólo envía ajuste de potencia (sin telemetría) y duerme tras el intercambio.
 // 109 - 2025-12-27 LoRa: se vuelve a aceptar la confirmación antigua CONFIRMACION,<MAC>,... sin marcar error para
 //      detener los reintentos mientras el monitor migra al formato detallado.
 // 108 - 2025-12-26 LoRa: todos los ciclos parten de la potencia por defecto (2 dBm) y se descartan arranques en 6 dBm para
@@ -2145,8 +2146,37 @@ void loop() {
                     tiempoHastaProximoBLE / 1000);
     }
 
+    // ⭐⭐ PRIORIDAD 6.5: AJUSTE DE POTENCIA TRAS IMPACTO (SIN TELEMETRÍA)
+    if (wakeByImpact && registrado && !configuracionPotenciaFinalizada) {
+        Serial.println("\n🛠️  Ajuste de potencia por impacto (sin enviar telemetría de nivel)");
+
+        uint8_t potenciaConfirmada = LORA_POTENCIA_DEFECTO_DBM;
+        bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
+
+        if (confirmacionPotencia) {
+            potenciaLoRaActualDbm = potenciaConfirmada;
+            dispositivo.potenciaLoRaDbm = potenciaConfirmada;
+            LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
+            guardarDatosEnEEPROM();
+            configuracionPotenciaFinalizada = true;
+            Serial.printf("✅ Potencia confirmada tras impacto: %u dBm\n", potenciaConfirmada);
+        } else {
+            Serial.println("⚠️  Sin confirmación de potencia tras impacto (se mantiene potencia por defecto)");
+        }
+
+        recalibrarPotenciaLoRa = false;
+        wakeByImpact = false;
+        tiempoSinEnvioConfirmado = 0;
+        marcaAcumuladorSinEnvio = millis();
+        ultimoEnvioDatos = millis();
+        ultimoSleepProgramadoMs = intervaloEnvioActual;
+
+        Serial.println("😴 Programando deep sleep tras ciclo de impacto sin telemetría...");
+        entrarDeepSleep();
+    }
+
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && (!wakeByImpact || recalibrarPotenciaLoRa)) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !wakeByImpact) {
         unsigned long tiempoActual = millis();
         unsigned long tiempoActivoSinEnvio = tiempoActual - marcaAcumuladorSinEnvio;
         unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActivoSinEnvio;
