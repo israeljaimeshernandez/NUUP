@@ -224,6 +224,7 @@ bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool recalibrarPotenciaLoRa = false;
+bool configuracionPotenciaFinalizada = false;
 bool forzarEnvioPorTiempo = false;
 bool envioLoRaEjecutado = false;
 unsigned long ultimaMedicionMs = 0;
@@ -257,6 +258,12 @@ RTC_DATA_ATTR unsigned long tiempoFinBaja = 0;
 RTC_DATA_ATTR bool esperaDespuesBaja = false;
 RTC_DATA_ATTR unsigned long tiempoSinEnvioConfirmado = 0;   // Acumulado en ms desde el último LoRa confirmado
 RTC_DATA_ATTR unsigned long ultimoSleepProgramadoMs = 0;     // Último intervalo de sleep real ejecutado
+RTC_DATA_ATTR unsigned long marcaAcumuladorSinEnvio = 0;     // Marca para acumular tiempo activo sin envío confirmado
+RTC_DATA_ATTR int ultimoLitrosEnviado = -1;                  // Última lectura enviada al monitor (litros)
+RTC_DATA_ATTR uint32_t ultimaAlturaEnviada = 0;              // Última altura enviada al monitor
+RTC_DATA_ATTR uint32_t ultimaCapacidadEnviada = 0;           // Última capacidad (L) enviada al monitor
+RTC_DATA_ATTR char ultimoNombreEnviado[21] = "";            // Último nombre enviado al monitor
+RTC_DATA_ATTR bool cambiosConfiguracionPendientes = false;   // Obliga a enviar si hubo cambios de configuración
 #define INTERVALO_MIN_ACTIVO_ULTRA_MS 250                     // Permanencia mínima despierto para medición
 #define TIEMPO_ESPERA_DESPUES_BAJA 15000
 
@@ -732,7 +739,10 @@ void guardarConfigWeb() {
             strncpy(dispositivo.nombre, nuevoNombre.c_str(), sizeof(dispositivo.nombre)-1);
             dispositivo.altura = nuevaAltura;
             dispositivo.litros = nuevosLitros;
-            
+
+            // Forzar sincronización LoRa en el siguiente ciclo
+            cambiosConfiguracionPendientes = true;
+
             // Actualizar variables globales
             nombreDispositivo = nuevoNombre;
             alturaDispositivo = nuevaAltura;
@@ -1127,7 +1137,9 @@ void completarRegistro(String macServidor, String nombre, String alturaStr, Stri
     strncpy(dispositivo.nombre, nombre.c_str(), sizeof(dispositivo.nombre)-1);
     dispositivo.altura = alturaStr.toInt();
     dispositivo.litros = litrosStr.toInt();
-    
+
+    cambiosConfiguracionPendientes = true;
+
     // ⭐⭐ ACTUALIZAR LAS VARIABLES GLOBALES TAMBIÉN
     nombreDispositivo = nombre;
     alturaDispositivo = dispositivo.altura;
@@ -1760,6 +1772,7 @@ void setup() {
     // Acumular el tiempo dormido previo para el conteo forzoso
     tiempoSinEnvioConfirmado += ultimoSleepProgramadoMs;
     ultimoSleepProgramadoMs = 0;
+    marcaAcumuladorSinEnvio = millis();
     Serial.printf("⏱️ Acumulado sin envío confirmado: %lus\n", tiempoSinEnvioConfirmado / 1000);
     
     // Mostrar causa del wakeup
@@ -1779,6 +1792,8 @@ void setup() {
     if (wakeByImpact) {
         Serial.println("⚡ Wake por sensor de impacto - habilitando BLE/WiFi solo en este ciclo");
     }
+
+    configuracionPotenciaFinalizada = !wakeByImpact;
 
     // Inicializar EEPROM
 
@@ -2125,7 +2140,8 @@ void loop() {
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
     if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && (!wakeByImpact || recalibrarPotenciaLoRa)) {
         unsigned long tiempoActual = millis();
-        unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActual;
+        unsigned long tiempoActivoSinEnvio = tiempoActual - marcaAcumuladorSinEnvio;
+        unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActivoSinEnvio;
         bool vencioRevision = (ultimaMedicionMs == 0) || (tiempoActual - ultimaMedicionMs >= INTERVALO_ENVIO_CAMBIO);
         bool vencioForzoso = tiempoSinEnvioActual >= INTERVALO_ENVIO_FORZOSO;
 
@@ -2150,6 +2166,7 @@ void loop() {
 
             unsigned long tiempoSinEnvioDespues = (confirmado && envioLoRaEjecutado) ? 0 : tiempoSinEnvioActual;
             tiempoSinEnvioConfirmado = tiempoSinEnvioDespues;
+            marcaAcumuladorSinEnvio = millis();
 
             unsigned long restanteForzoso = (tiempoSinEnvioConfirmado >= INTERVALO_ENVIO_FORZOSO)
                                                ? INTERVALO_ENVIO_CAMBIO
@@ -2455,7 +2472,14 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
 
                 Serial.printf("✅ Confirmación detallada recibida en formato configuracion/%s/confirmacion,%u dBm\n",
                               mac.c_str(), potenciaConfirmadaRx);
+                configuracionPotenciaFinalizada = true;
                 return true;
+            }
+
+            if (respuesta.startsWith("CONFIRMACION")) {
+                Serial.printf("⚠️  Confirmación en formato antiguo ignorada: %s (se espera configuracion/%s/confirmacion,<dBm>)\n",
+                              respuesta.c_str(), macAddress.c_str());
+                continue;
             }
 
             Serial.println("⏭️  Mensaje recibido no corresponde a confirmación de configuración");
@@ -2596,6 +2620,7 @@ bool esperarConfirmacionLoRa(int intentoActual) {
                 strlcpy(dispositivo.nombre, nombreNuevo.c_str(), sizeof(dispositivo.nombre));
                 dispositivo.altura = alturaNueva;
                 dispositivo.litros = litrosNuevos;
+                cambiosConfiguracionPendientes = true;
                 guardarDatosEnEEPROM();
             }
 
@@ -2673,8 +2698,14 @@ bool enviarDatos(int distancia) {
     Serial.printf("   🧠 IA - Promedio semanal: %.1f L\n", analisisActual.promedioSemanal);
     Serial.printf("   🧠 IA - Promedio mensual: %.1f L\n", analisisActual.promedioMensual);
     
-    bool cambios = mensaje != ultimoMensajeConfirmado;
-    bool enviarAhora = cambios || forzarEnvioPorTiempo;
+    bool hayEnvioPrevio = ultimoLitrosEnviado != -1;
+    bool cambioLitros = !hayEnvioPrevio || litrosActuales != ultimoLitrosEnviado;
+    bool cambioAltura = dispositivo.altura != ultimaAlturaEnviada;
+    bool cambioCapacidad = dispositivo.litros != ultimaCapacidadEnviada;
+    bool cambioNombre = strncmp(dispositivo.nombre, ultimoNombreEnviado, sizeof(ultimoNombreEnviado)) != 0;
+    bool cambiosRelevantes = cambioLitros || cambioAltura || cambioCapacidad || cambioNombre || cambiosConfiguracionPendientes;
+
+    bool enviarAhora = cambiosRelevantes || forzarEnvioPorTiempo;
 
     if (!enviarAhora) {
         Serial.println("⏸️  Sin cambios en la medición. No se envía LoRa para ahorrar energía.");
@@ -2683,7 +2714,7 @@ bool enviarDatos(int distancia) {
         return true;
     }
 
-    if (forzarEnvioPorTiempo && !cambios) {
+    if (forzarEnvioPorTiempo && !cambiosRelevantes) {
         Serial.println("⏰ Envío forzoso tras periodo sin cambios: sincronizando con Monitor01");
     }
 
@@ -2744,15 +2775,26 @@ bool enviarDatos(int distancia) {
         ultimoMensajeConfirmado = mensaje;
         dispositivo.potenciaLoRaDbm = potenciaConfirmada;
         guardarDatosEnEEPROM();
+        ultimoLitrosEnviado = litrosActuales;
+        ultimaAlturaEnviada = dispositivo.altura;
+        ultimaCapacidadEnviada = dispositivo.litros;
+        strlcpy(ultimoNombreEnviado, dispositivo.nombre, sizeof(ultimoNombreEnviado));
+        cambiosConfiguracionPendientes = false;
         recalibrarPotenciaLoRa = false;
-        if (ajustarPotenciaTrasDespertar) {
+
+        if (ajustarPotenciaTrasDespertar && !configuracionPotenciaFinalizada) {
             uint8_t potenciaAntesIntercambio = potenciaConfirmada;
-            if (intercambiarPotenciaConMonitor(potenciaConfirmada) && potenciaConfirmada != potenciaAntesIntercambio) {
-                dispositivo.potenciaLoRaDbm = potenciaConfirmada;
+            bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
+
+            if (confirmacionPotencia) {
                 potenciaLoRaActualDbm = potenciaConfirmada;
+                dispositivo.potenciaLoRaDbm = potenciaConfirmada;
                 LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
                 guardarDatosEnEEPROM();
-                Serial.printf("💾 Potencia actualizada tras confirmación del monitor: %u dBm\n", potenciaConfirmada);
+                configuracionPotenciaFinalizada = true;
+                Serial.printf("💾 Potencia confirmada por Monitor01: %u dBm (antes: %u dBm)\n",
+                              potenciaConfirmada,
+                              potenciaAntesIntercambio);
             }
         }
     } else if (recalibrarPotenciaLoRa) {
@@ -2767,6 +2809,11 @@ bool enviarDatos(int distancia) {
 }
 
 bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
+    if (configuracionPotenciaFinalizada) {
+        Serial.println("⏸️  Ajuste de potencia ya confirmado en este ciclo. No se envían más solicitudes.");
+        return true;
+    }
+
     bool confirmado = false;
 
     for (int intento = 1; intento <= REINTENTOS_CONFIG_POTENCIA; intento++) {
