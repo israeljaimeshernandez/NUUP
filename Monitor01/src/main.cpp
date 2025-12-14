@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 115 - 2025-06-22 LoRa: integrar consecutivo y detallar modificación activa en bitácora de arranque
 // 114 - 2025-06-22 LoRa: reanudar escucha tras el test periódico para no dejar al monitor sordo frente a confirmaciones
 // 113 - 2025-06-21 LoRa: alineación y bitácora cruzada con Nuup01 (SyncWord/Preámbulo/BW/SF/CR) dejando apagado el eco bidireccional por defecto
 // 112 - 2025-06-19 LoRa: trazas dev explican cada parámetro (TX/RSSI/SNR/tiempos) para diagnosticar envío y escucha
@@ -314,6 +315,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 115;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -5963,6 +5965,9 @@ void setup() {
    // 0. Inicialización básica SERIAL PANTLALLA  EEPROM
   Serial.begin(115200);
     delay(1000);
+
+  Serial.printf("🆕 Consecutivo #%u: LoRa con bitácora de cambio activa (integrado en resumen de arranque)\n",
+                CONSECUTIVO_CAMBIO_ACTUAL);
 
   // Inicializar OLED lo antes posible para evitar llamadas sobre puntero nulo
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
