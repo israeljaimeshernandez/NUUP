@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 108 - 2025-12-26 LoRa: todos los ciclos parten de la potencia por defecto (2 dBm) y se descartan arranques en 6 dBm para
+//      solicitudes y envíos iniciales.
 // 107 - 2025-12-26 LoRa: arranque del sensor fijado a 2 dBm y trazas mantienen solo el formato configuracion/MAC/confirmacion,<dBm>
 //      para homologar confirmaciones con Monitor01.
 // 106 - 2025-12-24 LoRa: la confirmación configuracion/MAC/confirmacion,<dBm> se valida con dos "/" y coma tras la etapa para
@@ -2710,6 +2712,12 @@ bool enviarDatos(int distancia) {
 
     bool enviarAhora = cambiosRelevantes || forzarEnvioPorTiempo;
 
+    // Asegurar que el ciclo de transmisión parte de la potencia por defecto cuando no hay confirmación vigente
+    if (!configuracionPotenciaFinalizada) {
+        potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
+        dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
+    }
+
     if (!enviarAhora) {
         Serial.println("⏸️  Sin cambios en la medición. No se envía LoRa para ahorrar energía.");
         forzarEnvioPorTiempo = false;
@@ -2816,6 +2824,9 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
         Serial.println("⏸️  Ajuste de potencia ya confirmado en este ciclo. No se envían más solicitudes.");
         return true;
     }
+
+    potenciaConfirmada = LORA_POTENCIA_DEFECTO_DBM;
+    potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 
     bool confirmado = false;
 
