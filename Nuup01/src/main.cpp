@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 106 - 2025-12-24 LoRa: la confirmación configuracion/MAC/confirmacion,<dBm> se valida con dos "/" y coma tras la etapa para
+//      evitar falsos negativos al recibir respuestas correctas del Monitor01.
 // 105 - 2025-12-23 LoRa: la confirmación de potencia se alinea al formato configuracion/MAC/confirmacion,<dBm> y se adopta
 //      el nivel devuelto como nuevo valor activo.
 // 104 - 2025-12-22 LoRa: ajuste de potencia acepta CONFIRMACION,<MAC> del monitor y el barrido tras impacto arranca en la
@@ -2446,16 +2448,15 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
             if (respuesta.startsWith("configuracion/")) {
                 int primera = respuesta.indexOf('/');
                 int segunda = respuesta.indexOf('/', primera + 1);
-                int tercera = respuesta.indexOf('/', segunda + 1);
-                int coma = respuesta.indexOf(',', tercera + 1);
+                int coma = respuesta.indexOf(',', segunda + 1);
 
-                if (primera == -1 || segunda == -1 || tercera == -1 || coma == -1) {
+                if (primera == -1 || segunda == -1 || coma == -1) {
                     Serial.println("⚠️  Formato de confirmación de configuración inválido");
                     continue;
                 }
 
                 String mac = respuesta.substring(primera + 1, segunda);
-                String etapa = respuesta.substring(segunda + 1, tercera);
+                String etapa = respuesta.substring(segunda + 1, coma);
                 uint8_t potencia = respuesta.substring(coma + 1).toInt();
 
                 if (mac != macAddress || etapa != "confirmacion") {
