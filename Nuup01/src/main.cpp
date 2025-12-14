@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 104 - 2025-12-22 LoRa: ajuste de potencia acepta CONFIRMACION,<MAC> del monitor y el barrido tras impacto arranca en la
+//      potencia vigente antes de subir progresivamente a la máxima.
 // 103 - 2025-12-21 LoRa: alineación completa con Monitor01 (sync word, preámbulo, BW/SF/CR) y bitácora de comparativa; modo
 //      bidireccional dev queda apagado por defecto.
 // 102 - 2025-12-19 LoRa: trazas dev explican TX/RSSI/SNR/esperas para ver condición de envío y recepción en laboratorio.
@@ -1784,10 +1786,6 @@ void setup() {
     leerDatosDeEEPROM();
 
     recalibrarPotenciaLoRa = wakeByImpact;
-    if (recalibrarPotenciaLoRa) {
-        potenciaLoRaActualDbm = LORA_POTENCIA_MIN_DBM;
-        dispositivo.potenciaLoRaDbm = potenciaLoRaActualDbm;
-    }
 
     // ⭐⭐ INICIALIZAR BLE INMEDIATAMENTE
     Serial.println("📱 INICIANDO BLE...");
@@ -2397,35 +2395,58 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
 
             Serial.printf("📨 Confirmación de configuración: %s\n", respuesta.c_str());
 
-            if (!respuesta.startsWith("configuracion/")) {
-                Serial.println("⏭️  No es confirmación de configuración, se ignora en este ciclo");
-                continue;
+            if (respuesta.startsWith("configuracion/")) {
+                int primera = respuesta.indexOf('/');
+                int segunda = respuesta.indexOf('/', primera + 1);
+                int tercera = respuesta.indexOf('/', segunda + 1);
+                int coma = respuesta.indexOf(',', tercera + 1);
+
+                if (primera == -1 || segunda == -1 || tercera == -1 || coma == -1) {
+                    Serial.println("⚠️  Formato de confirmación de configuración inválido");
+                    continue;
+                }
+
+                String mac = respuesta.substring(primera + 1, segunda);
+                String etapa = respuesta.substring(segunda + 1, tercera);
+                uint8_t potencia = respuesta.substring(coma + 1).toInt();
+
+                if (mac != macAddress || etapa != "confirmacion") {
+                    Serial.println("⏭️  Confirmación de otra MAC o etapa distinta");
+                    continue;
+                }
+
+                if (potencia != potenciaEsperada) {
+                    Serial.printf("⚠️  Potencia confirmada %u dBm no coincide con esperada %u dBm\n", potencia, potenciaEsperada);
+                }
+
+                Serial.printf("✅ Confirmación detallada recibida (potencia solicitada: %u dBm)\n", potenciaEsperada);
+                return true;
             }
 
-            int primera = respuesta.indexOf('/');
-            int segunda = respuesta.indexOf('/', primera + 1);
-            int tercera = respuesta.indexOf('/', segunda + 1);
-            int coma = respuesta.indexOf(',', tercera + 1);
+            if (respuesta.startsWith("CONFIRMACION")) {
+                int primerComa = respuesta.indexOf(',');
+                if (primerComa == -1) {
+                    Serial.println("⚠️  Formato CONFIRMACION sin MAC");
+                    continue;
+                }
 
-            if (primera == -1 || segunda == -1 || tercera == -1 || coma == -1) {
-                Serial.println("⚠️  Formato de confirmación de configuración inválido");
-                continue;
+                int segundaComa = respuesta.indexOf(',', primerComa + 1);
+                String macConfirmada = segundaComa == -1 ?
+                                       respuesta.substring(primerComa + 1) :
+                                       respuesta.substring(primerComa + 1, segundaComa);
+                macConfirmada.trim();
+
+                if (!macConfirmada.equalsIgnoreCase(macAddress)) {
+                    Serial.println("⏭️  Confirmación simple pertenece a otra MAC, se ignora");
+                    continue;
+                }
+
+                Serial.printf("✅ Confirmación simple recibida para %s (potencia solicitada: %u dBm)\n",
+                              macConfirmada.c_str(), potenciaEsperada);
+                return true;
             }
 
-            String mac = respuesta.substring(primera + 1, segunda);
-            String etapa = respuesta.substring(segunda + 1, tercera);
-            uint8_t potencia = respuesta.substring(coma + 1).toInt();
-
-            if (mac != macAddress || etapa != "confirmacion") {
-                Serial.println("⏭️  Confirmación de otra MAC o etapa distinta");
-                continue;
-            }
-
-            if (potencia != potenciaEsperada) {
-                Serial.printf("⚠️  Potencia confirmada %u dBm no coincide con esperada %u dBm\n", potencia, potenciaEsperada);
-            }
-
-            return true;
+            Serial.println("⏭️  Mensaje recibido no corresponde a confirmación de configuración");
         }
 
         delay(5);
@@ -2646,7 +2667,7 @@ bool enviarDatos(int distancia) {
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
     bool ajustarPotenciaTrasDespertar = wakeByImpact || recalibrarPotenciaLoRa;
-    uint8_t potenciaInicio = recalibrarPotenciaLoRa ? LORA_POTENCIA_MIN_DBM : potenciaLoRaActualDbm;
+    uint8_t potenciaInicio = max<uint8_t>(potenciaLoRaActualDbm, LORA_POTENCIA_MIN_DBM);
     uint8_t potenciaFin = recalibrarPotenciaLoRa ? LORA_POTENCIA_MAX_DBM : potenciaLoRaActualDbm;
 
     for (uint8_t potencia = potenciaInicio; potencia <= potenciaFin; potencia++) {
