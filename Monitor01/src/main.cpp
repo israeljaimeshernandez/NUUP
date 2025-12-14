@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 116 - 2025-06-26 LoRa: confirmación de potencia alinea formato con Nuup01 y corrige el parseo de solicitudes sin tercera barra.
 // 115 - 2025-06-22 LoRa: integrar consecutivo y detallar modificación activa en bitácora de arranque
 // 114 - 2025-06-22 LoRa: reanudar escucha tras el test periódico para no dejar al monitor sordo frente a confirmaciones
 // 113 - 2025-06-21 LoRa: alineación y bitácora cruzada con Nuup01 (SyncWord/Preámbulo/BW/SF/CR) dejando apagado el eco bidireccional por defecto
@@ -5040,16 +5041,15 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
         if (received.startsWith("configuracion/")) {
             int primera = received.indexOf('/');
             int segunda = received.indexOf('/', primera + 1);
-            int tercera = received.indexOf('/', segunda + 1);
-            int coma = received.indexOf(',', tercera + 1);
+            int coma = received.indexOf(',', segunda + 1);
 
-            if (primera == -1 || segunda == -1 || tercera == -1 || coma == -1) {
+            if (primera == -1 || segunda == -1 || coma == -1) {
                 Serial.println("⚠️  Mensaje de configuración con formato inválido");
                 return;
             }
 
             String macConfig = normalizarMac(received.substring(primera + 1, segunda));
-            String etapa = received.substring(segunda + 1, tercera);
+            String etapa = received.substring(segunda + 1, coma);
             uint8_t potenciaSolicitada = received.substring(coma + 1).toInt();
 
             if (!esMacValida(macConfig)) {

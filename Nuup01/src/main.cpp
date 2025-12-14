@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 107 - 2025-12-26 LoRa: arranque del sensor fijado a 2 dBm y trazas mantienen solo el formato configuracion/MAC/confirmacion,<dBm>
+//      para homologar confirmaciones con Monitor01.
 // 106 - 2025-12-24 LoRa: la confirmación configuracion/MAC/confirmacion,<dBm> se valida con dos "/" y coma tras la etapa para
 //      evitar falsos negativos al recibir respuestas correctas del Monitor01.
 // 105 - 2025-12-23 LoRa: la confirmación de potencia se alinea al formato configuracion/MAC/confirmacion,<dBm> y se adopta
@@ -139,9 +141,9 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
 #define TIEMPO_ESPERA_CONFIRMACION_INICIAL 6000  // 2 segundos base de espera por confirmación LoRa
 #define INCREMENTO_ESPERA_CONFIRMACION 500       // Aumento progresivo por intento para dar margen de sincronización
 #define REINTENTOS_CONFIRMACION 5        // Envío inicial + 4 reintentos antes de reiniciar
-#define LORA_POTENCIA_MIN_DBM 6          // Potencia mínima para el barrido dinámico
+#define LORA_POTENCIA_MIN_DBM 2          // Potencia mínima para el barrido dinámico
 #define LORA_POTENCIA_MAX_DBM 12         // Potencia máxima objetivo para el sensor
-#define LORA_POTENCIA_DEFECTO_DBM 6      // Potencia por defecto si no hay confirmaciones
+#define LORA_POTENCIA_DEFECTO_DBM 2      // Potencia por defecto si no hay confirmaciones
 #define REINTENTOS_CONFIG_POTENCIA 5     // Veces que se intercambia configuracion/MAC/confirmacion
 #define INTERVALO_ESCANEO_ALTA 10000  // 10 segundos (búsqueda activa extendida)
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
