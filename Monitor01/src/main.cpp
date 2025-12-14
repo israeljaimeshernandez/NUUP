@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 117 - 2025-06-27 LoRa: se confirma ajuste de potencia aun si la MAC no está activa, priorizando la compatibilidad con Nuup01.
 // 116 - 2025-06-26 LoRa: confirmación de potencia alinea formato con Nuup01 y corrige el parseo de solicitudes sin tercera barra.
 // 115 - 2025-06-22 LoRa: integrar consecutivo y detallar modificación activa en bitácora de arranque
 // 114 - 2025-06-22 LoRa: reanudar escucha tras el test periódico para no dejar al monitor sordo frente a confirmaciones
@@ -5071,8 +5072,7 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
             }
 
             if (!activo) {
-                Serial.println("⏭️  Configuración ignorada: dispositivo no activo o no registrado");
-                return;
+                Serial.println("⚠️  Configuración recibida de MAC no activa o no registrada, se confirma para compatibilidad");
             }
 
             String respuesta = "configuracion/" + macConfig + "/confirmacion," + String(potenciaSolicitada);
