@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 118 - 2025-07-01 MQTT/LoRa: broker con DEVICE_MODIFICACION pide alias/altura/capacidad/litros, se aplican en EEPROM, se confirma con modificacion_ok y se usan esos datos en LoRa hasta limpiar la bandera.
 // 117 - 2025-06-27 LoRa: se confirma ajuste de potencia aun si la MAC no está activa, priorizando la compatibilidad con Nuup01.
 // 116 - 2025-06-26 LoRa: confirmación de potencia alinea formato con Nuup01 y corrige el parseo de solicitudes sin tercera barra.
 // 115 - 2025-06-22 LoRa: integrar consecutivo y detallar modificación activa en bitácora de arranque
