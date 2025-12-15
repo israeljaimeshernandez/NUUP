@@ -6,7 +6,7 @@ Este documento resume el intercambio de mensajes MQTT entre el broker y un Monit
 
 ## Telemetría enviada por el Monitor01
 
-- **Tópico**: `NUUP/<MAC_MONITOR>/...` (la MAC del monitor se extrae del segundo segmento, por lo que se mantiene el formato actual).
+- **Tópico**: `NUUP/<MAC_MONITOR>/...` (el segmento del tópico usa siempre la MAC del monitor, **no** la del sensor LoRa).
 - **Payload**: `001,<MAC_SENSOR>,<litros>,<voltaje>,<temperatura>,<altura_cm>,<capacidad_litros>,<alias>`.
   - Si el alias llega vacío, el servidor lo normaliza a `NUUP01 NIVEL`.
 
