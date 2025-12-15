@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 122 - 2025-07-05 MQTT: telemetría se publica en NUUP/<MAC_MONITOR> en lugar de la MAC del sensor, manteniendo confirmación en NUUP/<MAC_MONITOR>/confirmacion/ y bitácora clara.
 // 121 - 2025-07-04 MQTT: trazas explican qué respuesta espera el monitor (modificar/sin_cambios/modificacion_ok) y en qué tópico debe llegar cuando DEVICE_MODIFICACION está activo; la espera se libera tras timeout sin bloquear la siguiente telemetría.
 // 120 - 2025-07-03 MQTT: la espera de confirmación del broker no bloquea telemetría; tras timeout se libera y se reintentará en la siguiente lectura, dejando bitácora clara en serial.
 // 119 - 2025-07-02 MQTT: bitácora clara de solicitud/espera/recepción de confirmación del broker por DEVICE_MODIFICACION; timeout visible y cierre del ciclo al aplicar cambios en EEPROM.
@@ -321,7 +322,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 118;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 122;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -6605,31 +6606,38 @@ testLoRaPeriodico();
         if (nuevoMensajeLoRa) {
             asegurarMacMonitorFija("mqtt_lora");
             String macDestino = extraerMacDeMensajeLoRa(mensajeLoRa);
-            String topico = String(TOPICO_LORA_BASE) + macDestino;
+            String macTopico = normalizarMac(macMonitorFija);
 
-            Serial.println("\n📡 [MQTT][TX] Telemetría hacia broker");
-            Serial.printf("   Topic   : %s\n", topico.c_str());
-            Serial.printf("   Payload : %s\n", mensajeLoRa.c_str());
-            Serial.println("   ✅ Solicitud: validar DEVICE_MODIFICACION y responder en NUUP/<MONITOR>/confirmacion/");
-
-            if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
-                Serial.println("   📤 Enviada correctamente. Esperando confirmación del broker...");
-                esperandoConfirmacionBroker = true;
-                macEsperandoConfirmacion = macDestino;
-                inicioEsperaConfirmacion = millis();
-                String topicoConfirmacion = obtenerTopicoConfirmacionMonitor();
-                Serial.printf("   🔎 Espera: broker debe responder en %s con %s,modificar,<alias>,<altura>,<capacidad>,<litros>\n",
-                              topicoConfirmacion.c_str(), macEsperandoConfirmacion.c_str());
-                Serial.printf("      Alternativamente: %s,sin_cambios o %s,modificacion_ok/modificacion_aplicada\n",
-                              macEsperandoConfirmacion.c_str(), macEsperandoConfirmacion.c_str());
-                Serial.printf("   ⏱️ MAC en espera de confirmación: %s (timeout: %lus)\n", macEsperandoConfirmacion.c_str(), timeoutConfirmacionBroker / 1000);
+            if (macTopico.isEmpty()) {
+                Serial.println("⚠️  No se envió telemetría MQTT: MAC del monitor vacía (tópico NUUP/<MAC_MONITOR>)");
             } else {
-                Serial.println("   ❌ Error al publicar telemetría al broker");
+                String topico = String(TOPICO_LORA_BASE) + macTopico;
+
+                Serial.println("\n📡 [MQTT][TX] Telemetría hacia broker");
+                Serial.printf("   Topic   : %s\n", topico.c_str());
+                Serial.printf("   Payload : %s\n", mensajeLoRa.c_str());
+                Serial.println("   ✅ Solicitud: validar DEVICE_MODIFICACION y responder en NUUP/<MONITOR>/confirmacion/");
+                Serial.printf("   ℹ️ Ruta fija por monitor: NUUP/%s (MAC del sensor viaja en el payload)\n", macTopico.c_str());
+
+                if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
+                    Serial.println("   📤 Enviada correctamente. Esperando confirmación del broker...");
+                    esperandoConfirmacionBroker = true;
+                    macEsperandoConfirmacion = macDestino;
+                    inicioEsperaConfirmacion = millis();
+                    String topicoConfirmacion = obtenerTopicoConfirmacionMonitor();
+                    Serial.printf("   🔎 Espera: broker debe responder en %s con %s,modificar,<alias>,<altura>,<capacidad>,<litros>\n",
+                                  topicoConfirmacion.c_str(), macEsperandoConfirmacion.c_str());
+                    Serial.printf("      Alternativamente: %s,sin_cambios o %s,modificacion_ok/modificacion_aplicada\n",
+                                  macEsperandoConfirmacion.c_str(), macEsperandoConfirmacion.c_str());
+                    Serial.printf("   ⏱️ MAC en espera de confirmación: %s (timeout: %lus)\n", macEsperandoConfirmacion.c_str(), timeoutConfirmacionBroker / 1000);
+                } else {
+                    Serial.println("   ❌ Error al publicar telemetría al broker");
+                }
             }
 
             nuevoMensajeLoRa = false; //solo publicar una vez el mensaje y esperar a otro nuevo
         }
-    } 
+    }
 
     // 7. Manejo básico de conexiones MQTT
     if (!client.connected() && WiFi.status() == WL_CONNECTED && !forceAPMode) {
