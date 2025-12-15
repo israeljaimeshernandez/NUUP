@@ -317,7 +317,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 115;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 118;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -369,6 +369,11 @@ const String serial_number = "TOPICMYSQL";  //aqui voy a maper la MAC
 
 // Almacenar el último mensaje LoRa completo por dispositivo
 String ultimoMensajeLoRaDispositivo[MAX_DISPOSITIVOS];
+bool modificacionBrokerActiva[MAX_DISPOSITIVOS] = {false};
+String aliasObjetivoBroker[MAX_DISPOSITIVOS];
+float alturaObjetivoBroker[MAX_DISPOSITIVOS] = {0};
+float capacidadObjetivoBroker[MAX_DISPOSITIVOS] = {0};
+float litrosReportadosBroker[MAX_DISPOSITIVOS] = {0};
 
 // Variables para control de tiempo sin datos
 unsigned long ultimaActualizacionLoRa[MAX_DISPOSITIVOS] = {0};
@@ -513,6 +518,10 @@ bool loadMQTTConfirmationState();
 void guardarMQTTConfirmationState(bool estado);
 bool loadSolicitudAltaInicialState();
 void guardarSolicitudAltaInicialState(bool estado);
+String obtenerTopicoConfirmacionMonitor();
+void suscribirTopicoConfirmacionMonitor();
+void publicarConfirmacionModificacionMQTT(const String &macSensor, const String &estado);
+bool procesarConfirmacionBroker(const String &topic, const String &mensaje);
 void asegurarMacMonitorFija(const char* motivo);
 void imprimirConfigDispositivo(const String &mac);
 void imprimirDispositivosRegistrados();
@@ -3226,6 +3235,136 @@ void loadUserProfileFromEEPROM() {
   loadUserIDFromEEPROM();
 }
 
+String obtenerTopicoConfirmacionMonitor() {
+  asegurarMacMonitorFija("topico_confirmacion");
+  if (macMonitorFija.isEmpty()) {
+    return "";
+  }
+  return String("NUUP/") + macMonitorFija + "/confirmacion/";
+}
+
+void suscribirTopicoConfirmacionMonitor() {
+  String topico = obtenerTopicoConfirmacionMonitor();
+  if (topico.isEmpty()) {
+    Serial.println("⚠️  No se pudo suscribir a confirmacion: MAC del monitor vacía");
+    return;
+  }
+  client.subscribe(topico.c_str(), 1);
+  Serial.println("Subscripcion: " + topico);
+}
+
+void publicarConfirmacionModificacionMQTT(const String &macSensor, const String &estado) {
+  if (!client.connected()) {
+    Serial.println("⚠️  No se envió confirmación MQTT: cliente desconectado");
+    return;
+  }
+
+  String topico = obtenerTopicoConfirmacionMonitor();
+  if (topico.isEmpty()) {
+    Serial.println("⚠️  No se envió confirmación: tópico vacío por falta de MAC");
+    return;
+  }
+
+  String payload = macSensor + "," + estado;
+  if (client.publish(topico.c_str(), payload.c_str())) {
+    Serial.printf("📡 Confirmación MQTT enviada -> topic:%s payload:%s\n", topico.c_str(), payload.c_str());
+  } else {
+    Serial.println("❌ Error al publicar la confirmación de modificación");
+  }
+}
+
+static String obtenerCampoCSV(const String &texto, int indice) {
+  int inicio = 0;
+  int fin = -1;
+  for (int i = 0; i <= indice; i++) {
+    inicio = fin + 1;
+    fin = texto.indexOf(',', inicio);
+    if (fin == -1 && i < indice) {
+      return "";
+    }
+  }
+  if (fin == -1) fin = texto.length();
+  return texto.substring(inicio, fin);
+}
+
+bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
+  if (!topic.startsWith("NUUP/")) return false;
+  if (!topic.endsWith("/confirmacion/")) return false;
+
+  int segundoSlash = topic.indexOf('/', 5);
+  if (segundoSlash == -1) return false;
+  String macTopic = normalizarMac(topic.substring(5, segundoSlash));
+
+  asegurarMacMonitorFija("confirmacion_broker");
+  if (macTopic != normalizarMac(macMonitorFija)) {
+    Serial.printf("⏭️  Confirmación ignorada: MAC en tópico (%s) no coincide con monitor (%s)\n",
+                  macTopic.c_str(), macMonitorFija.c_str());
+    return false;
+  }
+
+  String macSensor = normalizarMac(obtenerCampoCSV(mensaje, 0));
+  String comando = obtenerCampoCSV(mensaje, 1);
+  comando.trim();
+
+  if (macSensor.isEmpty() || comando.isEmpty()) {
+    Serial.println("⚠️  Confirmación MQTT sin MAC o comando válido");
+    return true;
+  }
+
+  int indice = obtenerIndiceDispositivo(macSensor);
+  if (indice < 0) {
+    Serial.printf("⚠️  Confirmación MQTT para MAC no registrada: %s\n", macSensor.c_str());
+    return true;
+  }
+
+  if (comando == "modificar") {
+    String aliasObjetivo = obtenerCampoCSV(mensaje, 2);
+    String alturaStr = obtenerCampoCSV(mensaje, 3);
+    String capacidadStr = obtenerCampoCSV(mensaje, 4);
+    String litrosStr = obtenerCampoCSV(mensaje, 5);
+
+    aliasObjetivo.trim();
+    if (aliasObjetivo.isEmpty()) aliasObjetivo = "NUUP01 NIVEL";
+
+    ConfigDispositivo &config = configDispositivos[indice];
+    aliasObjetivo.toCharArray(config.nombre, sizeof(config.nombre));
+    config.alturaConfig = alturaStr.toFloat();
+    config.litrosConfig = capacidadStr.toFloat();
+    config.litrosActuales = litrosStr.toFloat();
+
+    if (config.litrosConfig > 0) {
+      float porcentaje = (config.litrosActuales / config.litrosConfig) * 100.0f;
+      config.porcentaje = (int)constrain(porcentaje, 0, 100);
+    }
+
+    aliasObjetivoBroker[indice] = aliasObjetivo;
+    alturaObjetivoBroker[indice] = config.alturaConfig;
+    capacidadObjetivoBroker[indice] = config.litrosConfig;
+    litrosReportadosBroker[indice] = config.litrosActuales;
+    modificacionBrokerActiva[indice] = true;
+
+    guardarDispositivos();
+    publicarConfirmacionModificacionMQTT(macSensor, "modificacion_ok");
+    Serial.printf("✅ Solicitud de modificación aplicada y confirmada para %s\n", macSensor.c_str());
+    return true;
+  }
+
+  if (comando == "sin_cambios") {
+    modificacionBrokerActiva[indice] = false;
+    Serial.printf("ℹ️ Confirmación de sin_cambios para %s\n", macSensor.c_str());
+    return true;
+  }
+
+  if (comando == "modificacion_aplicada" || comando == "modificacion_ok") {
+    modificacionBrokerActiva[indice] = false;
+    Serial.printf("ℹ️ Confirmación final recibida para %s\n", macSensor.c_str());
+    return true;
+  }
+
+  Serial.printf("⏭️  Comando de confirmación no reconocido: %s\n", comando.c_str());
+  return true;
+}
+
 
 void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println("callback MQTT ejecutado recepcion-->");  // al principio de la función
@@ -3238,6 +3377,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String strMessage = String(message);
 
   Serial.printf("Mensaje recibido MQTT TOPIC[%s]: message--> %s\n", topic, message);
+
+  if (procesarConfirmacionBroker(strTopic, strMessage)) {
+    return;
+  }
 
 // ALTA MONITOR / DISPOSITIVOS Validación estricta para el topic de confirmación
 if (strcmp(topic, "alta/0/confirmacion/") == 0) {
@@ -3554,7 +3697,8 @@ Serial.println("Subscripcion: /command");
    delay(50);
     client.subscribe((String(serial_number) + "/estatus").c_str(), 1);
 Serial.println("Subscripcion: /estatus");
-    delay(50);
+   delay(50);
+    suscribirTopicoConfirmacionMonitor();
 
     imprimirEstadoBajasPendientes("MQTT reconectado");
     procesarBajasPendientes();
@@ -5259,6 +5403,11 @@ bool eliminarDispositivo(const String &mac) {
         bajaPendienteMQTT[i] = bajaPendienteMQTT[i + 1];
         ultimaSolicitudBaja[i] = ultimaSolicitudBaja[i + 1];
         inicioEsperaBaja[i] = inicioEsperaBaja[i + 1];
+        modificacionBrokerActiva[i] = modificacionBrokerActiva[i + 1];
+        aliasObjetivoBroker[i] = aliasObjetivoBroker[i + 1];
+        alturaObjetivoBroker[i] = alturaObjetivoBroker[i + 1];
+        capacidadObjetivoBroker[i] = capacidadObjetivoBroker[i + 1];
+        litrosReportadosBroker[i] = litrosReportadosBroker[i + 1];
     }
 
     // Limpiar la última posición
@@ -5280,6 +5429,11 @@ bool eliminarDispositivo(const String &mac) {
     bajaPendienteMQTT[MAX_DISPOSITIVOS - 1] = false;
     ultimaSolicitudBaja[MAX_DISPOSITIVOS - 1] = 0;
     inicioEsperaBaja[MAX_DISPOSITIVOS - 1] = 0;
+    modificacionBrokerActiva[MAX_DISPOSITIVOS - 1] = false;
+    aliasObjetivoBroker[MAX_DISPOSITIVOS - 1] = "";
+    alturaObjetivoBroker[MAX_DISPOSITIVOS - 1] = 0;
+    capacidadObjetivoBroker[MAX_DISPOSITIVOS - 1] = 0;
+    litrosReportadosBroker[MAX_DISPOSITIVOS - 1] = 0;
 
     // Debug: Mostrar después de eliminar
     Serial.println("Contenido después de eliminar:");
@@ -5727,6 +5881,20 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
             ultimoMensajeLoRaDispositivo[i] = mensaje;
             mensajeLoRa = mensaje;          // Garantizar que el mensaje más reciente quede listo para MQTT
             nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
+
+            if (modificacionBrokerActiva[i]) {
+                Serial.printf("🔁 Modificación solicitada por broker para %s: se preservan datos EEPROM y se confirma a sensor\n", mac.c_str());
+                String confirmacion = String(configDispositivos[i].tipoDispositivo) + "," + mac + "," +
+                                      String(configDispositivos[i].litrosActuales, 1) + "," +
+                                      String(configDispositivos[i].voltaje, 1) + "," +
+                                      String(configDispositivos[i].temperatura, 1) + "," +
+                                      String(configDispositivos[i].alturaConfig, 1) + "," +
+                                      String(configDispositivos[i].litrosConfig, 1) + "," +
+                                      String(configDispositivos[i].nombre);
+                enviarPaqueteLoRa("confirmación EEPROM modificado_broker", mac, confirmacion);
+                modificacionBrokerActiva[i] = false;
+                return;
+            }
 
             // Actualizar tipo de dispositivo en caso de que cambie en un mensaje futuro
             int primeraComa = mensaje.indexOf(',');
