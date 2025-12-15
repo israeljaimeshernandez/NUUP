@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 119 - 2025-07-02 MQTT: bitácora clara de solicitud/espera/recepción de confirmación del broker por DEVICE_MODIFICACION; timeout visible y cierre del ciclo al aplicar cambios en EEPROM.
 // 118 - 2025-07-01 MQTT/LoRa: broker con DEVICE_MODIFICACION pide alias/altura/capacidad/litros, se aplican en EEPROM, se confirma con modificacion_ok y se usan esos datos en LoRa hasta limpiar la bandera.
 // 117 - 2025-06-27 LoRa: se confirma ajuste de potencia aun si la MAC no está activa, priorizando la compatibilidad con Nuup01.
 // 116 - 2025-06-26 LoRa: confirmación de potencia alinea formato con Nuup01 y corrige el parseo de solicitudes sin tercera barra.
@@ -375,6 +376,10 @@ String aliasObjetivoBroker[MAX_DISPOSITIVOS];
 float alturaObjetivoBroker[MAX_DISPOSITIVOS] = {0};
 float capacidadObjetivoBroker[MAX_DISPOSITIVOS] = {0};
 float litrosReportadosBroker[MAX_DISPOSITIVOS] = {0};
+bool esperandoConfirmacionBroker = false;
+String macEsperandoConfirmacion = "";
+unsigned long inicioEsperaConfirmacion = 0;
+const unsigned long timeoutConfirmacionBroker = 15000; // 15s para informar falta de respuesta
 
 // Variables para control de tiempo sin datos
 unsigned long ultimaActualizacionLoRa[MAX_DISPOSITIVOS] = {0};
@@ -3349,6 +3354,12 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
     litrosReportadosBroker[indice] = config.litrosActuales;
     modificacionBrokerActiva[indice] = true;
 
+    if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
+      Serial.printf("   📬 Confirmación del broker recibida para %s; fin de espera MQTT\n", macSensor.c_str());
+      esperandoConfirmacionBroker = false;
+      macEsperandoConfirmacion = "";
+    }
+
     Serial.println("   📌 Acción del monitor: aplicar alias/altura/capacidad/litros en EEPROM y marcar modificación en curso");
     Serial.printf("      Alias objetivo    : %s\n", aliasObjetivo.c_str());
     Serial.printf("      Altura objetivo   : %.1f cm\n", alturaObjetivoBroker[indice]);
@@ -3364,12 +3375,22 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
 
   if (comando == "sin_cambios") {
     modificacionBrokerActiva[indice] = false;
+    if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
+      Serial.printf("   📬 Confirmación sin cambios recibida para %s; fin de espera MQTT\n", macSensor.c_str());
+      esperandoConfirmacionBroker = false;
+      macEsperandoConfirmacion = "";
+    }
     Serial.printf("   ℹ️ El broker indica sin_cambios para %s; el monitor continúa su ciclo normal\n", macSensor.c_str());
     return true;
   }
 
   if (comando == "modificacion_aplicada" || comando == "modificacion_ok") {
     modificacionBrokerActiva[indice] = false;
+    if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
+      Serial.printf("   📬 Confirmación final recibida para %s; fin de espera MQTT\n", macSensor.c_str());
+      esperandoConfirmacionBroker = false;
+      macEsperandoConfirmacion = "";
+    }
     Serial.printf("   ℹ️ Confirmación final recibida para %s; se limpia DEVICE_MODIFICACION local\n", macSensor.c_str());
     return true;
   }
@@ -6591,6 +6612,10 @@ testLoRaPeriodico();
 
             if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
                 Serial.println("   📤 Enviada correctamente. Esperando confirmación del broker...");
+                esperandoConfirmacionBroker = true;
+                macEsperandoConfirmacion = macDestino;
+                inicioEsperaConfirmacion = millis();
+                Serial.printf("   ⏱️ MAC en espera de confirmación: %s (timeout: %lus)\n", macEsperandoConfirmacion.c_str(), timeoutConfirmacionBroker / 1000);
             } else {
                 Serial.println("   ❌ Error al publicar telemetría al broker");
             }
@@ -6610,6 +6635,12 @@ testLoRaPeriodico();
         solicitarAltaMonitorMQTT();  //Para solicitar el alta en broker
         procesarAltasPendientes();
         procesarBajasPendientes();
+    }
+
+    if (esperandoConfirmacionBroker && (millis() - inicioEsperaConfirmacion) > timeoutConfirmacionBroker) {
+        Serial.printf("⏳ Sin respuesta del broker para %s después de %lus; seguirá solicitando en la siguiente telemetría\n",
+                      macEsperandoConfirmacion.c_str(), timeoutConfirmacionBroker / 1000);
+        inicioEsperaConfirmacion = millis();
     }
 
     // 9. Verificación periódica de memoria (solo para debug)
