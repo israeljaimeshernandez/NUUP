@@ -1,6 +1,6 @@
 # Flujo MQTT entre el broker y Monitor01
 
-Este documento resume el intercambio de mensajes MQTT entre el broker y un Monitor01 de tipo **001**, incorporando el nuevo comportamiento del campo `DEVICE_MODIFICACION` del broker.
+Este documento resume el intercambio de mensajes MQTT entre el broker y un Monitor01 de tipo **001**, incorporando el nuevo comportamiento del campo `DEVICE_MODIFICACION` del broker. El broker sigue validando si el dispositivo existe en la tabla `devices`, actualiza esa tabla y registra cada lectura en `dispositivos_nuup_01`. Además, ahora cuenta con un campo adicional en base de datos que decide si se aceptan los valores recibidos o se solicita una modificación de alias, litros y altura que el monitor debe aplicar en su EEPROM.
 
 ## Telemetría enviada por el Monitor01
 
@@ -12,7 +12,7 @@ Este documento resume el intercambio de mensajes MQTT entre el broker y un Monit
 
 - **Tópico fijo de respuesta**: `NUUP/<MAC_MONITOR>/confirmacion/`.
 - **Payload cuando existe una modificación pendiente o `DEVICE_MODIFICACION = 1`**:
-  - `mac_sensor,modificar,<alias_objetivo>,<altura_objetivo>,<capacidad_objetivo>,<litros_reportados>`
+ - `mac_sensor,modificar,<alias_objetivo>,<altura_objetivo>,<capacidad_objetivo>,<litros_reportados>`
   - El dispositivo queda marcado como pendiente y este payload se repetirá en **cada** telemetría mientras el flag siga activo.
 - **Payload cuando no hay cambios pendientes**:
   - `mac_sensor,sin_cambios`
@@ -31,10 +31,10 @@ Si el monitor responde `mac_sensor,sin_cambios` mientras hay un ajuste pendiente
 ### Ciclo MQTT entre broker y monitor
 
 1. El Monitor01 envía telemetría `001,...` a `NUUP/<MAC_MONITOR>/...` con litros, voltaje, temperatura, altura, capacidad y alias actuales, y queda a la espera de la confirmación en `NUUP/<MAC_MONITOR>/confirmacion/`.
-2. El broker valida la MAC del sensor en base de datos y revisa el campo `DEVICE_MODIFICACION`.
+2. El broker valida la MAC del sensor en base de datos (`devices`), actualiza los valores vigentes en esa tabla y registra la telemetría en `dispositivos_nuup_01`. Luego revisa el campo `DEVICE_MODIFICACION` (flag de modificación) y el campo adicional de control que indica si debe aceptarse la lectura o pedirse una corrección.
 3. **Si `DEVICE_MODIFICACION = 1` o detecta diferencias**:
    - Devuelve `mac_sensor,modificar,<alias_objetivo>,<altura_objetivo>,<capacidad_objetivo>,<litros_reportados>` en `NUUP/<MAC_MONITOR>/confirmacion/` y deja el dispositivo como pendiente.
-   - El monitor recibe el mensaje de modificación, actualiza su EEPROM con alias, altura y capacidad nuevos, y responde `mac_sensor,modificacion_ok` (o `mac_sensor,modificacion_aplicada`) en el mismo tópico.
+   - El monitor recibe el mensaje de modificación, actualiza su EEPROM con alias, altura y capacidad nuevos (usando los valores enviados por el broker en el mensaje `modificar,...`), y responde `mac_sensor,modificacion_ok` (o `mac_sensor,modificacion_aplicada`) en el mismo tópico.
    - Con la confirmación positiva, el broker limpia `DEVICE_MODIFICACION` y en la siguiente telemetría enviará `mac_sensor,sin_cambios`.
    - Después de confirmar, el monitor continúa su ciclo normal sin enviar confirmaciones adicionales en telemetrías subsecuentes.
 4. **Si no hay cambios pendientes**:
