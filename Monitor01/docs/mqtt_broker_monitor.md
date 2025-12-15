@@ -1,5 +1,7 @@
 # Flujo MQTT entre el broker y Monitor01
 
+**Consecutivo 84 - 2025-06-11:** Se documenta el flujo con el nuevo campo de control del broker que decide si se acepta la telemetría o se solicita una modificación (alias, altura y capacidad) y cómo el monitor limpia `DEVICE_MODIFICACION` tras actualizar la EEPROM.
+
 Este documento resume el intercambio de mensajes MQTT entre el broker y un Monitor01 de tipo **001**, incorporando el nuevo comportamiento del campo `DEVICE_MODIFICACION` del broker. El broker sigue validando si el dispositivo existe en la tabla `devices`, actualiza esa tabla y registra cada lectura en `dispositivos_nuup_01`. Además, ahora cuenta con un campo adicional en base de datos que decide si se aceptan los valores recibidos o se solicita una modificación de alias, litros y altura que el monitor debe aplicar en su EEPROM.
 
 ## Telemetría enviada por el Monitor01
