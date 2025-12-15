@@ -3303,6 +3303,11 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
     return false;
   }
 
+  Serial.println("\n📥 [MQTT][RX] Confirmación desde broker");
+  Serial.printf("   Topic   : %s\n", topic.c_str());
+  Serial.printf("   Payload : %s\n", mensaje.c_str());
+  Serial.println("   ↩️ Respuesta del broker a la telemetría MQTT del monitor");
+
   String macSensor = normalizarMac(obtenerCampoCSV(mensaje, 0));
   String comando = obtenerCampoCSV(mensaje, 1);
   comando.trim();
@@ -3344,21 +3349,28 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
     litrosReportadosBroker[indice] = config.litrosActuales;
     modificacionBrokerActiva[indice] = true;
 
+    Serial.println("   📌 Acción del monitor: aplicar alias/altura/capacidad/litros en EEPROM y marcar modificación en curso");
+    Serial.printf("      Alias objetivo    : %s\n", aliasObjetivo.c_str());
+    Serial.printf("      Altura objetivo   : %.1f cm\n", alturaObjetivoBroker[indice]);
+    Serial.printf("      Capacidad objetivo: %.1f L\n", capacidadObjetivoBroker[indice]);
+    Serial.printf("      Litros reportados : %.1f L\n", litrosReportadosBroker[indice]);
+
     guardarDispositivos();
     publicarConfirmacionModificacionMQTT(macSensor, "modificacion_ok");
-    Serial.printf("✅ Solicitud de modificación aplicada y confirmada para %s\n", macSensor.c_str());
+    Serial.printf("   ✅ Confirmación al broker: %s,modificacion_ok\n", macSensor.c_str());
+    Serial.println("   🔁 El monitor seguirá usando los valores de EEPROM en LoRa hasta limpiar la bandera");
     return true;
   }
 
   if (comando == "sin_cambios") {
     modificacionBrokerActiva[indice] = false;
-    Serial.printf("ℹ️ Confirmación de sin_cambios para %s\n", macSensor.c_str());
+    Serial.printf("   ℹ️ El broker indica sin_cambios para %s; el monitor continúa su ciclo normal\n", macSensor.c_str());
     return true;
   }
 
   if (comando == "modificacion_aplicada" || comando == "modificacion_ok") {
     modificacionBrokerActiva[indice] = false;
-    Serial.printf("ℹ️ Confirmación final recibida para %s\n", macSensor.c_str());
+    Serial.printf("   ℹ️ Confirmación final recibida para %s; se limpia DEVICE_MODIFICACION local\n", macSensor.c_str());
     return true;
   }
 
@@ -6571,12 +6583,18 @@ testLoRaPeriodico();
             asegurarMacMonitorFija("mqtt_lora");
             String macDestino = extraerMacDeMensajeLoRa(mensajeLoRa);
             String topico = String(TOPICO_LORA_BASE) + macDestino;
+
+            Serial.println("\n📡 [MQTT][TX] Telemetría hacia broker");
+            Serial.printf("   Topic   : %s\n", topico.c_str());
+            Serial.printf("   Payload : %s\n", mensajeLoRa.c_str());
+            Serial.println("   ✅ Solicitud: validar DEVICE_MODIFICACION y responder en NUUP/<MONITOR>/confirmacion/");
+
             if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
-                Serial.print("Publicado: ");
-                Serial.println(mensajeLoRa);
+                Serial.println("   📤 Enviada correctamente. Esperando confirmación del broker...");
             } else {
-                Serial.println("Error al publicar");
+                Serial.println("   ❌ Error al publicar telemetría al broker");
             }
+
             nuevoMensajeLoRa = false; //solo publicar una vez el mensaje y esperar a otro nuevo
         }
     } 
