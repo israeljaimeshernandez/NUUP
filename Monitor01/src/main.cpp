@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 123 - 2025-07-05 LoRa: tras una modificación del broker se descarta la telemetría antigua y se reenvía confirmación con EEPROM hasta que NUUP01 reporte alias/altura/capacidad actualizados.
 // 122 - 2025-07-05 MQTT: telemetría se publica en NUUP/<MAC_MONITOR> en lugar de la MAC del sensor, manteniendo confirmación en NUUP/<MAC_MONITOR>/confirmacion/ y bitácora clara.
 // 121 - 2025-07-04 MQTT: trazas explican qué respuesta espera el monitor (modificar/sin_cambios/modificacion_ok) y en qué tópico debe llegar cuando DEVICE_MODIFICACION está activo; la espera se libera tras timeout sin bloquear la siguiente telemetría.
 // 120 - 2025-07-03 MQTT: la espera de confirmación del broker no bloquea telemetría; tras timeout se libera y se reintentará en la siguiente lectura, dejando bitácora clara en serial.
@@ -252,6 +253,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <time.h>
+#include <math.h>
 
 #include <LoRa.h>
 #include <EEPROM.h>
@@ -322,7 +324,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 122;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 123;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -5023,6 +5025,52 @@ bool mensajeLoRaTieneDatos(const String &mensaje) {
   return true;
 }
 
+bool datosLoRaCoincidenConBroker(const String &mensaje, int indice) {
+  int commas[8];
+  int commaCount = 0;
+
+  for (int pos = 0; pos < mensaje.length() && commaCount < 8; pos++) {
+    if (mensaje.charAt(pos) == ',') {
+      commas[commaCount] = pos;
+      commaCount++;
+    }
+  }
+
+  if (commaCount < 7) {
+    Serial.printf("⚠️  No hay suficientes campos para validar modificación (comas=%d)\n", commaCount);
+    return false;
+  }
+
+  String alturaConfigStr = mensaje.substring(commas[4] + 1, commas[5]);
+  String litrosConfigStr = mensaje.substring(commas[5] + 1, commas[6]);
+  String nombreExtraido = mensaje.substring(commas[6] + 1, commas[7]);
+  nombreExtraido.trim();
+
+  float alturaRecibida = alturaConfigStr.toFloat();
+  float capacidadRecibida = litrosConfigStr.toFloat();
+  String nombreRecibido = nombreExtraido.length() > 0 ? nombreExtraido : String(configDispositivos[indice].nombre);
+
+  float alturaObjetivo = alturaObjetivoBroker[indice];
+  float capacidadObjetivo = capacidadObjetivoBroker[indice];
+  String aliasObjetivo = aliasObjetivoBroker[indice];
+
+  bool coincideAltura = fabsf(alturaRecibida - alturaObjetivo) < 0.1f;
+  bool coincideCapacidad = fabsf(capacidadRecibida - capacidadObjetivo) < 0.1f;
+  bool coincideNombre = aliasObjetivo.length() == 0 ? true : (nombreRecibido == aliasObjetivo);
+
+  Serial.println("   🧭 Comparando datos solicitados vs recibidos (LoRa)");
+  Serial.printf("      Objetivo altura/capacidad/nombre: %.1f / %.1f / %s\n",
+                alturaObjetivo,
+                capacidadObjetivo,
+                aliasObjetivo.c_str());
+  Serial.printf("      Recibido altura/capacidad/nombre: %.1f / %.1f / %s\n",
+                alturaRecibida,
+                capacidadRecibida,
+                nombreRecibido.c_str());
+
+  return coincideAltura && coincideCapacidad && coincideNombre;
+}
+
 struct DatosConfirmacionLoRa {
   String nombre;
   float alturaConfig;
@@ -5921,16 +5969,31 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
 
             if (modificacionBrokerActiva[i]) {
                 Serial.printf("🔁 Modificación solicitada por broker para %s: se preservan datos EEPROM y se confirma a sensor\n", mac.c_str());
-                String confirmacion = String(configDispositivos[i].tipoDispositivo) + "," + mac + "," +
-                                      String(configDispositivos[i].litrosActuales, 1) + "," +
-                                      String(configDispositivos[i].voltaje, 1) + "," +
-                                      String(configDispositivos[i].temperatura, 1) + "," +
-                                      String(configDispositivos[i].alturaConfig, 1) + "," +
-                                      String(configDispositivos[i].litrosConfig, 1) + "," +
-                                      String(configDispositivos[i].nombre);
-                enviarPaqueteLoRa("confirmación EEPROM modificado_broker", mac, confirmacion);
+
+                bool datosAlineados = false;
+
+                if (mensajeLoRaTieneDatos(mensaje)) {
+                    datosAlineados = datosLoRaCoincidenConBroker(mensaje, i);
+                } else {
+                    Serial.println("⚠️  Mensaje LoRa sin campos suficientes para validar la modificación; se mantendrá la espera.");
+                }
+
+                if (!datosAlineados) {
+                    nuevoMensajeLoRa = false; // Evitar publicar datos antiguos mientras se confirma la EEPROM
+                    Serial.println("   ⏳ Se descarta la telemetría hasta que NUUP01 confirme la modificación por LoRa.");
+                    String confirmacion = String(configDispositivos[i].tipoDispositivo) + "," + mac + "," +
+                                          String(configDispositivos[i].litrosActuales, 1) + "," +
+                                          String(configDispositivos[i].voltaje, 1) + "," +
+                                          String(configDispositivos[i].temperatura, 1) + "," +
+                                          String(configDispositivos[i].alturaConfig, 1) + "," +
+                                          String(configDispositivos[i].litrosConfig, 1) + "," +
+                                          String(configDispositivos[i].nombre);
+                    enviarPaqueteLoRa("confirmación EEPROM modificado_broker", mac, confirmacion);
+                    return;
+                }
+
+                Serial.println("✅ NUUP01 ya reporta alias/altura/capacidad solicitados por el broker; se libera la bandera de modificación.");
                 modificacionBrokerActiva[i] = false;
-                return;
             }
 
             // Actualizar tipo de dispositivo en caso de que cambie en un mensaje futuro
