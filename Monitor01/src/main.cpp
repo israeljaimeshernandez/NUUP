@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 120 - 2025-07-03 MQTT: la espera de confirmación del broker no bloquea telemetría; tras timeout se libera y se reintentará en la siguiente lectura, dejando bitácora clara en serial.
 // 119 - 2025-07-02 MQTT: bitácora clara de solicitud/espera/recepción de confirmación del broker por DEVICE_MODIFICACION; timeout visible y cierre del ciclo al aplicar cambios en EEPROM.
 // 118 - 2025-07-01 MQTT/LoRa: broker con DEVICE_MODIFICACION pide alias/altura/capacidad/litros, se aplican en EEPROM, se confirma con modificacion_ok y se usan esos datos en LoRa hasta limpiar la bandera.
 // 117 - 2025-06-27 LoRa: se confirma ajuste de potencia aun si la MAC no está activa, priorizando la compatibilidad con Nuup01.
@@ -6638,9 +6639,10 @@ testLoRaPeriodico();
     }
 
     if (esperandoConfirmacionBroker && (millis() - inicioEsperaConfirmacion) > timeoutConfirmacionBroker) {
-        Serial.printf("⏳ Sin respuesta del broker para %s después de %lus; seguirá solicitando en la siguiente telemetría\n",
+        Serial.printf("⏳ Sin respuesta del broker para %s después de %lus; se libera la espera y se reintentará en la siguiente telemetría\n",
                       macEsperandoConfirmacion.c_str(), timeoutConfirmacionBroker / 1000);
-        inicioEsperaConfirmacion = millis();
+        esperandoConfirmacionBroker = false;
+        macEsperandoConfirmacion = "";
     }
 
     // 9. Verificación periódica de memoria (solo para debug)
