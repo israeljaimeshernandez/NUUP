@@ -92,6 +92,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 121 - 2025-07-04 MQTT: trazas explican qué respuesta espera el monitor (modificar/sin_cambios/modificacion_ok) y en qué tópico debe llegar cuando DEVICE_MODIFICACION está activo; la espera se libera tras timeout sin bloquear la siguiente telemetría.
 // 120 - 2025-07-03 MQTT: la espera de confirmación del broker no bloquea telemetría; tras timeout se libera y se reintentará en la siguiente lectura, dejando bitácora clara en serial.
 // 119 - 2025-07-02 MQTT: bitácora clara de solicitud/espera/recepción de confirmación del broker por DEVICE_MODIFICACION; timeout visible y cierre del ciclo al aplicar cambios en EEPROM.
 // 118 - 2025-07-01 MQTT/LoRa: broker con DEVICE_MODIFICACION pide alias/altura/capacidad/litros, se aplican en EEPROM, se confirma con modificacion_ok y se usan esos datos en LoRa hasta limpiar la bandera.
@@ -6616,6 +6617,11 @@ testLoRaPeriodico();
                 esperandoConfirmacionBroker = true;
                 macEsperandoConfirmacion = macDestino;
                 inicioEsperaConfirmacion = millis();
+                String topicoConfirmacion = obtenerTopicoConfirmacionMonitor();
+                Serial.printf("   🔎 Espera: broker debe responder en %s con %s,modificar,<alias>,<altura>,<capacidad>,<litros>\n",
+                              topicoConfirmacion.c_str(), macEsperandoConfirmacion.c_str());
+                Serial.printf("      Alternativamente: %s,sin_cambios o %s,modificacion_ok/modificacion_aplicada\n",
+                              macEsperandoConfirmacion.c_str(), macEsperandoConfirmacion.c_str());
                 Serial.printf("   ⏱️ MAC en espera de confirmación: %s (timeout: %lus)\n", macEsperandoConfirmacion.c_str(), timeoutConfirmacionBroker / 1000);
             } else {
                 Serial.println("   ❌ Error al publicar telemetría al broker");
