@@ -10,6 +10,8 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 126 - LoRa: las confirmaciones por modificación pendiente envían altura/capacidad desde EEPROM y el parseo de payload usa
+ *       la capacidad real en lugar de los litros actuales.
  * 125 - LoRa/MQTT: ignorar sin_cambios del broker cuando hay modificación pendiente y seguir priorizando EEPROM hasta validar
  *       por LoRa con los valores solicitados.
  *
@@ -96,6 +98,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 126 - 2025-07-06 LoRa: confirmación en modificación pendiente incluye altura/capacidad de EEPROM y el parser usa capacidad real.
 // 125 - 2025-07-06 LoRa/MQTT: sin_cambios no desmonta DEVICE_MODIFICACION mientras falta validar por LoRa; se conserva EEPROM.
 // 124 - 2025-07-06 LoRa/MQTT: DEVICE_MODIFICACION permanece activo tras "modificacion_ok" del broker hasta validar datos por LoRa; la confirmación sigue usando EEPROM.
 // 123 - 2025-07-05 LoRa: tras una modificación del broker se descarta la telemetría antigua y se reenvía confirmación con EEPROM hasta que NUUP01 reporte alias/altura/capacidad actualizados.
@@ -5131,10 +5134,10 @@ DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const Con
   }
 
   if (commaCount >= 6) {
-    String litrosActualesStr = mensaje.substring(commas[1] + 1, commas[2]);
+    String litrosConfigStr = mensaje.substring(commas[5] + 1, commas[6]);
     String alturaConfigStr = mensaje.substring(commas[4] + 1, commas[5]);
 
-    datos.litrosConfig = litrosActualesStr.toFloat();
+    datos.litrosConfig = litrosConfigStr.toFloat();
     datos.alturaConfig = alturaConfigStr.toFloat();
     datos.origenMensaje = true;
 
@@ -6034,7 +6037,7 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                     String confirmacion = "CONFIRMACION," + mac + "," +
                                           String(configDispositivos[i].nombre) + "," +
                                           String(configDispositivos[i].alturaConfig, 0) + "," +
-                                          String(configDispositivos[i].litrosActuales, 0);
+                                          String(configDispositivos[i].litrosConfig, 0);
 
                     Serial.printf(
                         "   ↪️ Confirmación pendiente: se envían alias/altura/litros de EEPROM (%s / %.1f / %.1f)\n",
