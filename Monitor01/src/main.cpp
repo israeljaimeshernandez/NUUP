@@ -10,7 +10,8 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 123 - LoRa/MQTT: confirmaciones y telemetría usan datos de EEPROM cuando hay modificación pendiente del broker.
+ * 124 - LoRa/MQTT: mantener DEVICE_MODIFICACION activo hasta validar por LoRa los datos aplicados; confirmaciones siguen
+ *       priorizando EEPROM.
  *
  * DESCRIPCIÓN:
  * Dispositivo central que recibe datos de múltiples sensores NUUP01 vía LoRa,
@@ -95,6 +96,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 124 - 2025-07-06 LoRa/MQTT: DEVICE_MODIFICACION permanece activo tras "modificacion_ok" del broker hasta validar datos por LoRa; la confirmación sigue usando EEPROM.
 // 123 - 2025-07-05 LoRa: tras una modificación del broker se descarta la telemetría antigua y se reenvía confirmación con EEPROM hasta que NUUP01 reporte alias/altura/capacidad actualizados.
 // 122 - 2025-07-05 MQTT: telemetría se publica en NUUP/<MAC_MONITOR> en lugar de la MAC del sensor, manteniendo confirmación en NUUP/<MAC_MONITOR>/confirmacion/ y bitácora clara.
 // 121 - 2025-07-04 MQTT: trazas explican qué respuesta espera el monitor (modificar/sin_cambios/modificacion_ok) y en qué tópico debe llegar cuando DEVICE_MODIFICACION está activo; la espera se libera tras timeout sin bloquear la siguiente telemetría.
@@ -3398,13 +3400,15 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
   }
 
   if (comando == "modificacion_aplicada" || comando == "modificacion_ok") {
-    modificacionBrokerActiva[indice] = false;
+    modificacionBrokerActiva[indice] = true;
     if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
       Serial.printf("   📬 Confirmación final recibida para %s; fin de espera MQTT\n", macSensor.c_str());
       esperandoConfirmacionBroker = false;
       macEsperandoConfirmacion = "";
     }
-    Serial.printf("   ℹ️ Confirmación final recibida para %s; se limpia DEVICE_MODIFICACION local\n", macSensor.c_str());
+    Serial.printf(
+        "   ℹ️ Confirmación final recibida para %s; se mantendrá DEVICE_MODIFICACION activo hasta validar datos por LoRa\n",
+        macSensor.c_str());
     return true;
   }
 
