@@ -5041,34 +5041,41 @@ bool datosLoRaCoincidenConBroker(const String &mensaje, int indice) {
     return false;
   }
 
+  String litrosActualesStr = mensaje.substring(commas[1] + 1, commas[2]);
   String alturaConfigStr = mensaje.substring(commas[4] + 1, commas[5]);
   String litrosConfigStr = mensaje.substring(commas[5] + 1, commas[6]);
   String nombreExtraido = mensaje.substring(commas[6] + 1, commas[7]);
   nombreExtraido.trim();
 
+  float litrosRecibidos = litrosActualesStr.toFloat();
   float alturaRecibida = alturaConfigStr.toFloat();
   float capacidadRecibida = litrosConfigStr.toFloat();
   String nombreRecibido = nombreExtraido.length() > 0 ? nombreExtraido : String(configDispositivos[indice].nombre);
 
-  float alturaObjetivo = alturaObjetivoBroker[indice];
-  float capacidadObjetivo = capacidadObjetivoBroker[indice];
-  String aliasObjetivo = aliasObjetivoBroker[indice];
+  const ConfigDispositivo &configEEPROM = configDispositivos[indice];
+  float litrosObjetivo = configEEPROM.litrosActuales;
+  float alturaObjetivo = configEEPROM.alturaConfig;
+  float capacidadObjetivo = configEEPROM.litrosConfig;
+  String aliasObjetivo = String(configEEPROM.nombre);
 
+  bool coincideLitros = fabsf(litrosRecibidos - litrosObjetivo) < 0.1f;
   bool coincideAltura = fabsf(alturaRecibida - alturaObjetivo) < 0.1f;
   bool coincideCapacidad = fabsf(capacidadRecibida - capacidadObjetivo) < 0.1f;
   bool coincideNombre = aliasObjetivo.length() == 0 ? true : (nombreRecibido == aliasObjetivo);
 
   Serial.println("   🧭 Comparando datos solicitados vs recibidos (LoRa)");
-  Serial.printf("      Objetivo altura/capacidad/nombre: %.1f / %.1f / %s\n",
+  Serial.printf("      Objetivo litros/altura/capacidad/nombre (EEPROM): %.1f / %.1f / %.1f / %s\n",
+                litrosObjetivo,
                 alturaObjetivo,
                 capacidadObjetivo,
                 aliasObjetivo.c_str());
-  Serial.printf("      Recibido altura/capacidad/nombre: %.1f / %.1f / %s\n",
+  Serial.printf("      Recibido litros/altura/capacidad/nombre: %.1f / %.1f / %.1f / %s\n",
+                litrosRecibidos,
                 alturaRecibida,
                 capacidadRecibida,
                 nombreRecibido.c_str());
 
-  return coincideAltura && coincideCapacidad && coincideNombre;
+  return coincideLitros && coincideAltura && coincideCapacidad && coincideNombre;
 }
 
 struct DatosConfirmacionLoRa {
@@ -5079,7 +5086,7 @@ struct DatosConfirmacionLoRa {
 };
 
 DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config) {
-  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosConfig, false};
+  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosActuales, false};
 
   int commas[8];
   int commaCount = 0;
@@ -5092,11 +5099,11 @@ DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const Con
   }
 
   if (commaCount >= 6) {
+    String litrosActualesStr = mensaje.substring(commas[1] + 1, commas[2]);
     String alturaConfigStr = mensaje.substring(commas[4] + 1, commas[5]);
-    String litrosConfigStr = mensaje.substring(commas[5] + 1, commas[6]);
 
+    datos.litrosConfig = litrosActualesStr.toFloat();
     datos.alturaConfig = alturaConfigStr.toFloat();
-    datos.litrosConfig = litrosConfigStr.toFloat();
     datos.origenMensaje = true;
 
     if (commaCount >= 7) {
@@ -5981,13 +5988,16 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                 if (!datosAlineados) {
                     nuevoMensajeLoRa = false; // Evitar publicar datos antiguos mientras se confirma la EEPROM
                     Serial.println("   ⏳ Se descarta la telemetría hasta que NUUP01 confirme la modificación por LoRa.");
-                    String confirmacion = String(configDispositivos[i].tipoDispositivo) + "," + mac + "," +
-                                          String(configDispositivos[i].litrosActuales, 1) + "," +
-                                          String(configDispositivos[i].voltaje, 1) + "," +
-                                          String(configDispositivos[i].temperatura, 1) + "," +
-                                          String(configDispositivos[i].alturaConfig, 1) + "," +
-                                          String(configDispositivos[i].litrosConfig, 1) + "," +
-                                          String(configDispositivos[i].nombre);
+                    String confirmacion = "CONFIRMACION," + mac + "," +
+                                          String(configDispositivos[i].nombre) + "," +
+                                          String(configDispositivos[i].alturaConfig, 0) + "," +
+                                          String(configDispositivos[i].litrosActuales, 0);
+
+                    Serial.printf(
+                        "   ↪️ Confirmación pendiente: se envían alias/altura/litros de EEPROM (%s / %.1f / %.1f)\n",
+                        configDispositivos[i].nombre,
+                        configDispositivos[i].alturaConfig,
+                        configDispositivos[i].litrosActuales);
                     enviarPaqueteLoRa("confirmación EEPROM modificado_broker", mac, confirmacion);
                     return;
                 }
