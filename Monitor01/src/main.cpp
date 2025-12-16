@@ -8,7 +8,10 @@
  * Componente:  Monitor01 - Estación Central de Monitoreo
  * Hardware:    ESP32 NodeMCU-32S (Espressif ESP32)
  * Plataforma:  PlatformIO + Arduino Framework
- * 
+ *
+ * CONSECUTIVO ACTUAL:
+ * 123 - LoRa/MQTT: confirmaciones y telemetría usan datos de EEPROM cuando hay modificación pendiente del broker.
+ *
  * DESCRIPCIÓN:
  * Dispositivo central que recibe datos de múltiples sensores NUUP01 vía LoRa,
  * gestiona hasta 50 dispositivos, conecta a WiFi/MQTT, y muestra información
@@ -5100,7 +5103,7 @@ struct DatosConfirmacionLoRa {
 };
 
 DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config, bool preferirEEPROM) {
-  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosActuales, false};
+  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosConfig, false};
 
   if (preferirEEPROM) {
     return datos;
