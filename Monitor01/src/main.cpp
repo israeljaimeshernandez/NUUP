@@ -10,8 +10,8 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 124 - LoRa/MQTT: mantener DEVICE_MODIFICACION activo hasta validar por LoRa los datos aplicados; confirmaciones siguen
- *       priorizando EEPROM.
+ * 125 - LoRa/MQTT: ignorar sin_cambios del broker cuando hay modificación pendiente y seguir priorizando EEPROM hasta validar
+ *       por LoRa con los valores solicitados.
  *
  * DESCRIPCIÓN:
  * Dispositivo central que recibe datos de múltiples sensores NUUP01 vía LoRa,
@@ -96,6 +96,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 125 - 2025-07-06 LoRa/MQTT: sin_cambios no desmonta DEVICE_MODIFICACION mientras falta validar por LoRa; se conserva EEPROM.
 // 124 - 2025-07-06 LoRa/MQTT: DEVICE_MODIFICACION permanece activo tras "modificacion_ok" del broker hasta validar datos por LoRa; la confirmación sigue usando EEPROM.
 // 123 - 2025-07-05 LoRa: tras una modificación del broker se descarta la telemetría antigua y se reenvía confirmación con EEPROM hasta que NUUP01 reporte alias/altura/capacidad actualizados.
 // 122 - 2025-07-05 MQTT: telemetría se publica en NUUP/<MAC_MONITOR> en lugar de la MAC del sensor, manteniendo confirmación en NUUP/<MAC_MONITOR>/confirmacion/ y bitácora clara.
@@ -3389,6 +3390,12 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
   }
 
   if (comando == "sin_cambios") {
+    if (modificacionBrokerActiva[indice]) {
+      Serial.printf(
+          "   ℹ️ El broker envió sin_cambios pero aún falta validar por LoRa; se conserva DEVICE_MODIFICACION para %s\n",
+          macSensor.c_str());
+      return true;
+    }
     modificacionBrokerActiva[indice] = false;
     if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
       Serial.printf("   📬 Confirmación sin cambios recibida para %s; fin de espera MQTT\n", macSensor.c_str());
