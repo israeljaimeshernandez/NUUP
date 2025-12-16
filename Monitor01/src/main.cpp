@@ -569,6 +569,11 @@ void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
 void imprimirResumenLoRa(const char *motivo);
 void imprimirDetalleParametrosLoRa();
+String construirPayloadEEPROMParaMQTT(const ConfigDispositivo &config);
+
+
+struct DatosConfirmacionLoRa;
+DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config, bool preferirEEPROM = false);
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
@@ -4871,6 +4876,15 @@ String normalizarPayloadParaMQTT(const String &payload) {
   return tipo + payload.substring(primerDelimitador);
 }
 
+String construirPayloadEEPROMParaMQTT(const ConfigDispositivo &config) {
+  String payload = String(config.tipoDispositivo) + "," + String(config.mac) + "," +
+                   String(config.litrosActuales, 1) + "," + String(config.voltaje, 2) + "," +
+                   String(config.temperatura, 1) + "," + String(config.alturaConfig, 1) + "," +
+                   String(config.litrosConfig, 1) + "," + String(config.nombre);
+
+  return normalizarPayloadParaMQTT(payload);
+}
+
 void iniciarLoRaConReintentos() {
   int intentos = 0;
   bool estadoLED = false;
@@ -5085,8 +5099,12 @@ struct DatosConfirmacionLoRa {
   bool origenMensaje;
 };
 
-DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config) {
+DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config, bool preferirEEPROM) {
   DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosActuales, false};
+
+  if (preferirEEPROM) {
+    return datos;
+  }
 
   int commas[8];
   int commaCount = 0;
@@ -5406,9 +5424,19 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
 
                     // Procesar datos
                     actualizarDatosDesdeLoRa(mac, received, "");
-                    mensajeLoRa = normalizarPayloadParaMQTT(received);
+
+                    bool modificacionActiva = modificacionBrokerActiva[i];
+                    DatosConfirmacionLoRa datosConfirmacion =
+                        construirConfirmacionLoRa(received, configDispositivos[i], modificacionActiva);
+
+                    if (modificacionActiva) {
+                        mensajeLoRa = construirPayloadEEPROMParaMQTT(configDispositivos[i]);
+                        Serial.println("ℹ️  MQTT usará los datos de EEPROM mientras se confirma la modificación solicitada por el broker.");
+                    } else {
+                        mensajeLoRa = normalizarPayloadParaMQTT(received);
+                    }
+
                     nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
-                    DatosConfirmacionLoRa datosConfirmacion = construirConfirmacionLoRa(received, configDispositivos[i]);
 
                     if (!configDispositivos[i].activo) {
                         Serial.println("ℹ️  Dispositivo inactivo: se confirma por LoRa y se agenda alta si aplica");
@@ -5986,8 +6014,9 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                 }
 
                 if (!datosAlineados) {
-                    nuevoMensajeLoRa = false; // Evitar publicar datos antiguos mientras se confirma la EEPROM
-                    Serial.println("   ⏳ Se descarta la telemetría hasta que NUUP01 confirme la modificación por LoRa.");
+                    mensajeLoRa = construirPayloadEEPROMParaMQTT(configDispositivos[i]);
+                    nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
+                    Serial.println("   ⏳ Se envía telemetría MQTT con datos de EEPROM hasta que NUUP01 confirme la modificación por LoRa.");
                     String confirmacion = "CONFIRMACION," + mac + "," +
                                           String(configDispositivos[i].nombre) + "," +
                                           String(configDispositivos[i].alturaConfig, 0) + "," +
