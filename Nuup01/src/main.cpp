@@ -140,7 +140,7 @@ const uint8_t IMPACTO_MIN_TOQUES = 1;
 // 06) Cantidad máxima de toques válidos (se ignoran adicionales)
 const uint8_t IMPACTO_MAX_TOQUES = 3;
 // 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
-const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 120000; // Por defecto 2 minutos (doble de la vigilia anterior)
+const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (más tiempo para AP tras impacto)
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -249,6 +249,7 @@ bool bajaAutomaticaActivada = false;
 unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
 bool wakeByImpact = false;
+uint32_t impactoConsecutivo = 1;
 unsigned long inicioVigiliaImpacto = 0;
 
 // Variables sensor
@@ -1844,6 +1845,7 @@ void setup() {
 
     if (wakeByImpact) {
         inicioVigiliaImpacto = millis();
+        impactoConsecutivo = 1;
         if (!confirmarGolpesImpacto()) {
             Serial.println("⚠️  Golpes insuficientes o fuera de rango (1-3). Volviendo a dormir...");
             wakeByImpact = false;
@@ -2163,21 +2165,22 @@ void loop() {
             dispositivo.potenciaLoRaDbm = potenciaConfirmada;
             LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
             guardarDatosEnEEPROM();
-            configuracionPotenciaFinalizada = true;
             Serial.printf("✅ Potencia confirmada tras impacto: %u dBm\n", potenciaConfirmada);
         } else {
             Serial.println("⚠️  Sin confirmación de potencia tras impacto (se mantiene potencia por defecto)");
         }
 
+        configuracionPotenciaFinalizada = true;
         recalibrarPotenciaLoRa = false;
-        wakeByImpact = false;
         tiempoSinEnvioConfirmado = 0;
         marcaAcumuladorSinEnvio = millis();
         ultimoEnvioDatos = millis();
         ultimoSleepProgramadoMs = intervaloEnvioActual;
 
-        Serial.println("😴 Programando deep sleep tras ciclo de impacto sin telemetría...");
-        entrarDeepSleep();
+        inicioVigiliaImpacto = millis();
+        Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
+        delay(50);
+        return;
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
@@ -2258,6 +2261,7 @@ void loop() {
             inicioVigiliaImpacto = millis();
         }
 
+        static bool avisoEsperandoGolpe = false;
         bool sesionAPActiva = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
         bool enlaceBLEActivo = deviceConnected || enProcesoRegistro || bajaAutomaticaActivada;
 
@@ -2267,19 +2271,27 @@ void loop() {
                 Serial.println("⏳ Modo impacto activo - manteniendo portal AP en primer plano");
                 avisoMantenerseDespierto = true;
             }
+            avisoEsperandoGolpe = false;
             delay(50);
             return;
         }
 
         if (millis() - inicioVigiliaImpacto < IMPACTO_TIEMPO_VIGILIA_MS) {
+            avisoEsperandoGolpe = false;
             delay(50);
             return;
         }
 
-        Serial.println("🔁 Vigilia por impacto finalizada - esperando nuevo golpe para continuar");
+        if (!avisoEsperandoGolpe) {
+            Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
+            avisoEsperandoGolpe = true;
+        }
         if (confirmarGolpesImpacto()) {
-            Serial.println("✅ Nuevo golpe detectado - reiniciando vigilia por impacto");
+            impactoConsecutivo++;
+            Serial.printf("✅ Nuevo golpe detectado - reiniciando vigilia por impacto (ciclo %lu)\n",
+                          impactoConsecutivo);
             inicioVigiliaImpacto = millis();
+            avisoEsperandoGolpe = false;
         } else {
             delay(200);
         }
