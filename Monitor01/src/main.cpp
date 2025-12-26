@@ -10,6 +10,8 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 127 - MQTT: el monitor atiende solicitudes de modificación iniciadas por el servidor (device_modificacion=1) aun sin
+ *       mensaje LoRa previo, aplica EEPROM y mantiene la espera de confirmación hasta que NUUP01 reporte los valores nuevos.
  * 126 - LoRa: las confirmaciones por modificación pendiente envían altura/capacidad desde EEPROM y el parseo de payload usa
  *       la capacidad real en lugar de los litros actuales.
  * 125 - LoRa/MQTT: ignorar sin_cambios del broker cuando hay modificación pendiente y seguir priorizando EEPROM hasta validar
@@ -98,6 +100,8 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 127 - 2025-07-06 MQTT: solicitudes de modificación iniciadas por servidor se aplican en EEPROM aunque no exista LoRa previo,
+//       manteniendo DEVICE_MODIFICACION activa hasta confirmar desde NUUP01.
 // 126 - 2025-07-06 LoRa: confirmación en modificación pendiente incluye altura/capacidad de EEPROM y el parser usa capacidad real.
 // 125 - 2025-07-06 LoRa/MQTT: sin_cambios no desmonta DEVICE_MODIFICACION mientras falta validar por LoRa; se conserva EEPROM.
 // 124 - 2025-07-06 LoRa/MQTT: DEVICE_MODIFICACION permanece activo tras "modificacion_ok" del broker hasta validar datos por LoRa; la confirmación sigue usando EEPROM.
@@ -3377,6 +3381,15 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
       Serial.printf("   📬 Confirmación del broker recibida para %s; fin de espera MQTT\n", macSensor.c_str());
       esperandoConfirmacionBroker = false;
       macEsperandoConfirmacion = "";
+    } else if (!esperandoConfirmacionBroker) {
+      Serial.printf(
+          "   📬 Solicitud de modificación iniciada por servidor para %s (device_modificacion=1, sin telemetría previa)\n",
+          macSensor.c_str());
+    } else if (macEsperandoConfirmacion != macSensor) {
+      Serial.printf(
+          "   📬 Solicitud de modificación recibida para %s mientras se esperaba confirmación de %s\n",
+          macSensor.c_str(),
+          macEsperandoConfirmacion.c_str());
     }
 
     Serial.println("   📌 Acción del monitor: aplicar alias/altura/capacidad/litros en EEPROM y marcar modificación en curso");
