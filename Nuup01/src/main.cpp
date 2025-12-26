@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 114 - 2025-12-31 Impacto: prioridad continua al sensor tras deep sleep; suspende LoRa y atiende golpes con consecutivo en español.
 // 113 - 2025-12-31 Impacto: ciclo continuo de detección (AP/BLE/potencia) sin deep sleep; se renueva solo con nuevo golpe.
 // 112 - 2025-12-30 Impacto: ciclo de AP completo con espera y reingreso solo por nuevo golpe; se suspende BLE y se duerme al terminar.
 // 111 - 2025-12-29 Impacto: sensibilidad aumentada y vigilia en modo AP duplicada; BLE se pausa mientras el portal esté activo.
@@ -250,6 +251,7 @@ unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
 bool wakeByImpact = false;
 uint32_t impactoConsecutivo = 1;
+bool impactoInterrumpioLoRa = false;
 unsigned long inicioVigiliaImpacto = 0;
 
 // Variables sensor
@@ -629,6 +631,33 @@ bool confirmarGolpesImpacto() {
                       ? "✅ dentro del rango"
                       : "❌ insuficientes/excesivos");
     return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
+}
+
+bool atenderImpactoPrioritario(const char *contexto) {
+    if (wakeByImpact) {
+        return false;
+    }
+
+    bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
+    if (!golpeDigital) {
+        return false;
+    }
+
+    Serial.printf("⚡ Impacto detectado durante %s - priorizando sensor\n", contexto);
+
+    if (!confirmarGolpesImpacto()) {
+        Serial.println("⚠️  Impacto sin toques válidos - se mantiene el flujo actual");
+        return false;
+    }
+
+    wakeByImpact = true;
+    configuracionPotenciaFinalizada = false;
+    inicioVigiliaImpacto = millis();
+    impactoConsecutivo++;
+    impactoInterrumpioLoRa = true;
+    LoRa.receive();
+    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - LoRa suspendido\n", impactoConsecutivo);
+    return true;
 }
 
 void mostrarPaginaConfig() {
@@ -2002,6 +2031,10 @@ void loop() {
     // ⭐ ALIMENTAR WATCHDOG
     esp_task_wdt_reset();
 
+    if (atenderImpactoPrioritario("loop principal")) {
+        return;
+    }
+
     bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo;
     bool sesionPortalImpacto = wakeByImpact && (modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0);
     bool blePermitido = comunicacionesHabilitadas && !sesionPortalImpacto;
@@ -2207,8 +2240,13 @@ void loop() {
             ultimoEnvioDatos = millis();
 
             if (!confirmado && envioLoRaEjecutado) {
-                Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
-                ESP.restart();
+                if (impactoInterrumpioLoRa) {
+                    Serial.println("⚡ Envío interrumpido por impacto - se prioriza vigilia y no se reinicia");
+                    impactoInterrumpioLoRa = false;
+                } else {
+                    Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
+                    ESP.restart();
+                }
             }
 
             unsigned long tiempoSinEnvioDespues = (confirmado && envioLoRaEjecutado) ? 0 : tiempoSinEnvioActual;
@@ -2493,6 +2531,10 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
     while (millis() - inicioEspera < ventana) {
         esp_task_wdt_reset();
 
+        if (atenderImpactoPrioritario("confirmación de configuración")) {
+            return false;
+        }
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2658,6 +2700,10 @@ bool esperarConfirmacionLoRa(int intentoActual) {
     while (millis() - inicioEspera < ventana) {
         esp_task_wdt_reset();
 
+        if (atenderImpactoPrioritario("confirmación LoRa")) {
+            return false;
+        }
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2712,6 +2758,10 @@ bool esperarConfirmacionLoRa(int intentoActual) {
 }
 
 bool enviarDatos(int distancia) {
+    if (atenderImpactoPrioritario("envío LoRa")) {
+        return false;
+    }
+
     int litrosActuales = 0;
     
     if (distancia != 9999) {
