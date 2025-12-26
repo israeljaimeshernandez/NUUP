@@ -10,12 +10,11 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 128 - LoRa: al recibir datos mientras hay modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
  * 127 - MQTT: el monitor atiende solicitudes de modificación iniciadas por el servidor (device_modificacion=1) aun sin
  *       mensaje LoRa previo, aplica EEPROM y mantiene la espera de confirmación hasta que NUUP01 reporte los valores nuevos.
  * 126 - LoRa: las confirmaciones por modificación pendiente envían altura/capacidad desde EEPROM y el parseo de payload usa
  *       la capacidad real en lugar de los litros actuales.
- * 125 - LoRa/MQTT: ignorar sin_cambios del broker cuando hay modificación pendiente y seguir priorizando EEPROM hasta validar
- *       por LoRa con los valores solicitados.
  *
  * DESCRIPCIÓN:
  * Dispositivo central que recibe datos de múltiples sensores NUUP01 vía LoRa,
@@ -100,6 +99,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 128 - 2025-07-07 LoRa: al recibir datos con modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
 // 127 - 2025-07-06 MQTT: solicitudes de modificación iniciadas por servidor se aplican en EEPROM aunque no exista LoRa previo,
 //       manteniendo DEVICE_MODIFICACION activa hasta confirmar desde NUUP01.
 // 126 - 2025-07-06 LoRa: confirmación en modificación pendiente incluye altura/capacidad de EEPROM y el parser usa capacidad real.
@@ -337,7 +337,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 123;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 128;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -6044,6 +6044,8 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                 }
 
                 if (!datosAlineados) {
+                    ultimaActualizacionLoRa[i] = millis();
+                    mostrarSinDatos[i] = false;
                     mensajeLoRa = construirPayloadEEPROMParaMQTT(configDispositivos[i]);
                     nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
                     Serial.println("   ⏳ Se envía telemetría MQTT con datos de EEPROM hasta que NUUP01 confirme la modificación por LoRa.");
