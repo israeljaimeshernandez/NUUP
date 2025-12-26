@@ -31,6 +31,9 @@
  *
  ******************************************************************************/
 
+// 116 - 2025-12-31 Impacto: detección continua con muestreo rápido y prioridad total; reinicio inmediato al detectar golpe.
+// 115 - 2025-12-31 Impacto: reinicio inmediato al detectar golpe en operación; arranque marca ciclo y prioridad de impacto.
+// 114 - 2025-12-31 Impacto: prioridad continua al sensor tras deep sleep; suspende LoRa y atiende golpes con consecutivo en español.
 // 113 - 2025-12-31 Impacto: ciclo continuo de detección (AP/BLE/potencia) sin deep sleep; se renueva solo con nuevo golpe.
 // 112 - 2025-12-30 Impacto: ciclo de AP completo con espera y reingreso solo por nuevo golpe; se suspende BLE y se duerme al terminar.
 // 111 - 2025-12-29 Impacto: sensibilidad aumentada y vigilia en modo AP duplicada; BLE se pausa mientras el portal esté activo.
@@ -140,7 +143,7 @@ const uint8_t IMPACTO_MIN_TOQUES = 1;
 // 06) Cantidad máxima de toques válidos (se ignoran adicionales)
 const uint8_t IMPACTO_MAX_TOQUES = 3;
 // 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
-const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 120000; // Por defecto 2 minutos (doble de la vigilia anterior)
+const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (más tiempo para AP tras impacto)
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -249,6 +252,8 @@ bool bajaAutomaticaActivada = false;
 unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
 bool wakeByImpact = false;
+RTC_DATA_ATTR uint32_t impactoConsecutivo = 1;
+bool impactoInterrumpioLoRa = false;
 unsigned long inicioVigiliaImpacto = 0;
 
 // Variables sensor
@@ -276,6 +281,8 @@ RTC_DATA_ATTR uint32_t ultimaAlturaEnviada = 0;              // Última altura e
 RTC_DATA_ATTR uint32_t ultimaCapacidadEnviada = 0;           // Última capacidad (L) enviada al monitor
 RTC_DATA_ATTR char ultimoNombreEnviado[21] = "";            // Último nombre enviado al monitor
 RTC_DATA_ATTR bool cambiosConfiguracionPendientes = false;   // Obliga a enviar si hubo cambios de configuración
+RTC_DATA_ATTR bool impactoReinicioPendiente;                 // Marca reinicio por impacto fuera de deep sleep
+RTC_DATA_ATTR uint32_t impactoReinicioMagic;                 // Validación de reinicio por impacto
 #define INTERVALO_MIN_ACTIVO_ULTRA_MS 250                     // Permanencia mínima despierto para medición
 #define TIEMPO_ESPERA_DESPUES_BAJA 15000
 
@@ -628,6 +635,54 @@ bool confirmarGolpesImpacto() {
                       ? "✅ dentro del rango"
                       : "❌ insuficientes/excesivos");
     return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
+}
+
+bool detectarImpactoRapido(uint16_t ventanaMs) {
+    unsigned long inicio = millis();
+    uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
+
+    while (millis() - inicio < ventanaMs) {
+        bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
+        uint16_t lectura = analogRead(SENSOR_IMPACTO_PIN);
+        bool golpeAnalogico = baseReposo > lectura &&
+                              (baseReposo - lectura) >= IMPACTO_UMBRAL_ANALOGICO;
+        if (golpeDigital || golpeAnalogico) {
+            return true;
+        }
+        delay(2);
+    }
+    return false;
+}
+
+bool atenderImpactoPrioritario(const char *contexto) {
+    if (wakeByImpact) {
+        return false;
+    }
+
+    if (!detectarImpactoRapido(40)) {
+        return false;
+    }
+
+    Serial.printf("⚡ Impacto detectado durante %s - priorizando sensor\n", contexto);
+
+    if (!confirmarGolpesImpacto()) {
+        Serial.println("⚠️  Impacto sin toques válidos - se mantiene el flujo actual");
+        return false;
+    }
+
+    wakeByImpact = true;
+    configuracionPotenciaFinalizada = false;
+    inicioVigiliaImpacto = millis();
+    impactoConsecutivo++;
+    impactoInterrumpioLoRa = true;
+    impactoReinicioPendiente = true;
+    impactoReinicioMagic = 0xA5A5C3C3;
+    LoRa.receive();
+    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - reiniciando para iniciar ciclo\n",
+                  impactoConsecutivo);
+    delay(50);
+    ESP.restart();
+    return true;
 }
 
 void mostrarPaginaConfig() {
@@ -1777,9 +1832,11 @@ void setup() {
 
     // ⭐ VERIFICAR CAUSA DE WAKEUP
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    esp_reset_reason_t reset_reason = esp_reset_reason();
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
+    Serial.printf("🆔 Ciclo de impacto: %lu - Inicio del sistema\n", impactoConsecutivo);
 
     // Acumular el tiempo dormido previo para el conteo forzoso
     tiempoSinEnvioConfirmado += ultimoSleepProgramadoMs;
@@ -1799,6 +1856,19 @@ void setup() {
         default:
             Serial.println("🔌 Wakeup por RESET/ALIMENTACIÓN");
             break;
+    }
+
+    if (reset_reason == ESP_RST_POWERON || reset_reason == ESP_RST_BROWNOUT || reset_reason == ESP_RST_EXT) {
+        impactoReinicioPendiente = false;
+        impactoReinicioMagic = 0;
+        impactoConsecutivo = 1;
+    }
+
+    if (reset_reason == ESP_RST_SW && impactoReinicioPendiente && impactoReinicioMagic == 0xA5A5C3C3) {
+        Serial.println("⚡ Reinicio por impacto detectado - priorizando ciclo de impacto");
+        wakeByImpact = true;
+        impactoReinicioPendiente = false;
+        impactoReinicioMagic = 0;
     }
 
     if (wakeByImpact) {
@@ -1999,6 +2069,10 @@ void loop() {
     // ⭐ ALIMENTAR WATCHDOG
     esp_task_wdt_reset();
 
+    if (atenderImpactoPrioritario("loop principal")) {
+        return;
+    }
+
     bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo;
     bool sesionPortalImpacto = wakeByImpact && (modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0);
     bool blePermitido = comunicacionesHabilitadas && !sesionPortalImpacto;
@@ -2105,6 +2179,9 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 6: PROCESAR COMUNICACIÓN BLE ACTIVA
     if (blePermitido && (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected)) {
+        if (atenderImpactoPrioritario("BLE activo")) {
+            return;
+        }
         static unsigned long ultimoUpdate = 0;
         if (millis() - ultimoUpdate > 2000) {
             ultimoUpdate = millis();
@@ -2163,21 +2240,22 @@ void loop() {
             dispositivo.potenciaLoRaDbm = potenciaConfirmada;
             LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
             guardarDatosEnEEPROM();
-            configuracionPotenciaFinalizada = true;
             Serial.printf("✅ Potencia confirmada tras impacto: %u dBm\n", potenciaConfirmada);
         } else {
             Serial.println("⚠️  Sin confirmación de potencia tras impacto (se mantiene potencia por defecto)");
         }
 
+        configuracionPotenciaFinalizada = true;
         recalibrarPotenciaLoRa = false;
-        wakeByImpact = false;
         tiempoSinEnvioConfirmado = 0;
         marcaAcumuladorSinEnvio = millis();
         ultimoEnvioDatos = millis();
         ultimoSleepProgramadoMs = intervaloEnvioActual;
 
-        Serial.println("😴 Programando deep sleep tras ciclo de impacto sin telemetría...");
-        entrarDeepSleep();
+        inicioVigiliaImpacto = millis();
+        Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
+        delay(50);
+        return;
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
@@ -2203,8 +2281,13 @@ void loop() {
             ultimoEnvioDatos = millis();
 
             if (!confirmado && envioLoRaEjecutado) {
-                Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
-                ESP.restart();
+                if (impactoInterrumpioLoRa) {
+                    Serial.println("⚡ Envío interrumpido por impacto - se prioriza vigilia y no se reinicia");
+                    impactoInterrumpioLoRa = false;
+                } else {
+                    Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
+                    ESP.restart();
+                }
             }
 
             unsigned long tiempoSinEnvioDespues = (confirmado && envioLoRaEjecutado) ? 0 : tiempoSinEnvioActual;
@@ -2252,12 +2335,16 @@ void loop() {
             ultimoEstado = millis();
             Serial.println("🔍 MODO BÚSQUEDA ACTIVA - Sin Deep Sleep");
         }
+        if (atenderImpactoPrioritario("modo sin alta")) {
+            return;
+        }
         delay(500); // Delay cooperativo normal
     } else if (wakeByImpact) {
         if (inicioVigiliaImpacto == 0) {
             inicioVigiliaImpacto = millis();
         }
 
+        static bool avisoEsperandoGolpe = false;
         bool sesionAPActiva = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
         bool enlaceBLEActivo = deviceConnected || enProcesoRegistro || bajaAutomaticaActivada;
 
@@ -2267,19 +2354,30 @@ void loop() {
                 Serial.println("⏳ Modo impacto activo - manteniendo portal AP en primer plano");
                 avisoMantenerseDespierto = true;
             }
+            avisoEsperandoGolpe = false;
             delay(50);
             return;
         }
 
         if (millis() - inicioVigiliaImpacto < IMPACTO_TIEMPO_VIGILIA_MS) {
+            if (atenderImpactoPrioritario("vigilia impacto")) {
+                return;
+            }
+            avisoEsperandoGolpe = false;
             delay(50);
             return;
         }
 
-        Serial.println("🔁 Vigilia por impacto finalizada - esperando nuevo golpe para continuar");
+        if (!avisoEsperandoGolpe) {
+            Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
+            avisoEsperandoGolpe = true;
+        }
         if (confirmarGolpesImpacto()) {
-            Serial.println("✅ Nuevo golpe detectado - reiniciando vigilia por impacto");
+            impactoConsecutivo++;
+            Serial.printf("✅ Nuevo golpe detectado - reiniciando vigilia por impacto (ciclo %lu)\n",
+                          impactoConsecutivo);
             inicioVigiliaImpacto = millis();
+            avisoEsperandoGolpe = false;
         } else {
             delay(200);
         }
@@ -2480,6 +2578,10 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
     while (millis() - inicioEspera < ventana) {
         esp_task_wdt_reset();
 
+        if (atenderImpactoPrioritario("confirmación de configuración")) {
+            return false;
+        }
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2645,6 +2747,10 @@ bool esperarConfirmacionLoRa(int intentoActual) {
     while (millis() - inicioEspera < ventana) {
         esp_task_wdt_reset();
 
+        if (atenderImpactoPrioritario("confirmación LoRa")) {
+            return false;
+        }
+
         int packetSize = LoRa.parsePacket();
         if (packetSize) {
             String respuesta = "";
@@ -2699,6 +2805,10 @@ bool esperarConfirmacionLoRa(int intentoActual) {
 }
 
 bool enviarDatos(int distancia) {
+    if (atenderImpactoPrioritario("envío LoRa")) {
+        return false;
+    }
+
     int litrosActuales = 0;
     
     if (distancia != 9999) {
@@ -2806,6 +2916,10 @@ bool enviarDatos(int distancia) {
                       recalibrarPotenciaLoRa ? "dinámico" : "fijo");
 
         for (int intento = 1; intento <= REINTENTOS_CONFIRMACION; intento++) {
+            if (atenderImpactoPrioritario("reintento LoRa")) {
+                return false;
+            }
+
             unsigned long ventana = calcularVentanaConfirmacionMs(intento);
             Serial.printf("📤 INICIANDO TRANSMISIÓN LoRa (nivel %u dBm, intento %d/%d, espera %lu ms)...\n",
                           potenciaLoRaActualDbm, intento, REINTENTOS_CONFIRMACION, ventana);
@@ -2830,7 +2944,15 @@ bool enviarDatos(int distancia) {
                 }
             }
             esp_task_wdt_reset();
-            delay(250 + intento * 150);
+            unsigned long espera = 250 + intento * 150;
+            unsigned long inicioEspera = millis();
+            while (millis() - inicioEspera < espera) {
+                esp_task_wdt_reset();
+                if (atenderImpactoPrioritario("pausa entre reintentos LoRa")) {
+                    return false;
+                }
+                delay(10);
+            }
         }
 
         if (confirmado || !recalibrarPotenciaLoRa) {
