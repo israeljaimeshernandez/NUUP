@@ -6303,7 +6303,7 @@ void setup() {
   Serial.begin(115200);
     delay(1000);
 
-  Serial.printf("🆕 Consecutivo #%u: LoRa con bitácora de cambio activa (integrado en resumen de arranque)\n",
+  Serial.printf("🆕 Inicio Monitor01 - Consecutivo de cambios #%u: bitácora LoRa activa\n",
                 CONSECUTIVO_CAMBIO_ACTUAL);
 
   // Inicializar OLED lo antes posible para evitar llamadas sobre puntero nulo
