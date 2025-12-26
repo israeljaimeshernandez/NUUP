@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 113 - 2025-12-31 Impacto: ciclo continuo de detección (AP/BLE/potencia) sin deep sleep; se renueva solo con nuevo golpe.
 // 112 - 2025-12-30 Impacto: ciclo de AP completo con espera y reingreso solo por nuevo golpe; se suspende BLE y se duerme al terminar.
 // 111 - 2025-12-29 Impacto: sensibilidad aumentada y vigilia en modo AP duplicada; BLE se pausa mientras el portal esté activo.
 // 110 - 2025-12-28 Impacto: sólo envía ajuste de potencia (sin telemetría) y duerme tras el intercambio.
@@ -2275,10 +2276,14 @@ void loop() {
             return;
         }
 
-        Serial.println("😴 Vigilia por impacto finalizada - entrando en deep sleep hasta nuevo golpe");
-        wakeByImpact = false;
-        prepararParaDeepSleep();
-        esp_deep_sleep_start();
+        Serial.println("🔁 Vigilia por impacto finalizada - esperando nuevo golpe para continuar");
+        if (confirmarGolpesImpacto()) {
+            Serial.println("✅ Nuevo golpe detectado - reiniciando vigilia por impacto");
+            inicioVigiliaImpacto = millis();
+        } else {
+            delay(200);
+        }
+        return;
     }
     
     // ⭐ DELAY OPTIMIZADO PARA COOPERATIVIDAD
