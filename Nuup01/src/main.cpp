@@ -2881,6 +2881,10 @@ bool enviarDatos(int distancia) {
                       recalibrarPotenciaLoRa ? "dinámico" : "fijo");
 
         for (int intento = 1; intento <= REINTENTOS_CONFIRMACION; intento++) {
+            if (atenderImpactoPrioritario("reintento LoRa")) {
+                return false;
+            }
+
             unsigned long ventana = calcularVentanaConfirmacionMs(intento);
             Serial.printf("📤 INICIANDO TRANSMISIÓN LoRa (nivel %u dBm, intento %d/%d, espera %lu ms)...\n",
                           potenciaLoRaActualDbm, intento, REINTENTOS_CONFIRMACION, ventana);
@@ -2905,7 +2909,15 @@ bool enviarDatos(int distancia) {
                 }
             }
             esp_task_wdt_reset();
-            delay(250 + intento * 150);
+            unsigned long espera = 250 + intento * 150;
+            unsigned long inicioEspera = millis();
+            while (millis() - inicioEspera < espera) {
+                esp_task_wdt_reset();
+                if (atenderImpactoPrioritario("pausa entre reintentos LoRa")) {
+                    return false;
+                }
+                delay(10);
+            }
         }
 
         if (confirmado || !recalibrarPotenciaLoRa) {
