@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 112 - 2025-12-30 Impacto: ciclo de AP completo con espera y reingreso solo por nuevo golpe; se suspende BLE y se duerme al terminar.
 // 111 - 2025-12-29 Impacto: sensibilidad aumentada y vigilia en modo AP duplicada; BLE se pausa mientras el portal esté activo.
 // 110 - 2025-12-28 Impacto: sólo envía ajuste de potencia (sin telemetría) y duerme tras el intercambio.
 // 109 - 2025-12-27 LoRa: se vuelve a aceptar la confirmación antigua CONFIRMACION,<MAC>,... sin marcar error para
@@ -2259,10 +2260,10 @@ void loop() {
         bool sesionAPActiva = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
         bool enlaceBLEActivo = deviceConnected || enProcesoRegistro || bajaAutomaticaActivada;
 
-        if (sesionAPActiva || enlaceBLEActivo) {
+        if (sesionAPActiva) {
             static bool avisoMantenerseDespierto = false;
             if (!avisoMantenerseDespierto) {
-                Serial.println("⏳ Modo impacto activo - manteniendo AP/BLE despiertos");
+                Serial.println("⏳ Modo impacto activo - manteniendo portal AP en primer plano");
                 avisoMantenerseDespierto = true;
             }
             delay(50);
@@ -2274,10 +2275,10 @@ void loop() {
             return;
         }
 
-        Serial.println("🔁 Vigilia por impacto finalizada - Reiniciando dispositivo");
+        Serial.println("😴 Vigilia por impacto finalizada - entrando en deep sleep hasta nuevo golpe");
         wakeByImpact = false;
-        delay(250);
-        ESP.restart();
+        prepararParaDeepSleep();
+        esp_deep_sleep_start();
     }
     
     // ⭐ DELAY OPTIMIZADO PARA COOPERATIVIDAD
