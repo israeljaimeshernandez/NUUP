@@ -8,7 +8,15 @@
  * Componente:  Monitor01 - Estación Central de Monitoreo
  * Hardware:    ESP32 NodeMCU-32S (Espressif ESP32)
  * Plataforma:  PlatformIO + Arduino Framework
- * 
+ *
+ * CONSECUTIVO ACTUAL:
+ * 127 - MQTT: el monitor atiende solicitudes de modificación iniciadas por el servidor (device_modificacion=1) aun sin
+ *       mensaje LoRa previo, aplica EEPROM y mantiene la espera de confirmación hasta que NUUP01 reporte los valores nuevos.
+ * 126 - LoRa: las confirmaciones por modificación pendiente envían altura/capacidad desde EEPROM y el parseo de payload usa
+ *       la capacidad real en lugar de los litros actuales.
+ * 125 - LoRa/MQTT: ignorar sin_cambios del broker cuando hay modificación pendiente y seguir priorizando EEPROM hasta validar
+ *       por LoRa con los valores solicitados.
+ *
  * DESCRIPCIÓN:
  * Dispositivo central que recibe datos de múltiples sensores NUUP01 vía LoRa,
  * gestiona hasta 50 dispositivos, conecta a WiFi/MQTT, y muestra información
@@ -92,6 +100,11 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 127 - 2025-07-06 MQTT: solicitudes de modificación iniciadas por servidor se aplican en EEPROM aunque no exista LoRa previo,
+//       manteniendo DEVICE_MODIFICACION activa hasta confirmar desde NUUP01.
+// 126 - 2025-07-06 LoRa: confirmación en modificación pendiente incluye altura/capacidad de EEPROM y el parser usa capacidad real.
+// 125 - 2025-07-06 LoRa/MQTT: sin_cambios no desmonta DEVICE_MODIFICACION mientras falta validar por LoRa; se conserva EEPROM.
+// 124 - 2025-07-06 LoRa/MQTT: DEVICE_MODIFICACION permanece activo tras "modificacion_ok" del broker hasta validar datos por LoRa; la confirmación sigue usando EEPROM.
 // 123 - 2025-07-05 LoRa: tras una modificación del broker se descarta la telemetría antigua y se reenvía confirmación con EEPROM hasta que NUUP01 reporte alias/altura/capacidad actualizados.
 // 122 - 2025-07-05 MQTT: telemetría se publica en NUUP/<MAC_MONITOR> en lugar de la MAC del sensor, manteniendo confirmación en NUUP/<MAC_MONITOR>/confirmacion/ y bitácora clara.
 // 121 - 2025-07-04 MQTT: trazas explican qué respuesta espera el monitor (modificar/sin_cambios/modificacion_ok) y en qué tópico debe llegar cuando DEVICE_MODIFICACION está activo; la espera se libera tras timeout sin bloquear la siguiente telemetría.
@@ -569,6 +582,11 @@ void recepcion_lora();
 void procesarPaqueteLoRaRecibido(int packetSize);
 void imprimirResumenLoRa(const char *motivo);
 void imprimirDetalleParametrosLoRa();
+String construirPayloadEEPROMParaMQTT(const ConfigDispositivo &config);
+
+
+struct DatosConfirmacionLoRa;
+DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config, bool preferirEEPROM = false);
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
@@ -3363,6 +3381,15 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
       Serial.printf("   📬 Confirmación del broker recibida para %s; fin de espera MQTT\n", macSensor.c_str());
       esperandoConfirmacionBroker = false;
       macEsperandoConfirmacion = "";
+    } else if (!esperandoConfirmacionBroker) {
+      Serial.printf(
+          "   📬 Solicitud de modificación iniciada por servidor para %s (device_modificacion=1, sin telemetría previa)\n",
+          macSensor.c_str());
+    } else if (macEsperandoConfirmacion != macSensor) {
+      Serial.printf(
+          "   📬 Solicitud de modificación recibida para %s mientras se esperaba confirmación de %s\n",
+          macSensor.c_str(),
+          macEsperandoConfirmacion.c_str());
     }
 
     Serial.println("   📌 Acción del monitor: aplicar alias/altura/capacidad/litros en EEPROM y marcar modificación en curso");
@@ -3379,6 +3406,12 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
   }
 
   if (comando == "sin_cambios") {
+    if (modificacionBrokerActiva[indice]) {
+      Serial.printf(
+          "   ℹ️ El broker envió sin_cambios pero aún falta validar por LoRa; se conserva DEVICE_MODIFICACION para %s\n",
+          macSensor.c_str());
+      return true;
+    }
     modificacionBrokerActiva[indice] = false;
     if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
       Serial.printf("   📬 Confirmación sin cambios recibida para %s; fin de espera MQTT\n", macSensor.c_str());
@@ -3390,13 +3423,15 @@ bool procesarConfirmacionBroker(const String &topic, const String &mensaje) {
   }
 
   if (comando == "modificacion_aplicada" || comando == "modificacion_ok") {
-    modificacionBrokerActiva[indice] = false;
+    modificacionBrokerActiva[indice] = true;
     if (esperandoConfirmacionBroker && macEsperandoConfirmacion == macSensor) {
       Serial.printf("   📬 Confirmación final recibida para %s; fin de espera MQTT\n", macSensor.c_str());
       esperandoConfirmacionBroker = false;
       macEsperandoConfirmacion = "";
     }
-    Serial.printf("   ℹ️ Confirmación final recibida para %s; se limpia DEVICE_MODIFICACION local\n", macSensor.c_str());
+    Serial.printf(
+        "   ℹ️ Confirmación final recibida para %s; se mantendrá DEVICE_MODIFICACION activo hasta validar datos por LoRa\n",
+        macSensor.c_str());
     return true;
   }
 
@@ -4871,6 +4906,15 @@ String normalizarPayloadParaMQTT(const String &payload) {
   return tipo + payload.substring(primerDelimitador);
 }
 
+String construirPayloadEEPROMParaMQTT(const ConfigDispositivo &config) {
+  String payload = String(config.tipoDispositivo) + "," + String(config.mac) + "," +
+                   String(config.litrosActuales, 1) + "," + String(config.voltaje, 2) + "," +
+                   String(config.temperatura, 1) + "," + String(config.alturaConfig, 1) + "," +
+                   String(config.litrosConfig, 1) + "," + String(config.nombre);
+
+  return normalizarPayloadParaMQTT(payload);
+}
+
 void iniciarLoRaConReintentos() {
   int intentos = 0;
   bool estadoLED = false;
@@ -5085,8 +5129,12 @@ struct DatosConfirmacionLoRa {
   bool origenMensaje;
 };
 
-DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config) {
-  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosActuales, false};
+DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const ConfigDispositivo &config, bool preferirEEPROM) {
+  DatosConfirmacionLoRa datos{String(config.nombre), config.alturaConfig, config.litrosConfig, false};
+
+  if (preferirEEPROM) {
+    return datos;
+  }
 
   int commas[8];
   int commaCount = 0;
@@ -5099,10 +5147,10 @@ DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const Con
   }
 
   if (commaCount >= 6) {
-    String litrosActualesStr = mensaje.substring(commas[1] + 1, commas[2]);
+    String litrosConfigStr = mensaje.substring(commas[5] + 1, commas[6]);
     String alturaConfigStr = mensaje.substring(commas[4] + 1, commas[5]);
 
-    datos.litrosConfig = litrosActualesStr.toFloat();
+    datos.litrosConfig = litrosConfigStr.toFloat();
     datos.alturaConfig = alturaConfigStr.toFloat();
     datos.origenMensaje = true;
 
@@ -5406,9 +5454,19 @@ void procesarPaqueteLoRaRecibido(int packetSize) {
 
                     // Procesar datos
                     actualizarDatosDesdeLoRa(mac, received, "");
-                    mensajeLoRa = normalizarPayloadParaMQTT(received);
+
+                    bool modificacionActiva = modificacionBrokerActiva[i];
+                    DatosConfirmacionLoRa datosConfirmacion =
+                        construirConfirmacionLoRa(received, configDispositivos[i], modificacionActiva);
+
+                    if (modificacionActiva) {
+                        mensajeLoRa = construirPayloadEEPROMParaMQTT(configDispositivos[i]);
+                        Serial.println("ℹ️  MQTT usará los datos de EEPROM mientras se confirma la modificación solicitada por el broker.");
+                    } else {
+                        mensajeLoRa = normalizarPayloadParaMQTT(received);
+                    }
+
                     nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
-                    DatosConfirmacionLoRa datosConfirmacion = construirConfirmacionLoRa(received, configDispositivos[i]);
 
                     if (!configDispositivos[i].activo) {
                         Serial.println("ℹ️  Dispositivo inactivo: se confirma por LoRa y se agenda alta si aplica");
@@ -5986,12 +6044,13 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                 }
 
                 if (!datosAlineados) {
-                    nuevoMensajeLoRa = false; // Evitar publicar datos antiguos mientras se confirma la EEPROM
-                    Serial.println("   ⏳ Se descarta la telemetría hasta que NUUP01 confirme la modificación por LoRa.");
+                    mensajeLoRa = construirPayloadEEPROMParaMQTT(configDispositivos[i]);
+                    nuevoMensajeLoRa = configDispositivos[i].activo && mqttConfirmed;
+                    Serial.println("   ⏳ Se envía telemetría MQTT con datos de EEPROM hasta que NUUP01 confirme la modificación por LoRa.");
                     String confirmacion = "CONFIRMACION," + mac + "," +
                                           String(configDispositivos[i].nombre) + "," +
                                           String(configDispositivos[i].alturaConfig, 0) + "," +
-                                          String(configDispositivos[i].litrosActuales, 0);
+                                          String(configDispositivos[i].litrosConfig, 0);
 
                     Serial.printf(
                         "   ↪️ Confirmación pendiente: se envían alias/altura/litros de EEPROM (%s / %.1f / %.1f)\n",
