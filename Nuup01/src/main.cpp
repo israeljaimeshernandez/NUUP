@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 111 - 2025-12-29 Impacto: sensibilidad aumentada y vigilia en modo AP duplicada; BLE se pausa mientras el portal esté activo.
 // 110 - 2025-12-28 Impacto: sólo envía ajuste de potencia (sin telemetría) y duerme tras el intercambio.
 // 109 - 2025-12-27 LoRa: se vuelve a aceptar la confirmación antigua CONFIRMACION,<MAC>,... sin marcar error para
 //      detener los reintentos mientras el monitor migra al formato detallado.
@@ -129,7 +130,7 @@ const uint16_t IMPACTO_VENTANA_MS = 1500;
 // 02) Tiempo mínimo entre toques para evitar rebotes (ms)
 const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
 // 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
-const uint16_t IMPACTO_UMBRAL_ANALOGICO = 25;
+const uint16_t IMPACTO_UMBRAL_ANALOGICO = 15;
 // 04) Muestras usadas para estimar el nivel en reposo del sensor
 const uint8_t IMPACTO_MUESTRAS_BASE = 16;
 // 05) Cantidad mínima de toques válidos para aceptar el despertar
@@ -137,7 +138,7 @@ const uint8_t IMPACTO_MIN_TOQUES = 1;
 // 06) Cantidad máxima de toques válidos (se ignoran adicionales)
 const uint8_t IMPACTO_MAX_TOQUES = 3;
 // 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
-const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 60000; // Por defecto 1 minuto
+const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 120000; // Por defecto 2 minutos (doble de la vigilia anterior)
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -588,7 +589,7 @@ bool confirmarGolpesImpacto() {
     }
     uint16_t baseReposo = acumulado / IMPACTO_MUESTRAS_BASE;
     Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
-    Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u (50%% del umbral previo)\n",
+    Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u\n",
                   IMPACTO_UMBRAL_ANALOGICO);
 
     int toquesDetectados = 1; // Primer toque es el que despertó
@@ -1997,6 +1998,8 @@ void loop() {
     esp_task_wdt_reset();
 
     bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo;
+    bool sesionPortalImpacto = wakeByImpact && (modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0);
+    bool blePermitido = comunicacionesHabilitadas && !sesionPortalImpacto;
 
     // ⭐⭐ PRIORIDAD 1: VERIFICAR CLIENTES WiFi
     if (comunicacionesHabilitadas) {
@@ -2013,7 +2016,7 @@ void loop() {
     manejarLED();
 
     // ⭐⭐ PRIORIDAD 4: VERIFICAR Y ENVIAR CONFIG PENDIENTE BLE
-    if (comunicacionesHabilitadas && pendienteEnvioConfig && millis() >= tiempoProgramadoEnvio) {
+    if (blePermitido && pendienteEnvioConfig && millis() >= tiempoProgramadoEnvio) {
         Serial.println("\n🎯 EJECUTANDO ENVÍO CONFIG PROGRAMADO...");
 
         if (deviceConnected && pClient != nullptr && pClient->isConnected()) {
@@ -2048,7 +2051,7 @@ void loop() {
     unsigned long tiempoDesdeEscaneoBLE = tiempoActual - ultimoEscaneoBLE;
     unsigned long intervaloEscaneo = registrado ? INTERVALO_ESCANEO_BAJA : INTERVALO_ESCANEO_ALTA;
 
-    if (comunicacionesHabilitadas) {
+    if (blePermitido) {
         // Ejecutar BLE si es tiempo
         if (ultimoEscaneoBLE == 0 || tiempoDesdeEscaneoBLE >= intervaloEscaneo) {
             Serial.println("\n🔍 ===========================================");
@@ -2099,7 +2102,7 @@ void loop() {
     }
 
     // ⭐⭐ PRIORIDAD 6: PROCESAR COMUNICACIÓN BLE ACTIVA
-    if (comunicacionesHabilitadas && (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected)) {
+    if (blePermitido && (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected)) {
         static unsigned long ultimoUpdate = 0;
         if (millis() - ultimoUpdate > 2000) {
             ultimoUpdate = millis();
