@@ -252,7 +252,7 @@ bool bajaAutomaticaActivada = false;
 unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
 bool wakeByImpact = false;
-uint32_t impactoConsecutivo = 1;
+RTC_DATA_ATTR uint32_t impactoConsecutivo = 1;
 bool impactoInterrumpioLoRa = false;
 unsigned long inicioVigiliaImpacto = 0;
 
@@ -281,7 +281,8 @@ RTC_DATA_ATTR uint32_t ultimaAlturaEnviada = 0;              // Última altura e
 RTC_DATA_ATTR uint32_t ultimaCapacidadEnviada = 0;           // Última capacidad (L) enviada al monitor
 RTC_DATA_ATTR char ultimoNombreEnviado[21] = "";            // Último nombre enviado al monitor
 RTC_DATA_ATTR bool cambiosConfiguracionPendientes = false;   // Obliga a enviar si hubo cambios de configuración
-RTC_DATA_ATTR bool impactoReinicioPendiente = false;         // Marca reinicio por impacto fuera de deep sleep
+RTC_DATA_ATTR bool impactoReinicioPendiente;                 // Marca reinicio por impacto fuera de deep sleep
+RTC_DATA_ATTR uint32_t impactoReinicioMagic;                 // Validación de reinicio por impacto
 #define INTERVALO_MIN_ACTIVO_ULTRA_MS 250                     // Permanencia mínima despierto para medición
 #define TIEMPO_ESPERA_DESPUES_BAJA 15000
 
@@ -675,6 +676,7 @@ bool atenderImpactoPrioritario(const char *contexto) {
     impactoConsecutivo++;
     impactoInterrumpioLoRa = true;
     impactoReinicioPendiente = true;
+    impactoReinicioMagic = 0xA5A5C3C3;
     LoRa.receive();
     Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - reiniciando para iniciar ciclo\n",
                   impactoConsecutivo);
@@ -1830,6 +1832,7 @@ void setup() {
 
     // ⭐ VERIFICAR CAUSA DE WAKEUP
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    esp_reset_reason_t reset_reason = esp_reset_reason();
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
@@ -1855,10 +1858,17 @@ void setup() {
             break;
     }
 
-    if (impactoReinicioPendiente) {
+    if (reset_reason == ESP_RST_POWERON || reset_reason == ESP_RST_BROWNOUT || reset_reason == ESP_RST_EXT) {
+        impactoReinicioPendiente = false;
+        impactoReinicioMagic = 0;
+        impactoConsecutivo = 1;
+    }
+
+    if (reset_reason == ESP_RST_SW && impactoReinicioPendiente && impactoReinicioMagic == 0xA5A5C3C3) {
         Serial.println("⚡ Reinicio por impacto detectado - priorizando ciclo de impacto");
         wakeByImpact = true;
         impactoReinicioPendiente = false;
+        impactoReinicioMagic = 0;
     }
 
     if (wakeByImpact) {
@@ -1904,7 +1914,6 @@ void setup() {
 
     if (wakeByImpact) {
         inicioVigiliaImpacto = millis();
-        impactoConsecutivo = 1;
         if (!confirmarGolpesImpacto()) {
             Serial.println("⚠️  Golpes insuficientes o fuera de rango (1-3). Volviendo a dormir...");
             wakeByImpact = false;
