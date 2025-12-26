@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 117 - 2025-12-31 Impacto: detección permanente tras deep sleep normal; reinicio simulado como interrupción y consecutivo en español.
 // 116 - 2025-12-31 Impacto: detección continua con muestreo rápido y prioridad total; reinicio inmediato al detectar golpe.
 // 115 - 2025-12-31 Impacto: reinicio inmediato al detectar golpe en operación; arranque marca ciclo y prioridad de impacto.
 // 114 - 2025-12-31 Impacto: prioridad continua al sensor tras deep sleep; suspende LoRa y atiende golpes con consecutivo en español.
@@ -283,6 +284,7 @@ RTC_DATA_ATTR char ultimoNombreEnviado[21] = "";            // Último nombre en
 RTC_DATA_ATTR bool cambiosConfiguracionPendientes = false;   // Obliga a enviar si hubo cambios de configuración
 RTC_DATA_ATTR bool impactoReinicioPendiente;                 // Marca reinicio por impacto fuera de deep sleep
 RTC_DATA_ATTR uint32_t impactoReinicioMagic;                 // Validación de reinicio por impacto
+RTC_DATA_ATTR bool impactoConfirmadoEnOperacion = false;      // Marca impacto confirmado antes de reinicio en operación
 #define INTERVALO_MIN_ACTIVO_ULTRA_MS 250                     // Permanencia mínima despierto para medición
 #define TIEMPO_ESPERA_DESPUES_BAJA 15000
 
@@ -677,6 +679,7 @@ bool atenderImpactoPrioritario(const char *contexto) {
     impactoInterrumpioLoRa = true;
     impactoReinicioPendiente = true;
     impactoReinicioMagic = 0xA5A5C3C3;
+    impactoConfirmadoEnOperacion = true;
     LoRa.receive();
     Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - reiniciando para iniciar ciclo\n",
                   impactoConsecutivo);
@@ -1833,6 +1836,7 @@ void setup() {
     // ⭐ VERIFICAR CAUSA DE WAKEUP
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset_reason = esp_reset_reason();
+    bool requiereConfirmacionImpacto = true;
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
@@ -1862,11 +1866,16 @@ void setup() {
         impactoReinicioPendiente = false;
         impactoReinicioMagic = 0;
         impactoConsecutivo = 1;
+        impactoConfirmadoEnOperacion = false;
     }
 
     if (reset_reason == ESP_RST_SW && impactoReinicioPendiente && impactoReinicioMagic == 0xA5A5C3C3) {
         Serial.println("⚡ Reinicio por impacto detectado - priorizando ciclo de impacto");
         wakeByImpact = true;
+        if (impactoConfirmadoEnOperacion) {
+            Serial.println("✅ Impacto ya confirmado en operación - se omite la reconfirmación");
+            requiereConfirmacionImpacto = false;
+        }
         impactoReinicioPendiente = false;
         impactoReinicioMagic = 0;
     }
@@ -1914,11 +1923,15 @@ void setup() {
 
     if (wakeByImpact) {
         inicioVigiliaImpacto = millis();
-        if (!confirmarGolpesImpacto()) {
+        if (!requiereConfirmacionImpacto) {
+            impactoConfirmadoEnOperacion = false;
+        } else if (!confirmarGolpesImpacto()) {
             Serial.println("⚠️  Golpes insuficientes o fuera de rango (1-3). Volviendo a dormir...");
             wakeByImpact = false;
             prepararParaDeepSleep();
             esp_deep_sleep_start();
+        } else {
+            impactoConfirmadoEnOperacion = false;
         }
     }
 
