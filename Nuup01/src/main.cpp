@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 116 - 2025-12-31 Impacto: detección continua con muestreo rápido y prioridad total; reinicio inmediato al detectar golpe.
 // 115 - 2025-12-31 Impacto: reinicio inmediato al detectar golpe en operación; arranque marca ciclo y prioridad de impacto.
 // 114 - 2025-12-31 Impacto: prioridad continua al sensor tras deep sleep; suspende LoRa y atiende golpes con consecutivo en español.
 // 113 - 2025-12-31 Impacto: ciclo continuo de detección (AP/BLE/potencia) sin deep sleep; se renueva solo con nuevo golpe.
@@ -635,13 +636,29 @@ bool confirmarGolpesImpacto() {
     return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
 }
 
+bool detectarImpactoRapido(uint16_t ventanaMs) {
+    unsigned long inicio = millis();
+    uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
+
+    while (millis() - inicio < ventanaMs) {
+        bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
+        uint16_t lectura = analogRead(SENSOR_IMPACTO_PIN);
+        bool golpeAnalogico = baseReposo > lectura &&
+                              (baseReposo - lectura) >= IMPACTO_UMBRAL_ANALOGICO;
+        if (golpeDigital || golpeAnalogico) {
+            return true;
+        }
+        delay(2);
+    }
+    return false;
+}
+
 bool atenderImpactoPrioritario(const char *contexto) {
     if (wakeByImpact) {
         return false;
     }
 
-    bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
-    if (!golpeDigital) {
+    if (!detectarImpactoRapido(40)) {
         return false;
     }
 
@@ -2153,6 +2170,9 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 6: PROCESAR COMUNICACIÓN BLE ACTIVA
     if (blePermitido && (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected)) {
+        if (atenderImpactoPrioritario("BLE activo")) {
+            return;
+        }
         static unsigned long ultimoUpdate = 0;
         if (millis() - ultimoUpdate > 2000) {
             ultimoUpdate = millis();
@@ -2306,6 +2326,9 @@ void loop() {
             ultimoEstado = millis();
             Serial.println("🔍 MODO BÚSQUEDA ACTIVA - Sin Deep Sleep");
         }
+        if (atenderImpactoPrioritario("modo sin alta")) {
+            return;
+        }
         delay(500); // Delay cooperativo normal
     } else if (wakeByImpact) {
         if (inicioVigiliaImpacto == 0) {
@@ -2328,6 +2351,9 @@ void loop() {
         }
 
         if (millis() - inicioVigiliaImpacto < IMPACTO_TIEMPO_VIGILIA_MS) {
+            if (atenderImpactoPrioritario("vigilia impacto")) {
+                return;
+            }
             avisoEsperandoGolpe = false;
             delay(50);
             return;
