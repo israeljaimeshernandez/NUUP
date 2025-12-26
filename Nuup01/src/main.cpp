@@ -1781,6 +1781,7 @@ void setup() {
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
+    Serial.printf("🆔 Ciclo de impacto: %lu - Inicio del sistema\n", impactoConsecutivo);
 
     // Acumular el tiempo dormido previo para el conteo forzoso
     tiempoSinEnvioConfirmado += ultimoSleepProgramadoMs;
