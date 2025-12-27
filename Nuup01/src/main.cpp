@@ -582,7 +582,7 @@ void verificarConexionCliente() {
             Serial.println("📱 Cliente desconectado - MODO NORMAL");
 
             // Si el despertar fue por impacto y ya salió el usuario, reiniciar para cerrar sesión AP
-            if (wakeByImpact) {
+            if (wakeByImpact && !bajaFabricaPendiente) {
                 Serial.println("🔁 Configuración por impacto finalizada - Reiniciando ESP32...");
                 delay(500);
                 ESP.restart();
@@ -2330,7 +2330,7 @@ void loop() {
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !wakeByImpact) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente && !wakeByImpact) {
         unsigned long tiempoActual = millis();
         unsigned long tiempoActivoSinEnvio = tiempoActual - marcaAcumuladorSinEnvio;
         unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActivoSinEnvio;
@@ -2380,7 +2380,7 @@ void loop() {
     }
 
     // ⭐⭐ PRIORIDAD 8: VERIFICAR SLEEP (SOLO SI ESTÁ REGISTRADO)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !modoConfiguracionActivo && !wakeByImpact) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente && !modoConfiguracionActivo && !wakeByImpact) {
         unsigned long tiempoDesdeEnvio = millis() - ultimoEnvioDatos;
         unsigned long tiempoDesdeBLE = millis() - ultimoEscaneoBLE;
         unsigned long intervaloEscaneo = registrado ? INTERVALO_ESCANEO_BAJA : INTERVALO_ESCANEO_ALTA;
