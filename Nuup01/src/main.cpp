@@ -237,6 +237,7 @@ bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool botonIgnorarHastaSoltar = false;
+bool botonInterrumpioOperacion = false;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
 uint8_t intentosBleBoton = 0;
@@ -612,6 +613,10 @@ EventoBoton leerEventoBoton() {
     unsigned long ahora = millis();
     bool estadoActual = digitalRead(BOTON_PIN) == LOW;
 
+    if (!estadoActual && botonInterrumpioOperacion && !botonIgnorarHastaSoltar) {
+        botonInterrumpioOperacion = false;
+    }
+
     if (botonIgnorarHastaSoltar) {
         if (!estadoActual) {
             botonIgnorarHastaSoltar = false;
@@ -710,6 +715,7 @@ bool atenderBotonPrioritario(const char *contexto) {
     }
 
     if (evento == EventoBoton::Corto) {
+        botonInterrumpioOperacion = true;
         if (wakeByImpact || modoAPActivo) {
             Serial.printf("🔁 Toque corto (%s): reiniciando a operación normal.\n", contexto);
             delay(200);
@@ -720,6 +726,7 @@ bool atenderBotonPrioritario(const char *contexto) {
     }
 
     if (evento == EventoBoton::Largo) {
+        botonInterrumpioOperacion = true;
         iniciarModoEmparejamiento("presión larga (3-5s)");
         return true;
     }
@@ -3084,6 +3091,9 @@ bool enviarDatos(int distancia) {
                         potenciaConfirmada = potenciaLoRaActualDbm;
                         break;
                     } else {
+                        if (botonInterrumpioOperacion) {
+                            return false;
+                        }
                         Serial.println("⌛ Sin confirmación, reintentando...");
                     }
                 }
