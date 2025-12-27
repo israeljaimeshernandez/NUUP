@@ -10,6 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 134 - 2025-07-08 OLED vertical: márgenes ajustables, cabecera detallada y estatus MQTT=2 desde NUUP/<MAC>/estatus.
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -104,6 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 134 - 2025-07-08 OLED vertical: márgenes ajustables, cabecera detallada y estatus MQTT=2 desde NUUP/<MAC>/estatus.
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -349,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 133;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 134;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -622,6 +624,7 @@ void activarDispositivosTrasConfirmacion();
 void iniciarWaterDisplay();
 void actualizarWaterDisplay(int porcentaje);
 void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua);
+int extraerEstatusLlenado(const String &payload);
 
 
 //Definiciones pantalla TFT
@@ -637,8 +640,8 @@ static const uint8_t WATER_OLED_SDA = 15;
 static const uint8_t WATER_OLED_SCL = 4;
 static const uint8_t WATER_OLED_ADDR = 0x3C;
 // Márgenes del tanque en el OLED vertical (ajustables para centrar el recuadro)
-static const uint8_t WATER_MARGIN_LEFT = 14;
-static const uint8_t WATER_MARGIN_RIGHT = 10;
+static const uint8_t WATER_MARGIN_LEFT = 18;
+static const uint8_t WATER_MARGIN_RIGHT = 6;
 static const uint8_t WATER_MARGIN_TOP = 8;
 static const uint8_t WATER_MARGIN_BOTTOM = 6;
 TwoWire waterWire = TwoWire(1);
@@ -3492,12 +3495,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  String topicEstatus = String(serial_number) + "/estatus";
+  asegurarMacMonitorFija("estatus_mqtt");
+  String topicEstatus = String("NUUP/") + normalizarMac(macMonitorFija) + "/estatus";
   if (strTopic.equals(topicEstatus)) {
-    int primeraComa = strMessage.indexOf(',');
-    String estatusStr = (primeraComa == -1) ? strMessage : strMessage.substring(primeraComa + 1);
-    estatusStr.trim();
-    int estatus = estatusStr.toInt();
+    int estatus = extraerEstatusLlenado(strMessage);
     waterDisplayLlenando = (estatus == 2);
     Serial.printf("💧 Estado llenado OLED: estatus=%d -> %s\n",
                   estatus, waterDisplayLlenando ? "LLENANDO" : "SIN LLENADO");
@@ -3817,8 +3818,10 @@ Serial.println("Subscripcion: baja/1/confirmacion/");
     client.subscribe((String(serial_number) + "/command").c_str(), 1);
 Serial.println("Subscripcion: /command");
    delay(50);
-    client.subscribe((String(serial_number) + "/estatus").c_str(), 1);
-Serial.println("Subscripcion: /estatus");
+    asegurarMacMonitorFija("suscripcion_estatus");
+    String topicoEstatus = String("NUUP/") + normalizarMac(macMonitorFija) + "/estatus";
+    client.subscribe(topicoEstatus.c_str(), 1);
+Serial.println("Subscripcion: " + topicoEstatus);
    delay(50);
     suscribirTopicoConfirmacionMonitor();
 
@@ -6087,6 +6090,42 @@ void iniciarWaterDisplay() {
     Serial.println("✅ OLED nivel de agua inicializado en SDA15/SCL4.");
 }
 
+int extraerEstatusLlenado(const String &payload) {
+    String limpio = payload;
+    limpio.trim();
+    if (limpio.isEmpty()) {
+        return 0;
+    }
+
+    int resultIndex = limpio.indexOf("result");
+    if (resultIndex != -1) {
+        int inicioNumero = limpio.indexOf(':', resultIndex);
+        if (inicioNumero != -1) {
+            inicioNumero++;
+            while (inicioNumero < limpio.length() && !isDigit(limpio[inicioNumero])) {
+                inicioNumero++;
+            }
+            int finNumero = inicioNumero;
+            while (finNumero < limpio.length() && isDigit(limpio[finNumero])) {
+                finNumero++;
+            }
+            if (inicioNumero < finNumero) {
+                return limpio.substring(inicioNumero, finNumero).toInt();
+            }
+        }
+    }
+
+    if (limpio.indexOf(',') != -1) {
+        String ultimoCampo = limpio.substring(limpio.lastIndexOf(',') + 1);
+        ultimoCampo.trim();
+        if (!ultimoCampo.isEmpty()) {
+            return ultimoCampo.toInt();
+        }
+    }
+
+    return limpio.toInt();
+}
+
 void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
     const int ancho = waterDisplay.width();
     const int alto = waterDisplay.height();
@@ -6106,25 +6145,31 @@ void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
 
     waterDisplay.drawRect(tanqueX, tanqueY, tanqueW, tanqueH, SSD1306_WHITE);
 
-    const int pipeWidth = 8;
-    const int pipeHeight = 10;
+    const int pipeWidth = 10;
+    const int pipeHeight = 12;
     const int pipeX = tanqueX + (tanqueW / 2) - (pipeWidth / 2);
-    const int pipeY = tanqueY - pipeHeight - 6;
-    const int spoutWidth = 20;
+    const int pipeY = tanqueY - pipeHeight - 8;
+    const int spoutWidth = 26;
     const int spoutHeight = 6;
-    const int spoutX = pipeX - 6;
+    const int spoutX = pipeX - 8;
     const int spoutY = pipeY + pipeHeight - 2;
-    const int valveRadius = 4;
+    const int valveRadius = 5;
     const int valveX = pipeX + pipeWidth / 2;
-    const int valveY = pipeY - valveRadius - 1;
+    const int valveY = pipeY - valveRadius - 2;
+    const int capWidth = 16;
+    const int capHeight = 4;
+    const int capX = valveX - capWidth / 2;
+    const int capY = valveY - valveRadius - capHeight + 1;
 
     waterDisplay.drawRect(pipeX, pipeY, pipeWidth, pipeHeight, SSD1306_WHITE);
     waterDisplay.fillRect(pipeX + 1, pipeY + 1, pipeWidth - 2, pipeHeight - 2, SSD1306_WHITE);
     waterDisplay.drawRect(spoutX, spoutY, spoutWidth, spoutHeight, SSD1306_WHITE);
     waterDisplay.fillRect(spoutX + 1, spoutY + 1, spoutWidth - 2, spoutHeight - 2, SSD1306_WHITE);
     waterDisplay.drawCircle(valveX, valveY, valveRadius, SSD1306_WHITE);
-    waterDisplay.drawFastHLine(valveX - 3, valveY, 6, SSD1306_WHITE);
-    waterDisplay.drawFastVLine(valveX, valveY - 3, 6, SSD1306_WHITE);
+    waterDisplay.drawFastHLine(valveX - 4, valveY, 8, SSD1306_WHITE);
+    waterDisplay.drawFastVLine(valveX, valveY - 4, 8, SSD1306_WHITE);
+    waterDisplay.drawRect(capX, capY, capWidth, capHeight, SSD1306_WHITE);
+    waterDisplay.drawFastHLine(capX, capY + capHeight + 1, capWidth, SSD1306_WHITE);
 
     if (!mostrarAgua) {
         return;
