@@ -10,6 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 129 - LoRa: corrección de modificación pendiente; el monitor ya no se queda fijo en litros antiguos y valida alias/altura/capacidad sin bloquear por litros actuales.
  * 128 - LoRa: al recibir datos mientras hay modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
  * 127 - MQTT: el monitor atiende solicitudes de modificación iniciadas por el servidor (device_modificacion=1) aun sin
  *       mensaje LoRa previo, aplica EEPROM y mantiene la espera de confirmación hasta que NUUP01 reporte los valores nuevos.
@@ -99,6 +100,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 129 - 2025-07-07 LoRa: se actualizan lecturas mientras hay modificación pendiente y la validación no bloquea por litros actuales.
 // 128 - 2025-07-07 LoRa: al recibir datos con modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
 // 127 - 2025-07-06 MQTT: solicitudes de modificación iniciadas por servidor se aplican en EEPROM aunque no exista LoRa previo,
 //       manteniendo DEVICE_MODIFICACION activa hasta confirmar desde NUUP01.
@@ -339,7 +341,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 128;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 129;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -593,6 +595,7 @@ DatosConfirmacionLoRa construirConfirmacionLoRa(const String &mensaje, const Con
 
 
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre);
+bool actualizarLecturasParcialesDesdeLoRa(int indice, const String &mensaje);
 
 // AGREGAR estas declaraciones:
 int contarDispositivosRegistrados();
@@ -5114,29 +5117,27 @@ bool datosLoRaCoincidenConBroker(const String &mensaje, int indice) {
   String nombreRecibido = nombreExtraido.length() > 0 ? nombreExtraido : String(configDispositivos[indice].nombre);
 
   const ConfigDispositivo &configEEPROM = configDispositivos[indice];
-  float litrosObjetivo = configEEPROM.litrosActuales;
   float alturaObjetivo = configEEPROM.alturaConfig;
   float capacidadObjetivo = configEEPROM.litrosConfig;
   String aliasObjetivo = String(configEEPROM.nombre);
 
-  bool coincideLitros = fabsf(litrosRecibidos - litrosObjetivo) < 0.1f;
   bool coincideAltura = fabsf(alturaRecibida - alturaObjetivo) < 0.1f;
   bool coincideCapacidad = fabsf(capacidadRecibida - capacidadObjetivo) < 0.1f;
   bool coincideNombre = aliasObjetivo.length() == 0 ? true : (nombreRecibido == aliasObjetivo);
 
   Serial.println("   🧭 Comparando datos solicitados vs recibidos (LoRa)");
-  Serial.printf("      Objetivo litros/altura/capacidad/nombre (EEPROM): %.1f / %.1f / %.1f / %s\n",
-                litrosObjetivo,
+  Serial.printf("      Objetivo altura/capacidad/nombre (EEPROM): %.1f / %.1f / %s\n",
                 alturaObjetivo,
                 capacidadObjetivo,
                 aliasObjetivo.c_str());
-  Serial.printf("      Recibido litros/altura/capacidad/nombre: %.1f / %.1f / %.1f / %s\n",
-                litrosRecibidos,
+  Serial.printf("      Recibido altura/capacidad/nombre: %.1f / %.1f / %s\n",
                 alturaRecibida,
                 capacidadRecibida,
                 nombreRecibido.c_str());
+  Serial.printf("      ℹ️ Litros recibidos (solo lectura, no bloquea validación): %.1f L\n",
+                litrosRecibidos);
 
-  return coincideLitros && coincideAltura && coincideCapacidad && coincideNombre;
+  return coincideAltura && coincideCapacidad && coincideNombre;
 }
 
 struct DatosConfirmacionLoRa {
@@ -6031,6 +6032,59 @@ void dibujarContenidoPrincipal() {
     }
 }
 
+bool actualizarLecturasParcialesDesdeLoRa(int indice, const String &mensaje) {
+    if (indice < 0 || indice >= MAX_DISPOSITIVOS) {
+        return false;
+    }
+
+    String litrosStr = obtenerCampoCSV(mensaje, 2);
+    String voltajeStr = obtenerCampoCSV(mensaje, 3);
+    String temperaturaStr = obtenerCampoCSV(mensaje, 4);
+
+    litrosStr.trim();
+    voltajeStr.trim();
+    temperaturaStr.trim();
+
+    if (litrosStr.isEmpty() && voltajeStr.isEmpty() && temperaturaStr.isEmpty()) {
+        return false;
+    }
+
+    ConfigDispositivo &config = configDispositivos[indice];
+    bool actualizado = false;
+
+    if (!litrosStr.isEmpty()) {
+        config.litrosActuales = litrosStr.toFloat();
+        actualizado = true;
+    }
+    if (!voltajeStr.isEmpty()) {
+        config.voltaje = voltajeStr.toFloat();
+        actualizado = true;
+    }
+    if (!temperaturaStr.isEmpty()) {
+        config.temperatura = temperaturaStr.toFloat();
+        actualizado = true;
+    }
+
+    if (config.litrosConfig > 0) {
+        float porcentaje = (config.litrosActuales / config.litrosConfig) * 100.0f;
+        config.porcentaje = (int)constrain(porcentaje, 0, 100);
+    }
+
+    ultimaActualizacionLoRa[indice] = millis();
+    mostrarSinDatos[indice] = false;
+
+    if (actualizado) {
+        Serial.println("   📈 Lecturas LoRa actualizadas en modo modificación (litros/voltaje/temperatura).");
+        if (guardarDispositivos()) {
+            Serial.println("   💾 Lecturas actualizadas guardadas en EEPROM.");
+        } else {
+            Serial.println("   ❌ Error al guardar lecturas actualizadas en EEPROM.");
+        }
+    }
+
+    return actualizado;
+}
+
 void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const String &nombre) {
     Serial.println("\n🔄 ===========================================");
     Serial.println("🔍 ACTUALIZAR DATOS DESDE LORA - DEBUG");
@@ -6061,6 +6115,7 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                 }
 
                 if (!datosAlineados) {
+                    actualizarLecturasParcialesDesdeLoRa(i, mensaje);
                     ultimaActualizacionLoRa[i] = millis();
                     mostrarSinDatos[i] = false;
                     mensajeLoRa = construirPayloadEEPROMParaMQTT(configDispositivos[i]);
@@ -6072,10 +6127,10 @@ void actualizarDatosDesdeLoRa(const String &mac, const String &mensaje, const St
                                           String(configDispositivos[i].litrosConfig, 0);
 
                     Serial.printf(
-                        "   ↪️ Confirmación pendiente: se envían alias/altura/litros de EEPROM (%s / %.1f / %.1f)\n",
+                        "   ↪️ Confirmación pendiente: se envían alias/altura/capacidad de EEPROM (%s / %.1f / %.1f)\n",
                         configDispositivos[i].nombre,
                         configDispositivos[i].alturaConfig,
-                        configDispositivos[i].litrosActuales);
+                        configDispositivos[i].litrosConfig);
                     enviarPaqueteLoRa("confirmación EEPROM modificado_broker", mac, confirmacion);
                     return;
                 }
