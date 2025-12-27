@@ -2185,6 +2185,9 @@ void loop() {
     bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoAPActivo || modoConfiguracionActivo || bajaFabricaPendiente;
     bool sesionPortalActiva = modoAPActivo || modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
     bool blePermitido = comunicacionesHabilitadas && !sesionPortalActiva;
+    if (wakeByImpact && intentosBleBoton >= BOTON_INTENTOS_MAXIMOS) {
+        blePermitido = false;
+    }
 
     // ⭐⭐ PRIORIDAD 1: VERIFICAR CLIENTES WiFi
     if (comunicacionesHabilitadas) {
@@ -2379,16 +2382,11 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 6.5: AJUSTE DE POTENCIA TRAS IMPACTO (SIN TELEMETRÍA)
     if (wakeByImpact && registrado && !configuracionPotenciaFinalizada) {
-        if (intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS) {
-            Serial.println("⏭️  Ajuste de potencia omitido: máximo de intentos por botón alcanzado.");
-            configuracionPotenciaFinalizada = true;
-        } else {
         Serial.println("\n🛠️  Ajuste de potencia por botón (sin enviar telemetría de nivel)");
         intentosPotenciaBoton++;
-        Serial.printf("🔁 Intento potencia por botón: %u/%u\n",
-                      intentosPotenciaBoton, BOTON_INTENTOS_MAXIMOS);
+        Serial.printf("🔁 Intento potencia por botón: %u\n", intentosPotenciaBoton);
 
-        uint8_t potenciaConfirmada = LORA_POTENCIA_INICIO_CONFIG_DBM;
+        uint8_t potenciaConfirmada = LORA_POTENCIA_MIN_DBM;
         bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
 
         if (confirmacionPotencia) {
@@ -2397,13 +2395,11 @@ void loop() {
             LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
             guardarDatosEnEEPROM();
             Serial.printf("✅ Potencia confirmada tras botón: %u dBm\n", potenciaConfirmada);
-            intentosPotenciaBoton = BOTON_INTENTOS_MAXIMOS;
         } else {
-            Serial.println("⚠️  Sin confirmación de potencia tras botón (se mantiene potencia por defecto)");
+            Serial.println("⚠️  Sin confirmación de potencia tras botón (se reintentará barrido completo)");
         }
 
-        configuracionPotenciaFinalizada = confirmacionPotencia ||
-                                          intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS;
+        configuracionPotenciaFinalizada = confirmacionPotencia;
         recalibrarPotenciaLoRa = false;
         tiempoSinEnvioConfirmado = 0;
         marcaAcumuladorSinEnvio = millis();
@@ -2414,7 +2410,6 @@ void loop() {
         Serial.printf("🔁 Vigilia activa tras botón (consecutivo %lu)\n", impactoConsecutivo);
         delay(50);
         return;
-        }
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
@@ -2510,7 +2505,7 @@ void loop() {
         }
 
         if (intentosBleBoton >= BOTON_INTENTOS_MAXIMOS &&
-            (configuracionPotenciaFinalizada || intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS)) {
+            configuracionPotenciaFinalizada) {
             Serial.println("✅ Modo botón completado (BLE/potencia). Reiniciando a operación normal.");
             delay(200);
             ESP.restart();
