@@ -591,7 +591,17 @@ void verificarConexionCliente() {
     }
 }
 
+bool impactoSensorDisponible() {
+    uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
+    bool digitalHigh = digitalRead(SENSOR_IMPACTO_PIN) == HIGH;
+    return !(baseReposo >= IMPACTO_BASE_ANALOGICO_MAX && digitalHigh);
+}
+
 bool confirmarGolpesImpacto() {
+    if (!impactoSensorDisponible()) {
+        return false;
+    }
+
     Serial.println("🔔 Detectando doble/triple toque para despertar...");
 
     // Calibrar el nivel de referencia con varias lecturas suaves
@@ -651,6 +661,10 @@ bool detectarImpactoRapido(uint16_t ventanaMs) {
     uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
     bool analogicoHabilitado = baseReposo < IMPACTO_BASE_ANALOGICO_MAX;
 
+    if (!analogicoHabilitado && digitalRead(SENSOR_IMPACTO_PIN) == HIGH) {
+        return false;
+    }
+
     while (millis() - inicio < ventanaMs) {
         bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
         uint16_t lectura = analogRead(SENSOR_IMPACTO_PIN);
@@ -667,6 +681,10 @@ bool detectarImpactoRapido(uint16_t ventanaMs) {
 
 bool atenderImpactoPrioritario(const char *contexto) {
     if (wakeByImpact) {
+        return false;
+    }
+
+    if (!impactoSensorDisponible()) {
         return false;
     }
 
