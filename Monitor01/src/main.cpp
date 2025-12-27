@@ -10,6 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
  * 130 - 2025-07-08 Botón WiFi a GPIO33 + OLED I2C vertical (SDA15/SCL4) para nivel de agua con parpadeo <10% y operación aislada.
  * 129 - LoRa: corrección de modificación pendiente; el monitor ya no se queda fijo en litros antiguos y valida alias/altura/capacidad sin bloquear por litros actuales.
@@ -102,6 +103,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
 // 130 - 2025-07-08 Botón WiFi en GPIO33 y OLED vertical I2C (SDA15/SCL4) con nivel de agua y parpadeo <10%.
 // 129 - 2025-07-07 LoRa: se actualizan lecturas mientras hay modificación pendiente y la validación no bloquea por litros actuales.
@@ -345,7 +347,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 131;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 132;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -639,6 +641,8 @@ int waterDisplayUltimoPorcentaje = -1;
 unsigned long waterDisplayUltimoBlink = 0;
 bool waterDisplayBlinkOn = true;
 bool waterDisplayLlenando = false;
+int waterDisplayPorcentajeAnimado = 0;
+unsigned long waterDisplayUltimaAnimacion = 0;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -6126,6 +6130,20 @@ void actualizarWaterDisplay(int porcentaje) {
     porcentaje = constrain(porcentaje, 0, 100);
     bool necesitaRender = false;
     unsigned long ahora = millis();
+    int porcentajeRender = porcentaje;
+
+    if (!waterDisplayLlenando || porcentaje <= waterDisplayPorcentajeAnimado) {
+        if (waterDisplayPorcentajeAnimado != porcentaje) {
+            waterDisplayPorcentajeAnimado = porcentaje;
+            necesitaRender = true;
+        }
+    } else if (ahora - waterDisplayUltimaAnimacion >= 150) {
+        waterDisplayUltimaAnimacion = ahora;
+        waterDisplayPorcentajeAnimado = min(waterDisplayPorcentajeAnimado + 1, porcentaje);
+        necesitaRender = true;
+    }
+
+    porcentajeRender = waterDisplayPorcentajeAnimado;
 
     if (porcentaje < 10) {
         if (ahora - waterDisplayUltimoBlink >= 500) {
@@ -6148,7 +6166,7 @@ void actualizarWaterDisplay(int porcentaje) {
     }
 
     waterDisplay.clearDisplay();
-    dibujarNivelAguaVertical(porcentaje, waterDisplayBlinkOn);
+    dibujarNivelAguaVertical(porcentajeRender, waterDisplayBlinkOn);
     waterDisplay.display();
 }
 
