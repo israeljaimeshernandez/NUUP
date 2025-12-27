@@ -3210,7 +3210,8 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
     }
 
     if (!confirmado) {
-        Serial.println("⚠️  No se obtuvo confirmación de configuración tras los reintentos (continuando sin error crítico)");
+        Serial.println("⚠️  No se obtuvo confirmación tras barrido completo hasta potencia máxima.");
+        configuracionPotenciaFinalizada = true;
     }
 
     return confirmado;
