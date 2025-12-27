@@ -2371,6 +2371,7 @@ void loop() {
             LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
             guardarDatosEnEEPROM();
             Serial.printf("✅ Potencia confirmada tras botón: %u dBm\n", potenciaConfirmada);
+            intentosPotenciaBoton = BOTON_INTENTOS_MAXIMOS;
         } else {
             Serial.println("⚠️  Sin confirmación de potencia tras botón (se mantiene potencia por defecto)");
         }
