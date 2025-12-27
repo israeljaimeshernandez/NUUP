@@ -240,6 +240,7 @@ bool botonIgnorarHastaSoltar = false;
 bool botonInterrumpioOperacion = false;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
+uint8_t ciclosSinConfirmacionLoRa = 0;
 uint8_t intentosBleBoton = 0;
 uint8_t intentosPotenciaBoton = 0;
 bool forzarEnvioPorTiempo = false;
@@ -2194,7 +2195,9 @@ void loop() {
     // ⭐⭐ PRIORIDAD 2: ATENDER SERVIDOR WEB (SOLO SI HAY COMUNICACIÓN HABILITADA)
     if (comunicacionesHabilitadas) {
         server.handleClient();
-        dnsServer.processNextRequest();
+        if (apIniciado) {
+            dnsServer.processNextRequest();
+        }
     }
 
     // ⭐⭐ PRIORIDAD 3: MANEJAR LED
@@ -3057,6 +3060,10 @@ bool enviarDatos(int distancia) {
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
     bool ajustarPotenciaTrasDespertar = wakeByImpact || recalibrarPotenciaLoRa;
+
+    if (ciclosSinConfirmacionLoRa >= 1) {
+        potenciaLoRaActualDbm = LORA_POTENCIA_MAX_DBM;
+    }
     uint8_t potenciaInicio = max<uint8_t>(potenciaLoRaActualDbm, LORA_POTENCIA_MIN_DBM);
     uint8_t potenciaFin = recalibrarPotenciaLoRa ? LORA_POTENCIA_MAX_DBM : potenciaLoRaActualDbm;
 
@@ -3129,6 +3136,8 @@ bool enviarDatos(int distancia) {
         strlcpy(ultimoNombreEnviado, dispositivo.nombre, sizeof(ultimoNombreEnviado));
         cambiosConfiguracionPendientes = false;
         recalibrarPotenciaLoRa = false;
+        configuracionPotenciaFinalizada = true;
+        ciclosSinConfirmacionLoRa = 0;
 
         if (ajustarPotenciaTrasDespertar && !configuracionPotenciaFinalizada) {
             uint8_t potenciaAntesIntercambio = potenciaConfirmada;
@@ -3145,12 +3154,17 @@ bool enviarDatos(int distancia) {
                               potenciaAntesIntercambio);
             }
         }
-    } else if (recalibrarPotenciaLoRa) {
+    } else {
+        if (ciclosSinConfirmacionLoRa < 255) {
+            ciclosSinConfirmacionLoRa++;
+        }
+        if (recalibrarPotenciaLoRa) {
         dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
         potenciaLoRaActualDbm = dispositivo.potenciaLoRaDbm;
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
         guardarDatosEnEEPROM();
         Serial.printf("⚠️  Barrido completo sin confirmación. Potencia devuelta a %u dBm\n", potenciaLoRaActualDbm);
+        }
     }
 
     return confirmado;
