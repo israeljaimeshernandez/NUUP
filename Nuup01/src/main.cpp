@@ -140,11 +140,9 @@ const uint16_t IMPACTO_UMBRAL_ANALOGICO = 15;
 // 04) Muestras usadas para estimar el nivel en reposo del sensor
 const uint8_t IMPACTO_MUESTRAS_BASE = 16;
 // 05) Cantidad mínima de toques válidos para aceptar el despertar
-const uint8_t IMPACTO_MIN_TOQUES = 2;
+const uint8_t IMPACTO_MIN_TOQUES = 1;
 // 06) Cantidad máxima de toques válidos (se ignoran adicionales)
 const uint8_t IMPACTO_MAX_TOQUES = 3;
-// 07) Tope de lectura base para permitir validación analógica (evita ruido con pull-up saturado)
-const uint16_t IMPACTO_BASE_ANALOGICO_MAX = 4000;
 // 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
 const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (más tiempo para AP tras impacto)
 
@@ -591,17 +589,7 @@ void verificarConexionCliente() {
     }
 }
 
-bool impactoSensorDisponible() {
-    uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
-    bool digitalHigh = digitalRead(SENSOR_IMPACTO_PIN) == HIGH;
-    return !(baseReposo >= IMPACTO_BASE_ANALOGICO_MAX && digitalHigh);
-}
-
 bool confirmarGolpesImpacto() {
-    if (!impactoSensorDisponible()) {
-        return false;
-    }
-
     Serial.println("🔔 Detectando doble/triple toque para despertar...");
 
     // Calibrar el nivel de referencia con varias lecturas suaves
@@ -614,11 +602,6 @@ bool confirmarGolpesImpacto() {
     Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
     Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u\n",
                   IMPACTO_UMBRAL_ANALOGICO);
-    bool analogicoHabilitado = baseReposo < IMPACTO_BASE_ANALOGICO_MAX;
-    if (!analogicoHabilitado) {
-        Serial.println("⚠️  Base analógica alta: se validarán solo toques digitales para evitar falsos positivos");
-    }
-
     int toquesDetectados = 1; // Primer toque es el que despertó
     unsigned long inicioVentana = millis();
     bool ultimoEstado = digitalRead(SENSOR_IMPACTO_PIN);
@@ -628,8 +611,7 @@ bool confirmarGolpesImpacto() {
         bool estadoActual = digitalRead(SENSOR_IMPACTO_PIN);
         uint16_t lecturaAnalogica = analogRead(SENSOR_IMPACTO_PIN);
         bool posibleToquePorAnalogico = baseReposo > lecturaAnalogica &&
-                                        (baseReposo - lecturaAnalogica) >= IMPACTO_UMBRAL_ANALOGICO &&
-                                        analogicoHabilitado;
+                                        (baseReposo - lecturaAnalogica) >= IMPACTO_UMBRAL_ANALOGICO;
         bool transicionDigital = (ultimoEstado == HIGH && estadoActual == LOW);
 
         if ((transicionDigital || posibleToquePorAnalogico) &&
@@ -659,18 +641,12 @@ bool confirmarGolpesImpacto() {
 bool detectarImpactoRapido(uint16_t ventanaMs) {
     unsigned long inicio = millis();
     uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
-    bool analogicoHabilitado = baseReposo < IMPACTO_BASE_ANALOGICO_MAX;
-
-    if (!analogicoHabilitado && digitalRead(SENSOR_IMPACTO_PIN) == HIGH) {
-        return false;
-    }
 
     while (millis() - inicio < ventanaMs) {
         bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
         uint16_t lectura = analogRead(SENSOR_IMPACTO_PIN);
         bool golpeAnalogico = baseReposo > lectura &&
-                              (baseReposo - lectura) >= IMPACTO_UMBRAL_ANALOGICO &&
-                              analogicoHabilitado;
+                              (baseReposo - lectura) >= IMPACTO_UMBRAL_ANALOGICO;
         if (golpeDigital || golpeAnalogico) {
             return true;
         }
@@ -681,10 +657,6 @@ bool detectarImpactoRapido(uint16_t ventanaMs) {
 
 bool atenderImpactoPrioritario(const char *contexto) {
     if (wakeByImpact) {
-        return false;
-    }
-
-    if (!impactoSensorDisponible()) {
         return false;
     }
 
