@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 120 - 2026-01-02 BLE: durante emparejamiento por botón se solicita BAJA tras conectar y se reporta el flujo.
+// 119 - 2026-01-02 BLE: aceptar emparejamiento por UUID del servicio cuando el nombre no esté en el anuncio.
 // 118 - 2025-12-31 Botón: reemplazo del sensor de impacto por switch pull-up, modos AP (<1s) y emparejamiento/potencia (>3s)
 //      con parpadeos LED dedicados, consecutivo en español y reinicio por toque corto en modos activos.
 // 117 - 2025-12-31 Impacto: detección permanente tras deep sleep normal; reinicio simulado como interrupción y consecutivo en español.
@@ -242,6 +244,9 @@ bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
 uint8_t intentosBleBoton = 0;
 uint8_t intentosPotenciaBoton = 0;
+uint8_t ciclosPotenciaBle = 0;
+bool potenciaConfirmadaSesion = false;
+uint8_t potenciaConfirmadaSesionDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool forzarEnvioPorTiempo = false;
 bool envioLoRaEjecutado = false;
 unsigned long ultimaMedicionMs = 0;
@@ -385,6 +390,7 @@ void imprimirDatosDispositivo();
 void limpiarEEPROMYReiniciar();
 bool enviarDatos(int distancia);
 bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada);
+bool intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual);
 float measureDistance();
 int obtenerDistanciaValida();
 int calcularLitros(int distancia, uint32_t alturaTotal, uint32_t litrosTotal);
@@ -696,6 +702,9 @@ void iniciarModoEmparejamiento(const char* motivo) {
     ultimoEscaneoBLE = 0;
     intentosBleBoton = 0;
     intentosPotenciaBoton = 0;
+    ciclosPotenciaBle = 0;
+    potenciaConfirmadaSesion = false;
+    potenciaConfirmadaSesionDbm = dispositivo.potenciaLoRaDbm;
 
     potenciaLoRaActualDbm = LORA_POTENCIA_INICIO_CONFIG_DBM;
     dispositivo.potenciaLoRaDbm = LORA_POTENCIA_INICIO_CONFIG_DBM;
@@ -1031,14 +1040,21 @@ void MyClientCallback::onDisconnect(BLEClient* pclient) {
 void MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice) {
     String deviceName = String(advertisedDevice.getName().c_str());
     String deviceAddress = String(advertisedDevice.getAddress().toString().c_str());
-  int rssi = advertisedDevice.getRSSI();
+    int rssi = advertisedDevice.getRSSI();
+    BLEUUID servicioEsperado(SERVICE_UUID);
+    bool servicioCoincide = advertisedDevice.haveServiceUUID() &&
+                            advertisedDevice.isAdvertisingService(servicioEsperado);
     
     Serial.printf("   📶 Dispositivo: '%s'", deviceName.c_str());
     Serial.printf(" - MAC: %s", deviceAddress.c_str());
     Serial.printf(" - RSSI: %d dBm", rssi);
     
-  if (deviceName == targetDeviceName) {
-        Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO!**");
+    if (deviceName == targetDeviceName || servicioCoincide) {
+        if (deviceName == targetDeviceName) {
+            Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO!**");
+        } else {
+            Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO por UUID!**");
+        }
 
         if (rssi < RSSI_MIN_APAREAMIENTO) {
             Serial.printf("      ⛔ RSSI %d dBm es demasiado débil: acércalo a ~5 cm (>= %d dBm) para emparejar.\n", rssi, RSSI_MIN_APAREAMIENTO);
@@ -1064,6 +1080,8 @@ void MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice)
     } else {
         if (deviceName.length() > 0) {
             Serial.println(" - Otro dispositivo");
+        } else if (servicioCoincide) {
+            Serial.println(" - Sin nombre (UUID coincide)");
         } else {
             Serial.println(" - Sin nombre");
         }
@@ -2381,10 +2399,12 @@ void loop() {
     }
 
     // ⭐⭐ PRIORIDAD 6.5: AJUSTE DE POTENCIA TRAS IMPACTO (SIN TELEMETRÍA)
-    if (wakeByImpact && registrado && !configuracionPotenciaFinalizada) {
+    if (wakeByImpact && registrado && (!configuracionPotenciaFinalizada || ciclosPotenciaBle < 3)) {
         Serial.println("\n🛠️  Ajuste de potencia por botón (sin enviar telemetría de nivel)");
         intentosPotenciaBoton++;
-        Serial.printf("🔁 Intento potencia por botón: %u\n", intentosPotenciaBoton);
+        Serial.printf("🔁 Intento potencia por botón: %u (ciclo BLE %u/3)\n",
+                      intentosPotenciaBoton,
+                      min<uint8_t>(static_cast<uint8_t>(ciclosPotenciaBle + 1), 3));
 
         uint8_t potenciaConfirmada = LORA_POTENCIA_MIN_DBM;
         bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
@@ -3031,9 +3051,8 @@ bool enviarDatos(int distancia) {
 
     bool enviarAhora = cambiosRelevantes || forzarEnvioPorTiempo;
 
-    // Asegurar que el ciclo de transmisión parte de la potencia mínima (no EEPROM)
-    potenciaLoRaActualDbm = LORA_POTENCIA_MIN_DBM;
-    dispositivo.potenciaLoRaDbm = LORA_POTENCIA_MIN_DBM;
+    // Asegurar que el ciclo de transmisión parte de la potencia almacenada en EEPROM
+    potenciaLoRaActualDbm = dispositivo.potenciaLoRaDbm;
 
     if (!enviarAhora) {
         Serial.println("⏸️  Sin cambios en la medición. No se envía LoRa para ahorrar energía.");
@@ -3152,9 +3171,77 @@ bool enviarDatos(int distancia) {
     return confirmado;
 }
 
+bool intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual) {
+    Serial.printf("🔎 Intento BLE forzado (ciclo %u, intento %d/%d)\n",
+                  cicloActual, intentoActual, REINTENTOS_CONFIG_POTENCIA);
+
+    if (modoAPActivo || modoConfiguracionActivo) {
+        Serial.println("⏭️  BLE omitido: portal activo durante ajuste de potencia.");
+        return false;
+    }
+
+    if (deviceConnected && pClient != nullptr && pClient->isConnected()) {
+        Serial.println("✅ BLE ya conectado durante ajuste de potencia.");
+        return false;
+    }
+
+    scanForDevices();
+    if (doConnect) {
+        Serial.println("🔗 Intentando conexión BLE para ajuste de potencia...");
+        if (connectToServer()) {
+            Serial.println("✅ BLE conectado durante ajuste de potencia.");
+            if (wakeByImpact && registrado) {
+                String solicitudBaja = "BAJA:" + macAddress;
+                Serial.println("📤 Enviando solicitud BAJA durante emparejamiento...");
+                sendCommand(solicitudBaja);
+                bajaAutomaticaActivada = true;
+                tiempoInicioBaja = millis();
+                enProcesoRegistro = true;
+                doConnect = false;
+                return true;
+            }
+
+            Serial.println("🔌 Sin BAJA pendiente: desconectando BLE para continuar.");
+            if (pClient != nullptr && pClient->isConnected()) {
+                pClient->disconnect();
+            }
+            deviceConnected = false;
+        } else {
+            Serial.println("❌ Conexión BLE fallida durante ajuste de potencia.");
+            deviceConnected = false;
+        }
+        doConnect = false;
+    } else {
+        Serial.println("❌ NUUP_Monitor no encontrado en BLE durante ajuste de potencia.");
+    }
+    return false;
+}
+
 bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
-    if (configuracionPotenciaFinalizada) {
-        Serial.println("⏸️  Ajuste de potencia ya confirmado en este ciclo. No se envían más solicitudes.");
+    uint8_t cicloActual = ciclosPotenciaBle < 255 ? static_cast<uint8_t>(ciclosPotenciaBle + 1) : ciclosPotenciaBle;
+    bool forzarBle = cicloActual <= 3;
+
+    if (potenciaConfirmadaSesion && !forzarBle) {
+        Serial.println("⏸️  Ajuste de potencia ya confirmado; se omite BLE.");
+        potenciaConfirmada = potenciaConfirmadaSesionDbm;
+        return true;
+    }
+
+    if (potenciaConfirmadaSesion && forzarBle) {
+        Serial.printf("🔁 Ciclo BLE %u/3: potencia ya confirmada, se fuerza BLE.\n", cicloActual);
+        potenciaConfirmada = potenciaConfirmadaSesionDbm;
+        for (int intento = 1; intento <= REINTENTOS_CONFIG_POTENCIA; intento++) {
+            if (atenderBotonPrioritario("BLE forzado con potencia confirmada")) {
+                return false;
+            }
+            if (intentarConexionBlePotencia(cicloActual, intento)) {
+                Serial.println("⏸️  Ajuste de potencia detenido: BLE activo solicitando BAJA.");
+                return false;
+            }
+        }
+        if (ciclosPotenciaBle < 255) {
+            ciclosPotenciaBle++;
+        }
         return true;
     }
 
@@ -3175,32 +3262,50 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
             if (atenderBotonPrioritario("intento potencia")) {
                 return false;
             }
-            String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
-            uint8_t potenciaConfirmadaRx = potenciaConfirmada;
 
-            LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
-            unsigned long ventana = calcularVentanaConfirmacionMs(intento);
-            Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d, espera %lu ms)\n",
-                          solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA, ventana);
+            if (!confirmado) {
+                String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
+                uint8_t potenciaConfirmadaRx = potenciaConfirmada;
 
-            if (LoRa.beginPacket()) {
-                LoRa.print(solicitud);
-                LoRa.endPacket();
+                LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
+                unsigned long ventana = calcularVentanaConfirmacionMs(intento);
+                Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d, espera %lu ms)\n",
+                              solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA, ventana);
 
-                if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento, potenciaConfirmadaRx)) {
-                    Serial.printf("✅ Confirmación de potencia recibida: %u dBm\n", potenciaConfirmadaRx);
-                    potenciaConfirmada = potenciaConfirmadaRx;
-                    confirmado = true;
-                    break;
+                if (LoRa.beginPacket()) {
+                    LoRa.print(solicitud);
+                    LoRa.endPacket();
+
+                    if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento, potenciaConfirmadaRx)) {
+                        Serial.printf("✅ Confirmación de potencia recibida: %u dBm\n", potenciaConfirmadaRx);
+                        potenciaConfirmada = potenciaConfirmadaRx;
+                        confirmado = true;
+                        potenciaConfirmadaSesion = true;
+                        potenciaConfirmadaSesionDbm = potenciaConfirmadaRx;
+                    }
                 }
             }
-            unsigned long inicioPausa = millis();
-            while (millis() - inicioPausa < 200) {
-                esp_task_wdt_reset();
-                if (atenderBotonPrioritario("pausa potencia")) {
+
+            if (forzarBle) {
+                if (intentarConexionBlePotencia(cicloActual, intento)) {
+                    Serial.println("⏸️  Ajuste de potencia detenido: BLE activo solicitando BAJA.");
                     return false;
                 }
-                delay(10);
+            }
+
+            if (confirmado && !forzarBle) {
+                break;
+            }
+
+            if (!confirmado) {
+                unsigned long inicioPausa = millis();
+                while (millis() - inicioPausa < 200) {
+                    esp_task_wdt_reset();
+                    if (atenderBotonPrioritario("pausa potencia")) {
+                        return false;
+                    }
+                    delay(10);
+                }
             }
         }
 
@@ -3211,7 +3316,10 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
 
     if (!confirmado) {
         Serial.println("⚠️  No se obtuvo confirmación tras barrido completo hasta potencia máxima.");
-        configuracionPotenciaFinalizada = true;
+    }
+
+    if (ciclosPotenciaBle < 255) {
+        ciclosPotenciaBle++;
     }
 
     return confirmado;
