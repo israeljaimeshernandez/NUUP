@@ -236,6 +236,7 @@ unsigned long ultimoCambioLedRojo = 0;
 bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
+bool botonIgnorarHastaSoltar = false;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
 uint8_t intentosBleBoton = 0;
@@ -610,6 +611,16 @@ EventoBoton leerEventoBoton() {
 
     unsigned long ahora = millis();
     bool estadoActual = digitalRead(BOTON_PIN) == LOW;
+
+    if (botonIgnorarHastaSoltar) {
+        if (!estadoActual) {
+            botonIgnorarHastaSoltar = false;
+            botonPresionado = false;
+            largoDisparado = false;
+            ultimoCambio = ahora;
+        }
+        return EventoBoton::Ninguno;
+    }
 
     if (estadoActual != botonPresionado && (ahora - ultimoCambio) >= BOTON_REBOTE_MS) {
         ultimoCambio = ahora;
@@ -1972,6 +1983,7 @@ void setup() {
             if (!largoDetectado &&
                 (millis() - inicioPresion) >= BOTON_PRESION_LARGA_MIN_MS) {
                 largoDetectado = true;
+                botonIgnorarHastaSoltar = true;
                 iniciarModoEmparejamiento("arranque por presión larga (sin soltar)");
                 break;
             }
