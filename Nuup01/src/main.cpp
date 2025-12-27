@@ -145,6 +145,8 @@ const uint8_t IMPACTO_MIN_TOQUES = 1;
 const uint8_t IMPACTO_MAX_TOQUES = 3;
 // 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
 const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (más tiempo para AP tras impacto)
+// 08) Cantidad de ciclos en modo impacto antes de reiniciar automáticamente
+const uint32_t IMPACTO_MAX_CICLOS_AUTO_REINICIO = 5;
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -2384,6 +2386,12 @@ void loop() {
         if (!avisoEsperandoGolpe) {
             Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
             avisoEsperandoGolpe = true;
+        }
+        if (impactoConsecutivo >= IMPACTO_MAX_CICLOS_AUTO_REINICIO) {
+            Serial.printf("🔁 Ciclos de impacto completos (%lu) - reiniciando para volver al ciclo normal\n",
+                          impactoConsecutivo);
+            delay(200);
+            ESP.restart();
         }
         if (confirmarGolpesImpacto()) {
             impactoConsecutivo++;
