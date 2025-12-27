@@ -140,6 +140,7 @@ const uint32_t BOTON_PRESION_LARGA_MIN_MS = 3000;
 const uint32_t BOTON_PRESION_LARGA_MAX_MS = 5000;
 const uint32_t BOTON_REBOTE_MS = 40;
 const uint32_t BOTON_TIEMPO_VIGILIA_MS = 300000; // 5 minutos de ventana activa tras emparejamiento
+const uint8_t BOTON_INTENTOS_MAXIMOS = 3;
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -238,6 +239,8 @@ unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
+uint8_t intentosBleBoton = 0;
+uint8_t intentosPotenciaBoton = 0;
 bool forzarEnvioPorTiempo = false;
 bool envioLoRaEjecutado = false;
 unsigned long ultimaMedicionMs = 0;
@@ -672,6 +675,8 @@ void iniciarModoEmparejamiento(const char* motivo) {
     impactoInterrumpioLoRa = true;
     impactoConfirmadoEnOperacion = true;
     ultimoEscaneoBLE = 0;
+    intentosBleBoton = 0;
+    intentosPotenciaBoton = 0;
 
     potenciaLoRaActualDbm = LORA_POTENCIA_INICIO_CONFIG_DBM;
     dispositivo.potenciaLoRaDbm = LORA_POTENCIA_INICIO_CONFIG_DBM;
@@ -1980,6 +1985,8 @@ void setup() {
     if (wakeByImpact) {
         Serial.println("⚡ Modo emparejamiento activo - habilitando BLE/ajuste de potencia");
         inicioVigiliaImpacto = millis();
+        intentosBleBoton = 0;
+        intentosPotenciaBoton = 0;
     }
 
     configuracionPotenciaFinalizada = !wakeByImpact;
@@ -2217,64 +2224,75 @@ void loop() {
     if (blePermitido) {
         // Ejecutar BLE si es tiempo
         if (ultimoEscaneoBLE == 0 || tiempoDesdeEscaneoBLE >= intervaloEscaneo) {
-            Serial.println("\n🔍 ===========================================");
-            Serial.println("🎯 INICIANDO ESCANEO BLE");
-            Serial.printf("   Modo: %s\n",
-                          bajaFabricaActiva
-                              ? "SOLICITAR BAJA (FÁBRICA)"
-                              : (registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO"));
-            Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
-            Serial.println("🔍 ===========================================");
-
-            if (bajaFabricaActiva) {
-                if (bajaFabricaIntentos < 255) {
-                    bajaFabricaIntentos++;
+            if (wakeByImpact && intentosBleBoton >= BOTON_INTENTOS_MAXIMOS) {
+                Serial.println("⏭️  Escaneo BLE omitido: máximo de intentos por botón alcanzado.");
+                ultimoEscaneoBLE = millis();
+                Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
+            } else {
+                if (wakeByImpact) {
+                    intentosBleBoton++;
+                    Serial.printf("🔁 Intento BLE por botón: %u/%u\n",
+                                  intentosBleBoton, BOTON_INTENTOS_MAXIMOS);
                 }
-                bajaFabricaConsecutivo++;
-                bajaFabricaUltimoIntento = millis();
-                Serial.printf("🧹 Intento de baja fábrica %u/%u (consecutivo %lu)\n",
-                              bajaFabricaIntentos,
-                              BAJA_FABRICA_MAX_INTENTOS,
-                              bajaFabricaConsecutivo);
-            }
+                Serial.println("\n🔍 ===========================================");
+                Serial.println("🎯 INICIANDO ESCANEO BLE");
+                Serial.printf("   Modo: %s\n",
+                              bajaFabricaActiva
+                                  ? "SOLICITAR BAJA (FÁBRICA)"
+                                  : (registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO"));
+                Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
+                Serial.println("🔍 ===========================================");
 
-            scanForDevices();
+                if (bajaFabricaActiva) {
+                    if (bajaFabricaIntentos < 255) {
+                        bajaFabricaIntentos++;
+                    }
+                    bajaFabricaConsecutivo++;
+                    bajaFabricaUltimoIntento = millis();
+                    Serial.printf("🧹 Intento de baja fábrica %u/%u (consecutivo %lu)\n",
+                                  bajaFabricaIntentos,
+                                  BAJA_FABRICA_MAX_INTENTOS,
+                                  bajaFabricaConsecutivo);
+                }
 
-            if (doConnect) {
-                Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
-                if (connectToServer()) {
-                    if (!registrado && !bajaFabricaActiva) {
-                        // MODO REGISTRO
-                        String solicitudRegistro = "REG:" + macAddress;
-                        sendCommand(solicitudRegistro);
-                        Serial.println("📤 ENVIANDO SOLICITUD DE REGISTRO: " + solicitudRegistro);
-                        enProcesoRegistro = true;
-                        tiempoInicioRegistro = millis();
-                        Serial.println("⏳ Esperando confirmación de registro...");
+                scanForDevices();
+
+                if (doConnect) {
+                    Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
+                    if (connectToServer()) {
+                        if (!registrado && !bajaFabricaActiva) {
+                            // MODO REGISTRO
+                            String solicitudRegistro = "REG:" + macAddress;
+                            sendCommand(solicitudRegistro);
+                            Serial.println("📤 ENVIANDO SOLICITUD DE REGISTRO: " + solicitudRegistro);
+                            enProcesoRegistro = true;
+                            tiempoInicioRegistro = millis();
+                            Serial.println("⏳ Esperando confirmación de registro...");
+                        } else {
+                            // MODO BAJA
+                            String solicitudBaja = "BAJA:" + macAddress;
+                            sendCommand(solicitudBaja);
+                            Serial.println("📤 ENVIANDO SOLICITUD DE BAJA: " + solicitudBaja);
+                            bajaAutomaticaActivada = true;
+                            tiempoInicioBaja = millis();
+                            enProcesoRegistro = true;
+                            Serial.println("⏳ Esperando confirmación de baja...");
+                        }
                     } else {
-                        // MODO BAJA
-                        String solicitudBaja = "BAJA:" + macAddress;
-                        sendCommand(solicitudBaja);
-                        Serial.println("📤 ENVIANDO SOLICITUD DE BAJA: " + solicitudBaja);
-                        bajaAutomaticaActivada = true;
-                        tiempoInicioBaja = millis();
-                        enProcesoRegistro = true;
-                        Serial.println("⏳ Esperando confirmación de baja...");
+                        Serial.println("❌ FALLO EN CONEXIÓN BLE");
                     }
                 } else {
-                    Serial.println("❌ FALLO EN CONEXIÓN BLE");
+                    Serial.println("❌ SERVIDOR NUUP_Monitor NO ENCONTRADO");
                 }
-            } else {
-                Serial.println("❌ SERVIDOR NUUP_Monitor NO ENCONTRADO");
-            }
 
-            ultimoEscaneoBLE = millis();
-            Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
+                ultimoEscaneoBLE = millis();
+                Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
 
-            // ⭐ SI SE ENCONTRÓ BLE, NO CONTINUAR INMEDIATAMENTE
-            if (doConnect) {
-                delay(100);
-                return;
+                // ⭐ SI SE ENCONTRÓ BLE, NO CONTINUAR INMEDIATAMENTE
+                if (doConnect) {
+                    delay(100);
+                    return;
+                }
             }
         }
     }
@@ -2335,7 +2353,14 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 6.5: AJUSTE DE POTENCIA TRAS IMPACTO (SIN TELEMETRÍA)
     if (wakeByImpact && registrado && !configuracionPotenciaFinalizada) {
+        if (intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS) {
+            Serial.println("⏭️  Ajuste de potencia omitido: máximo de intentos por botón alcanzado.");
+            configuracionPotenciaFinalizada = true;
+        } else {
         Serial.println("\n🛠️  Ajuste de potencia por botón (sin enviar telemetría de nivel)");
+        intentosPotenciaBoton++;
+        Serial.printf("🔁 Intento potencia por botón: %u/%u\n",
+                      intentosPotenciaBoton, BOTON_INTENTOS_MAXIMOS);
 
         uint8_t potenciaConfirmada = LORA_POTENCIA_INICIO_CONFIG_DBM;
         bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
@@ -2350,7 +2375,8 @@ void loop() {
             Serial.println("⚠️  Sin confirmación de potencia tras botón (se mantiene potencia por defecto)");
         }
 
-        configuracionPotenciaFinalizada = true;
+        configuracionPotenciaFinalizada = confirmacionPotencia ||
+                                          intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS;
         recalibrarPotenciaLoRa = false;
         tiempoSinEnvioConfirmado = 0;
         marcaAcumuladorSinEnvio = millis();
@@ -2361,6 +2387,7 @@ void loop() {
         Serial.printf("🔁 Vigilia activa tras botón (consecutivo %lu)\n", impactoConsecutivo);
         delay(50);
         return;
+        }
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
@@ -2453,6 +2480,13 @@ void loop() {
     } else if (wakeByImpact) {
         if (inicioVigiliaImpacto == 0) {
             inicioVigiliaImpacto = millis();
+        }
+
+        if (intentosBleBoton >= BOTON_INTENTOS_MAXIMOS &&
+            (configuracionPotenciaFinalizada || intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS)) {
+            Serial.println("✅ Modo botón completado (BLE/potencia). Reiniciando a operación normal.");
+            delay(200);
+            ESP.restart();
         }
 
         bool sesionAPActiva = modoAPActivo || modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
