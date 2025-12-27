@@ -10,6 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 130 - 2025-07-08 Botón WiFi a GPIO33 + OLED I2C vertical (SDA15/SCL4) para nivel de agua con parpadeo <10% y operación aislada.
  * 129 - LoRa: corrección de modificación pendiente; el monitor ya no se queda fijo en litros antiguos y valida alias/altura/capacidad sin bloquear por litros actuales.
  * 128 - LoRa: al recibir datos mientras hay modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
  * 127 - MQTT: el monitor atiende solicitudes de modificación iniciadas por el servidor (device_modificacion=1) aun sin
@@ -341,7 +342,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 129;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 130;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -611,6 +612,9 @@ void verificarTiemposSinDatos();
 void debugMensajeLoRa(const String &mensaje);
 void testDispositivosRapido() ;
 void activarDispositivosTrasConfirmacion();
+void iniciarWaterDisplay();
+void actualizarWaterDisplay(int porcentaje);
+void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua);
 
 
 //Definiciones pantalla TFT
@@ -620,6 +624,17 @@ void activarDispositivosTrasConfirmacion();
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool displayReady = false;
+
+// OLED secundario vertical (nivel de agua) - bus I2C independiente
+static const uint8_t WATER_OLED_SDA = 15;
+static const uint8_t WATER_OLED_SCL = 4;
+static const uint8_t WATER_OLED_ADDR = 0x3C;
+TwoWire waterWire = TwoWire(1);
+Adafruit_SSD1306 waterDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &waterWire, OLED_RESET);
+bool waterDisplayOk = false;
+int waterDisplayUltimoPorcentaje = -1;
+unsigned long waterDisplayUltimoBlink = 0;
+bool waterDisplayBlinkOn = true;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -779,8 +794,8 @@ void dibujarMensajeConexion();
 String escapeForJS(const String &input);
 
 // --- Pines para los botones---
-#define BOTON_S 33
-#define BOTON_W 4
+#define BOTON_S 32
+#define BOTON_W 33
 #define TIEMPO_BOTON 1000
 
 bool boton_s=false;
@@ -6032,6 +6047,85 @@ void dibujarContenidoPrincipal() {
     }
 }
 
+void iniciarWaterDisplay() {
+    waterWire.begin(WATER_OLED_SDA, WATER_OLED_SCL);
+    waterDisplayOk = waterDisplay.begin(SSD1306_SWITCHCAPVCC, WATER_OLED_ADDR);
+    if (!waterDisplayOk) {
+        Serial.println("❌ OLED nivel de agua: fallo al iniciar (SDA15/SCL4).");
+        return;
+    }
+    waterDisplay.setRotation(1); // Vertical
+    waterDisplay.clearDisplay();
+    waterDisplay.display();
+    Serial.println("✅ OLED nivel de agua inicializado en SDA15/SCL4.");
+}
+
+void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
+    const int ancho = waterDisplay.width();
+    const int alto = waterDisplay.height();
+    const int margen = 4;
+    const int marco = 2;
+    const int tanqueX = margen;
+    const int tanqueY = margen;
+    const int tanqueW = ancho - (margen * 2);
+    const int tanqueH = alto - (margen * 2);
+    const int interiorX = tanqueX + marco;
+    const int interiorY = tanqueY + marco;
+    const int interiorW = tanqueW - (marco * 2);
+    const int interiorH = tanqueH - (marco * 2);
+
+    waterDisplay.drawRect(tanqueX, tanqueY, tanqueW, tanqueH, SSD1306_WHITE);
+
+    if (!mostrarAgua) {
+        return;
+    }
+
+    int alturaAgua = (interiorH * porcentaje) / 100;
+    alturaAgua = constrain(alturaAgua, 0, interiorH);
+    int aguaY = interiorY + (interiorH - alturaAgua);
+
+    waterDisplay.fillRect(interiorX, aguaY, interiorW, alturaAgua, SSD1306_WHITE);
+
+    int waveOffset = (millis() / 250) % 4;
+    for (int y = aguaY + waveOffset; y < interiorY + interiorH; y += 6) {
+        waterDisplay.drawFastHLine(interiorX, y, interiorW, SSD1306_BLACK);
+    }
+}
+
+void actualizarWaterDisplay(int porcentaje) {
+    if (!waterDisplayOk) {
+        return;
+    }
+
+    porcentaje = constrain(porcentaje, 0, 100);
+    bool necesitaRender = false;
+    unsigned long ahora = millis();
+
+    if (porcentaje < 10) {
+        if (ahora - waterDisplayUltimoBlink >= 500) {
+            waterDisplayUltimoBlink = ahora;
+            waterDisplayBlinkOn = !waterDisplayBlinkOn;
+            necesitaRender = true;
+        }
+    } else if (!waterDisplayBlinkOn) {
+        waterDisplayBlinkOn = true;
+        necesitaRender = true;
+    }
+
+    if (porcentaje != waterDisplayUltimoPorcentaje) {
+        waterDisplayUltimoPorcentaje = porcentaje;
+        necesitaRender = true;
+    }
+
+    if (!necesitaRender) {
+        return;
+    }
+
+    waterDisplay.clearDisplay();
+    dibujarNivelAguaVertical(porcentaje, waterDisplayBlinkOn);
+    waterDisplay.display();
+}
+
 bool actualizarLecturasParcialesDesdeLoRa(int indice, const String &mensaje) {
     if (indice < 0 || indice >= MAX_DISPOSITIVOS) {
         return false;
@@ -6389,6 +6483,7 @@ void setup() {
   displayReady = true;
   Serial.println("OLED inicializado correctamente");
   display.setTextColor(SSD1306_WHITE);
+  iniciarWaterDisplay();
 
     // 11. Inicializar BLE
     iniciarBLE();
@@ -6896,6 +6991,7 @@ if(!forceAPMode){
         dibujarTituloDispositivo();
         dibujarContenidoPrincipal();
         display.display();
+        actualizarWaterDisplay(0);
         delay(100);
         return; // Salir temprano
     }
@@ -6909,6 +7005,7 @@ if(!forceAPMode){
     
     // ⭐⭐ SEGURO: cantidadDispositivos es al menos 1
     Dispositivo dispActual = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
+    actualizarWaterDisplay(dispActual.porcentaje);
     
     // ⭐⭐ SOLO IMPRIMIR SI HAY CAMBIOS
     static String ultimoNombreMostrado = "";
