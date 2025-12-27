@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 119 - 2026-01-02 BLE: aceptar emparejamiento por UUID del servicio cuando el nombre no esté en el anuncio.
 // 118 - 2025-12-31 Botón: reemplazo del sensor de impacto por switch pull-up, modos AP (<1s) y emparejamiento/potencia (>3s)
 //      con parpadeos LED dedicados, consecutivo en español y reinicio por toque corto en modos activos.
 // 117 - 2025-12-31 Impacto: detección permanente tras deep sleep normal; reinicio simulado como interrupción y consecutivo en español.
@@ -1038,14 +1039,21 @@ void MyClientCallback::onDisconnect(BLEClient* pclient) {
 void MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice) {
     String deviceName = String(advertisedDevice.getName().c_str());
     String deviceAddress = String(advertisedDevice.getAddress().toString().c_str());
-  int rssi = advertisedDevice.getRSSI();
+    int rssi = advertisedDevice.getRSSI();
+    BLEUUID servicioEsperado(SERVICE_UUID);
+    bool servicioCoincide = advertisedDevice.haveServiceUUID() &&
+                            advertisedDevice.isAdvertisingService(servicioEsperado);
     
     Serial.printf("   📶 Dispositivo: '%s'", deviceName.c_str());
     Serial.printf(" - MAC: %s", deviceAddress.c_str());
     Serial.printf(" - RSSI: %d dBm", rssi);
     
-  if (deviceName == targetDeviceName) {
-        Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO!**");
+    if (deviceName == targetDeviceName || servicioCoincide) {
+        if (deviceName == targetDeviceName) {
+            Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO!**");
+        } else {
+            Serial.println(" - 🎯 **NUUP_Monitor ENCONTRADO por UUID!**");
+        }
 
         if (rssi < RSSI_MIN_APAREAMIENTO) {
             Serial.printf("      ⛔ RSSI %d dBm es demasiado débil: acércalo a ~5 cm (>= %d dBm) para emparejar.\n", rssi, RSSI_MIN_APAREAMIENTO);
@@ -1071,6 +1079,8 @@ void MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice)
     } else {
         if (deviceName.length() > 0) {
             Serial.println(" - Otro dispositivo");
+        } else if (servicioCoincide) {
+            Serial.println(" - Sin nombre (UUID coincide)");
         } else {
             Serial.println(" - Sin nombre");
         }
