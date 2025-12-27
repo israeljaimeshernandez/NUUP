@@ -10,6 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
  * 130 - 2025-07-08 Botón WiFi a GPIO33 + OLED I2C vertical (SDA15/SCL4) para nivel de agua con parpadeo <10% y operación aislada.
  * 129 - LoRa: corrección de modificación pendiente; el monitor ya no se queda fijo en litros antiguos y valida alias/altura/capacidad sin bloquear por litros actuales.
  * 128 - LoRa: al recibir datos mientras hay modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
@@ -101,6 +102,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
 // 130 - 2025-07-08 Botón WiFi en GPIO33 y OLED vertical I2C (SDA15/SCL4) con nivel de agua y parpadeo <10%.
 // 129 - 2025-07-07 LoRa: se actualizan lecturas mientras hay modificación pendiente y la validación no bloquea por litros actuales.
 // 128 - 2025-07-07 LoRa: al recibir datos con modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
@@ -343,7 +345,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 130;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 131;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -636,6 +638,7 @@ bool waterDisplayOk = false;
 int waterDisplayUltimoPorcentaje = -1;
 unsigned long waterDisplayUltimoBlink = 0;
 bool waterDisplayBlinkOn = true;
+bool waterDisplayLlenando = false;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -6064,18 +6067,27 @@ void iniciarWaterDisplay() {
 void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
     const int ancho = waterDisplay.width();
     const int alto = waterDisplay.height();
-    const int margen = 4;
+    const int margenX = 12;
+    const int margenY = 6;
     const int marco = 2;
-    const int tanqueX = margen;
-    const int tanqueY = margen;
-    const int tanqueW = ancho - (margen * 2);
-    const int tanqueH = alto - (margen * 2);
+    const int tanqueW = ancho - (margenX * 2);
+    const int tanqueH = alto - (margenY * 2);
+    const int tanqueX = (ancho - tanqueW) / 2;
+    const int tanqueY = (alto - tanqueH) / 2;
     const int interiorX = tanqueX + marco;
     const int interiorY = tanqueY + marco;
     const int interiorW = tanqueW - (marco * 2);
     const int interiorH = tanqueH - (marco * 2);
 
     waterDisplay.drawRect(tanqueX, tanqueY, tanqueW, tanqueH, SSD1306_WHITE);
+
+    const int hoseWidth = 18;
+    const int hoseHeight = 4;
+    const int hoseX = tanqueX + (tanqueW / 2) - (hoseWidth / 2);
+    const int hoseY = tanqueY - (hoseHeight + 2);
+    waterDisplay.drawRect(hoseX, hoseY, hoseWidth, hoseHeight, SSD1306_WHITE);
+    waterDisplay.fillRect(hoseX + 2, hoseY + 1, hoseWidth - 4, hoseHeight - 2, SSD1306_WHITE);
+    waterDisplay.drawPixel(hoseX + hoseWidth - 1, hoseY + hoseHeight / 2, SSD1306_WHITE);
 
     if (!mostrarAgua) {
         return;
@@ -6090,6 +6102,19 @@ void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
     int waveOffset = (millis() / 250) % 4;
     for (int y = aguaY + waveOffset; y < interiorY + interiorH; y += 6) {
         waterDisplay.drawFastHLine(interiorX, y, interiorW, SSD1306_BLACK);
+    }
+
+    if (waterDisplayLlenando) {
+        int dropOffset = (millis() / 120) % 8;
+        int dropX = hoseX + (hoseWidth / 2);
+        int dropYStart = hoseY + hoseHeight + 1;
+        int dropY = dropYStart + dropOffset;
+        int dropYMax = tanqueY + 6;
+        if (dropY < dropYMax) {
+            waterDisplay.drawFastVLine(dropX, dropYStart, dropY - dropYStart + 1, SSD1306_WHITE);
+            waterDisplay.drawPixel(dropX - 1, dropY, SSD1306_WHITE);
+            waterDisplay.drawPixel(dropX + 1, dropY, SSD1306_WHITE);
+        }
     }
 }
 
