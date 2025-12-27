@@ -101,6 +101,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 130 - 2025-07-08 Botón WiFi en GPIO33 y OLED vertical I2C (SDA15/SCL4) con nivel de agua y parpadeo <10%.
 // 129 - 2025-07-07 LoRa: se actualizan lecturas mientras hay modificación pendiente y la validación no bloquea por litros actuales.
 // 128 - 2025-07-07 LoRa: al recibir datos con modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
 // 127 - 2025-07-06 MQTT: solicitudes de modificación iniciadas por servidor se aplican en EEPROM aunque no exista LoRa previo,
