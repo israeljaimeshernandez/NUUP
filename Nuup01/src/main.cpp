@@ -236,6 +236,8 @@ unsigned long ultimoCambioLedRojo = 0;
 bool estadoLedRojo = false;
 unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
+bool botonIgnorarHastaSoltar = false;
+bool botonInterrumpioOperacion = false;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
 uint8_t intentosBleBoton = 0;
@@ -606,9 +608,24 @@ EventoBoton leerEventoBoton() {
     static bool botonPresionado = false;
     static unsigned long inicioPresion = 0;
     static unsigned long ultimoCambio = 0;
+    static bool largoDisparado = false;
 
     unsigned long ahora = millis();
     bool estadoActual = digitalRead(BOTON_PIN) == LOW;
+
+    if (!estadoActual && botonInterrumpioOperacion && !botonIgnorarHastaSoltar) {
+        botonInterrumpioOperacion = false;
+    }
+
+    if (botonIgnorarHastaSoltar) {
+        if (!estadoActual) {
+            botonIgnorarHastaSoltar = false;
+            botonPresionado = false;
+            largoDisparado = false;
+            ultimoCambio = ahora;
+        }
+        return EventoBoton::Ninguno;
+    }
 
     if (estadoActual != botonPresionado && (ahora - ultimoCambio) >= BOTON_REBOTE_MS) {
         ultimoCambio = ahora;
@@ -616,18 +633,25 @@ EventoBoton leerEventoBoton() {
         if (estadoActual) {
             botonPresionado = true;
             inicioPresion = ahora;
+            largoDisparado = false;
         } else {
             botonPresionado = false;
             unsigned long duracion = ahora - inicioPresion;
 
-            if (duracion < BOTON_PRESION_CORTA_MS) {
+            if (!largoDisparado && duracion < BOTON_PRESION_CORTA_MS) {
                 return EventoBoton::Corto;
             }
 
-            if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
+            if (!largoDisparado && duracion >= BOTON_PRESION_LARGA_MIN_MS) {
                 return EventoBoton::Largo;
             }
         }
+    }
+
+    if (botonPresionado && !largoDisparado &&
+        (ahora - inicioPresion) >= BOTON_PRESION_LARGA_MIN_MS) {
+        largoDisparado = true;
+        return EventoBoton::Largo;
     }
 
     return EventoBoton::Ninguno;
@@ -691,6 +715,7 @@ bool atenderBotonPrioritario(const char *contexto) {
     }
 
     if (evento == EventoBoton::Corto) {
+        botonInterrumpioOperacion = true;
         if (wakeByImpact || modoAPActivo) {
             Serial.printf("🔁 Toque corto (%s): reiniciando a operación normal.\n", contexto);
             delay(200);
@@ -701,6 +726,7 @@ bool atenderBotonPrioritario(const char *contexto) {
     }
 
     if (evento == EventoBoton::Largo) {
+        botonInterrumpioOperacion = true;
         iniciarModoEmparejamiento("presión larga (3-5s)");
         return true;
     }
@@ -1958,16 +1984,24 @@ void setup() {
     if (botonDesperto || digitalRead(BOTON_PIN) == LOW) {
         Serial.println("🧭 Evaluando duración de botón en arranque...");
         unsigned long inicioPresion = millis();
+        bool largoDetectado = false;
         while (digitalRead(BOTON_PIN) == LOW) {
             esp_task_wdt_reset();
+            if (!largoDetectado &&
+                (millis() - inicioPresion) >= BOTON_PRESION_LARGA_MIN_MS) {
+                largoDetectado = true;
+                botonIgnorarHastaSoltar = true;
+                iniciarModoEmparejamiento("arranque por presión larga (sin soltar)");
+                break;
+            }
             delay(10);
         }
         unsigned long duracion = millis() - inicioPresion;
         Serial.printf("⏱️  Duración botón: %lums\n", duracion);
 
-        if (duracion < BOTON_PRESION_CORTA_MS) {
+        if (!largoDetectado && duracion < BOTON_PRESION_CORTA_MS) {
             iniciarModoAP("arranque por toque corto");
-        } else if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
+        } else if (!largoDetectado && duracion >= BOTON_PRESION_LARGA_MIN_MS) {
             iniciarModoEmparejamiento("arranque por presión larga");
         }
     }
@@ -2151,6 +2185,9 @@ void loop() {
     bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoAPActivo || modoConfiguracionActivo || bajaFabricaPendiente;
     bool sesionPortalActiva = modoAPActivo || modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
     bool blePermitido = comunicacionesHabilitadas && !sesionPortalActiva;
+    if (wakeByImpact && intentosBleBoton >= BOTON_INTENTOS_MAXIMOS) {
+        blePermitido = false;
+    }
 
     // ⭐⭐ PRIORIDAD 1: VERIFICAR CLIENTES WiFi
     if (comunicacionesHabilitadas) {
@@ -2160,7 +2197,9 @@ void loop() {
     // ⭐⭐ PRIORIDAD 2: ATENDER SERVIDOR WEB (SOLO SI HAY COMUNICACIÓN HABILITADA)
     if (comunicacionesHabilitadas) {
         server.handleClient();
-        dnsServer.processNextRequest();
+        if (apIniciado) {
+            dnsServer.processNextRequest();
+        }
     }
 
     // ⭐⭐ PRIORIDAD 3: MANEJAR LED
@@ -2343,16 +2382,11 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 6.5: AJUSTE DE POTENCIA TRAS IMPACTO (SIN TELEMETRÍA)
     if (wakeByImpact && registrado && !configuracionPotenciaFinalizada) {
-        if (intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS) {
-            Serial.println("⏭️  Ajuste de potencia omitido: máximo de intentos por botón alcanzado.");
-            configuracionPotenciaFinalizada = true;
-        } else {
         Serial.println("\n🛠️  Ajuste de potencia por botón (sin enviar telemetría de nivel)");
         intentosPotenciaBoton++;
-        Serial.printf("🔁 Intento potencia por botón: %u/%u\n",
-                      intentosPotenciaBoton, BOTON_INTENTOS_MAXIMOS);
+        Serial.printf("🔁 Intento potencia por botón: %u\n", intentosPotenciaBoton);
 
-        uint8_t potenciaConfirmada = LORA_POTENCIA_INICIO_CONFIG_DBM;
+        uint8_t potenciaConfirmada = LORA_POTENCIA_MIN_DBM;
         bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
 
         if (confirmacionPotencia) {
@@ -2361,13 +2395,11 @@ void loop() {
             LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
             guardarDatosEnEEPROM();
             Serial.printf("✅ Potencia confirmada tras botón: %u dBm\n", potenciaConfirmada);
-            intentosPotenciaBoton = BOTON_INTENTOS_MAXIMOS;
         } else {
-            Serial.println("⚠️  Sin confirmación de potencia tras botón (se mantiene potencia por defecto)");
+            Serial.println("⚠️  Sin confirmación de potencia tras botón (se reintentará barrido completo)");
         }
 
-        configuracionPotenciaFinalizada = confirmacionPotencia ||
-                                          intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS;
+        configuracionPotenciaFinalizada = confirmacionPotencia;
         recalibrarPotenciaLoRa = false;
         tiempoSinEnvioConfirmado = 0;
         marcaAcumuladorSinEnvio = millis();
@@ -2378,7 +2410,6 @@ void loop() {
         Serial.printf("🔁 Vigilia activa tras botón (consecutivo %lu)\n", impactoConsecutivo);
         delay(50);
         return;
-        }
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
@@ -2474,7 +2505,7 @@ void loop() {
         }
 
         if (intentosBleBoton >= BOTON_INTENTOS_MAXIMOS &&
-            (configuracionPotenciaFinalizada || intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS)) {
+            configuracionPotenciaFinalizada) {
             Serial.println("✅ Modo botón completado (BLE/potencia). Reiniciando a operación normal.");
             delay(200);
             ESP.restart();
@@ -3000,11 +3031,9 @@ bool enviarDatos(int distancia) {
 
     bool enviarAhora = cambiosRelevantes || forzarEnvioPorTiempo;
 
-    // Asegurar que el ciclo de transmisión parte de la potencia por defecto cuando no hay confirmación vigente
-    if (!configuracionPotenciaFinalizada) {
-        potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
-        dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
-    }
+    // Asegurar que el ciclo de transmisión parte de la potencia mínima (no EEPROM)
+    potenciaLoRaActualDbm = LORA_POTENCIA_MIN_DBM;
+    dispositivo.potenciaLoRaDbm = LORA_POTENCIA_MIN_DBM;
 
     if (!enviarAhora) {
         Serial.println("⏸️  Sin cambios en la medición. No se envía LoRa para ahorrar energía.");
@@ -3057,6 +3086,9 @@ bool enviarDatos(int distancia) {
                         potenciaConfirmada = potenciaLoRaActualDbm;
                         break;
                     } else {
+                        if (botonInterrumpioOperacion) {
+                            return false;
+                        }
                         Serial.println("⌛ Sin confirmación, reintentando...");
                     }
                 }
@@ -3092,6 +3124,7 @@ bool enviarDatos(int distancia) {
         strlcpy(ultimoNombreEnviado, dispositivo.nombre, sizeof(ultimoNombreEnviado));
         cambiosConfiguracionPendientes = false;
         recalibrarPotenciaLoRa = false;
+        configuracionPotenciaFinalizada = true;
 
         if (ajustarPotenciaTrasDespertar && !configuracionPotenciaFinalizada) {
             uint8_t potenciaAntesIntercambio = potenciaConfirmada;
@@ -3125,7 +3158,7 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
         return true;
     }
 
-    uint8_t potenciaInicio = min<uint8_t>(LORA_POTENCIA_INICIO_CONFIG_DBM, LORA_POTENCIA_MAX_DBM);
+    uint8_t potenciaInicio = LORA_POTENCIA_MIN_DBM;
     potenciaConfirmada = potenciaInicio;
     potenciaLoRaActualDbm = potenciaInicio;
 
@@ -3177,7 +3210,8 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
     }
 
     if (!confirmado) {
-        Serial.println("⚠️  No se obtuvo confirmación de configuración tras los reintentos (continuando sin error crítico)");
+        Serial.println("⚠️  No se obtuvo confirmación tras barrido completo hasta potencia máxima.");
+        configuracionPotenciaFinalizada = true;
     }
 
     return confirmado;
