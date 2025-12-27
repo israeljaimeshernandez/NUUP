@@ -137,7 +137,6 @@ unsigned long marcaEnvioBidireccional = 0;           // Inicio de espera de resp
 // --- Botón físico (switch entre GND y GPIO33 con pull-up) ---
 const uint32_t BOTON_PRESION_CORTA_MS = 1000;
 const uint32_t BOTON_PRESION_LARGA_MIN_MS = 3000;
-const uint32_t BOTON_PRESION_LARGA_MAX_MS = 5000;
 const uint32_t BOTON_REBOTE_MS = 40;
 const uint32_t BOTON_TIEMPO_VIGILIA_MS = 300000; // 5 minutos de ventana activa tras emparejamiento
 const uint8_t BOTON_INTENTOS_MAXIMOS = 3;
@@ -625,12 +624,8 @@ EventoBoton leerEventoBoton() {
                 return EventoBoton::Corto;
             }
 
-            if (duracion >= BOTON_PRESION_LARGA_MIN_MS && duracion <= BOTON_PRESION_LARGA_MAX_MS) {
-                return EventoBoton::Largo;
-            }
-
             if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
-                return EventoBoton::LargoFueraRango;
+                return EventoBoton::Largo;
             }
         }
     }
@@ -710,7 +705,6 @@ bool atenderBotonPrioritario(const char *contexto) {
         return true;
     }
 
-    Serial.printf("⚠️  Presión larga fuera de rango (%s): no se activa ningún modo.\n", contexto);
     return false;
 }
 
@@ -1964,8 +1958,7 @@ void setup() {
     if (botonDesperto || digitalRead(BOTON_PIN) == LOW) {
         Serial.println("🧭 Evaluando duración de botón en arranque...");
         unsigned long inicioPresion = millis();
-        while (digitalRead(BOTON_PIN) == LOW &&
-               (millis() - inicioPresion) <= (BOTON_PRESION_LARGA_MAX_MS + 500)) {
+        while (digitalRead(BOTON_PIN) == LOW) {
             esp_task_wdt_reset();
             delay(10);
         }
@@ -1974,11 +1967,8 @@ void setup() {
 
         if (duracion < BOTON_PRESION_CORTA_MS) {
             iniciarModoAP("arranque por toque corto");
-        } else if (duracion >= BOTON_PRESION_LARGA_MIN_MS &&
-                   duracion <= BOTON_PRESION_LARGA_MAX_MS) {
-            iniciarModoEmparejamiento("arranque por presión larga");
         } else if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
-            Serial.println("⚠️  Presión larga fuera de rango: no se activa ningún modo.");
+            iniciarModoEmparejamiento("arranque por presión larga");
         }
     }
 
