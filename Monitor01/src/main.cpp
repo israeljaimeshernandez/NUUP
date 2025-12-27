@@ -117,6 +117,7 @@
 // 114 - 2025-06-22 LoRa: reanudar escucha tras el test periódico para no dejar al monitor sordo frente a confirmaciones
 // 113 - 2025-06-21 LoRa: alineación y bitácora cruzada con Nuup01 (SyncWord/Preámbulo/BW/SF/CR) dejando apagado el eco bidireccional por defecto
 // 112 - 2025-06-19 LoRa: trazas dev explican cada parámetro (TX/RSSI/SNR/tiempos) para diagnosticar envío y escucha
+// 113 - 2025-06-20 Baja portal: al solicitar baja desde AP se fuerza solicitud MQTT con consecutivo en consola.
 // 112 - 2025-06-19 Baja fábrica NUUP01: se documenta flujo con reintentos y confirmación antes de reiniciar.
 // 111 - 2025-06-18 LoRa: eco bidireccional dev con trazas de espera/quality en respuestas monitor_*
 // 110 - 2025-06-18 LoRa: modo LORA_bidireccional_borrar solo para desarrollo, activable por bandera y sin impacto en producción.
@@ -485,6 +486,7 @@ bool apMode = false;
 bool forceAPMode = false;
 bool portalEnUso = false;           // Se activa al servir la página para congelar la animación
 bool portalPantallaFija = false;    // Evita reescribir la pantalla en cada loop
+uint32_t consecutivoBajaPortal = 0; // Consecutivo de solicitudes de baja desde portal AP
 bool reinicioSolicitado = false;    // Permite reiniciar tras finalizar configuración
 unsigned long reinicioProgramado = 0;
 //intento de reconectar
@@ -556,7 +558,7 @@ void solicitarAltaNuupMQTT(int indice, const String &mac);
 void intentarAltaTrasRegistro(int indice, const String &mac, const char* origen);
 void procesarAltasPendientes();
 String normalizarMac(const String &macRaw);
-bool iniciarBajaDispositivo(const String &mac, const char* origen = "desconocido");
+bool iniciarBajaDispositivo(const String &mac, const char* origen = "desconocido", bool forzarMqtt = false);
 bool publicarSolicitudBaja(int indice, const String &mac);
 bool solicitarBajaMonitorMQTT();
 void procesarBajasPendientes();
@@ -2673,7 +2675,7 @@ bool iniciarBajaPortal(const String &mac) {
     macBajaEnCurso = "";
   }
 
-  bool eliminado = iniciarBajaDispositivo(macNormalizada, "Portal AP");
+  bool eliminado = iniciarBajaDispositivo(macNormalizada, "Portal AP", true);
   if (!eliminado) {
     Serial.printf("❌ No se pudo eliminar %s desde el portal\n", macNormalizada.c_str());
   }
@@ -4606,9 +4608,19 @@ bool publicarSolicitudBajaPersistente(const String &mac, int slot) {
   return false;
 }
 
-bool iniciarBajaDispositivo(const String &mac, const char* origen) {
+bool iniciarBajaDispositivo(const String &mac, const char* origen, bool forzarMqtt) {
   String macNormalizada = normalizarMac(mac);
-  Serial.printf("📝 Solicitud de baja (%s) recibida para %s\n", origen, macNormalizada.c_str());
+  uint32_t consecutivoLocal = 0;
+  if (strcmp(origen, "Portal AP") == 0) {
+    consecutivoLocal = ++consecutivoBajaPortal;
+  }
+  Serial.printf("📝 Solicitud de baja (%s) recibida para %s%s\n",
+                origen,
+                macNormalizada.c_str(),
+                consecutivoLocal > 0 ? " (portal AP con consecutivo)" : "");
+  if (consecutivoLocal > 0) {
+    Serial.printf("   🔢 Consecutivo baja portal: #%lu\n", consecutivoLocal);
+  }
 
   int indice = obtenerIndiceDispositivo(macNormalizada);
 
@@ -4627,11 +4639,15 @@ bool iniciarBajaDispositivo(const String &mac, const char* origen) {
   ultimaSolicitudAlta[indice] = 0;
 
   // Si nunca estuvo activo en MQTT, eliminar inmediatamente
-  if (!config->activo) {
+  if (!config->activo && !forzarMqtt) {
     Serial.printf("ℹ️ Dispositivo %s sin alta MQTT previa, se elimina localmente\n", macNormalizada.c_str());
     bool eliminadoLocal = eliminarDispositivo(macNormalizada);
     imprimirEstadoBajasPendientes("Baja local sin alta MQTT");
     return eliminadoLocal;
+  }
+  if (!config->activo && forzarMqtt) {
+    Serial.printf("🔁 Baja solicitada desde portal AP: se intentará MQTT aunque no haya alta previa (%s)\n",
+                  macNormalizada.c_str());
   }
 
   // Marcar como pendiente de baja y pausar publicaciones mientras enviamos la solicitud
