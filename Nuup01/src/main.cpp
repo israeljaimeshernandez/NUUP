@@ -606,6 +606,7 @@ EventoBoton leerEventoBoton() {
     static bool botonPresionado = false;
     static unsigned long inicioPresion = 0;
     static unsigned long ultimoCambio = 0;
+    static bool largoDisparado = false;
 
     unsigned long ahora = millis();
     bool estadoActual = digitalRead(BOTON_PIN) == LOW;
@@ -616,18 +617,25 @@ EventoBoton leerEventoBoton() {
         if (estadoActual) {
             botonPresionado = true;
             inicioPresion = ahora;
+            largoDisparado = false;
         } else {
             botonPresionado = false;
             unsigned long duracion = ahora - inicioPresion;
 
-            if (duracion < BOTON_PRESION_CORTA_MS) {
+            if (!largoDisparado && duracion < BOTON_PRESION_CORTA_MS) {
                 return EventoBoton::Corto;
             }
 
-            if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
+            if (!largoDisparado && duracion >= BOTON_PRESION_LARGA_MIN_MS) {
                 return EventoBoton::Largo;
             }
         }
+    }
+
+    if (botonPresionado && !largoDisparado &&
+        (ahora - inicioPresion) >= BOTON_PRESION_LARGA_MIN_MS) {
+        largoDisparado = true;
+        return EventoBoton::Largo;
     }
 
     return EventoBoton::Ninguno;
