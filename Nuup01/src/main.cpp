@@ -31,6 +31,7 @@
  *
  ******************************************************************************/
 
+// 120 - 2026-01-02 BLE: durante emparejamiento por botón se solicita BAJA tras conectar y se reporta el flujo.
 // 119 - 2026-01-02 BLE: aceptar emparejamiento por UUID del servicio cuando el nombre no esté en el anuncio.
 // 118 - 2025-12-31 Botón: reemplazo del sensor de impacto por switch pull-up, modos AP (<1s) y emparejamiento/potencia (>3s)
 //      con parpadeos LED dedicados, consecutivo en español y reinicio por toque corto en modos activos.
@@ -389,7 +390,7 @@ void imprimirDatosDispositivo();
 void limpiarEEPROMYReiniciar();
 bool enviarDatos(int distancia);
 bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada);
-void intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual);
+bool intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual);
 float measureDistance();
 int obtenerDistanciaValida();
 int calcularLitros(int distancia, uint32_t alturaTotal, uint32_t litrosTotal);
@@ -3170,25 +3171,37 @@ bool enviarDatos(int distancia) {
     return confirmado;
 }
 
-void intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual) {
+bool intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual) {
     Serial.printf("🔎 Intento BLE forzado (ciclo %u, intento %d/%d)\n",
                   cicloActual, intentoActual, REINTENTOS_CONFIG_POTENCIA);
 
     if (modoAPActivo || modoConfiguracionActivo) {
         Serial.println("⏭️  BLE omitido: portal activo durante ajuste de potencia.");
-        return;
+        return false;
     }
 
     if (deviceConnected && pClient != nullptr && pClient->isConnected()) {
         Serial.println("✅ BLE ya conectado durante ajuste de potencia.");
-        return;
+        return false;
     }
 
     scanForDevices();
     if (doConnect) {
         Serial.println("🔗 Intentando conexión BLE para ajuste de potencia...");
         if (connectToServer()) {
-            Serial.println("✅ BLE conectado durante ajuste de potencia. Desconectando para continuar.");
+            Serial.println("✅ BLE conectado durante ajuste de potencia.");
+            if (wakeByImpact && registrado) {
+                String solicitudBaja = "BAJA:" + macAddress;
+                Serial.println("📤 Enviando solicitud BAJA durante emparejamiento...");
+                sendCommand(solicitudBaja);
+                bajaAutomaticaActivada = true;
+                tiempoInicioBaja = millis();
+                enProcesoRegistro = true;
+                doConnect = false;
+                return true;
+            }
+
+            Serial.println("🔌 Sin BAJA pendiente: desconectando BLE para continuar.");
             if (pClient != nullptr && pClient->isConnected()) {
                 pClient->disconnect();
             }
@@ -3201,6 +3214,7 @@ void intentarConexionBlePotencia(uint8_t cicloActual, int intentoActual) {
     } else {
         Serial.println("❌ NUUP_Monitor no encontrado en BLE durante ajuste de potencia.");
     }
+    return false;
 }
 
 bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
@@ -3220,7 +3234,10 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
             if (atenderBotonPrioritario("BLE forzado con potencia confirmada")) {
                 return false;
             }
-            intentarConexionBlePotencia(cicloActual, intento);
+            if (intentarConexionBlePotencia(cicloActual, intento)) {
+                Serial.println("⏸️  Ajuste de potencia detenido: BLE activo solicitando BAJA.");
+                return false;
+            }
         }
         if (ciclosPotenciaBle < 255) {
             ciclosPotenciaBle++;
@@ -3270,7 +3287,10 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
             }
 
             if (forzarBle) {
-                intentarConexionBlePotencia(cicloActual, intento);
+                if (intentarConexionBlePotencia(cicloActual, intento)) {
+                    Serial.println("⏸️  Ajuste de potencia detenido: BLE activo solicitando BAJA.");
+                    return false;
+                }
             }
 
             if (confirmado && !forzarBle) {
