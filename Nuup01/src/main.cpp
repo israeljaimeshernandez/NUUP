@@ -37,6 +37,8 @@
 // 114 - 2025-12-31 Impacto: prioridad continua al sensor tras deep sleep; suspende LoRa y atiende golpes con consecutivo en español.
 // 113 - 2025-12-31 Impacto: ciclo continuo de detección (AP/BLE/potencia) sin deep sleep; se renueva solo con nuevo golpe.
 // 112 - 2025-12-30 Impacto: ciclo de AP completo con espera y reingreso solo por nuevo golpe; se suspende BLE y se duerme al terminar.
+// 112 - 2025-12-30 Baja fábrica: se solicita la baja al Monitor01 con hasta 5 intentos antes de reiniciar,
+//      se conserva consecutivo/contador en RTC y el flujo fuerza modo BAJA desde el portal.
 // 111 - 2025-12-29 Impacto: sensibilidad aumentada y vigilia en modo AP duplicada; BLE se pausa mientras el portal esté activo.
 // 110 - 2025-12-28 Impacto: sólo envía ajuste de potencia (sin telemetría) y duerme tras el intercambio.
 // 109 - 2025-12-27 LoRa: se vuelve a aceptar la confirmación antigua CONFIRMACION,<MAC>,... sin marcar error para
@@ -145,6 +147,8 @@ const uint8_t IMPACTO_MIN_TOQUES = 1;
 const uint8_t IMPACTO_MAX_TOQUES = 3;
 // 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
 const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (más tiempo para AP tras impacto)
+// 08) Cantidad de ciclos en modo impacto antes de reiniciar automáticamente
+const uint32_t IMPACTO_MAX_CICLOS_AUTO_REINICIO = 5;
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -164,6 +168,8 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (má
 
 // --- Banderas de mantenimiento ---
 const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEPROM y reiniciar en setup
+const bool IMPACTO_EN_OPERACION_HABILITADO = false; // false: solo wakeup por impacto en deep sleep
+const uint8_t BAJA_FABRICA_MAX_INTENTOS = 5; // Intentos de baja antes de continuar con el reset local
 
 // --- EEPROM ---
 #define EEPROM_SIZE 128
@@ -285,6 +291,10 @@ RTC_DATA_ATTR bool cambiosConfiguracionPendientes = false;   // Obliga a enviar 
 RTC_DATA_ATTR bool impactoReinicioPendiente;                 // Marca reinicio por impacto fuera de deep sleep
 RTC_DATA_ATTR uint32_t impactoReinicioMagic;                 // Validación de reinicio por impacto
 RTC_DATA_ATTR bool impactoConfirmadoEnOperacion = false;      // Marca impacto confirmado antes de reinicio en operación
+RTC_DATA_ATTR bool bajaFabricaPendiente = false;              // Solicitud de baja por reset de fábrica en espera
+RTC_DATA_ATTR uint8_t bajaFabricaIntentos = 0;                // Intentos acumulados de baja fábrica
+RTC_DATA_ATTR uint32_t bajaFabricaConsecutivo = 0;            // Consecutivo de intentos de baja fábrica
+RTC_DATA_ATTR unsigned long bajaFabricaUltimoIntento = 0;     // Marca de tiempo del último intento de baja fábrica
 #define INTERVALO_MIN_ACTIVO_ULTRA_MS 250                     // Permanencia mínima despierto para medición
 #define TIEMPO_ESPERA_DESPUES_BAJA 15000
 
@@ -602,7 +612,6 @@ bool confirmarGolpesImpacto() {
     Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
     Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u\n",
                   IMPACTO_UMBRAL_ANALOGICO);
-
     int toquesDetectados = 1; // Primer toque es el que despertó
     unsigned long inicioVentana = millis();
     bool ultimoEstado = digitalRead(SENSOR_IMPACTO_PIN);
@@ -661,6 +670,10 @@ bool atenderImpactoPrioritario(const char *contexto) {
         return false;
     }
 
+    if (!IMPACTO_EN_OPERACION_HABILITADO) {
+        return false;
+    }
+
     if (!detectarImpactoRapido(40)) {
         return false;
     }
@@ -677,14 +690,10 @@ bool atenderImpactoPrioritario(const char *contexto) {
     inicioVigiliaImpacto = millis();
     impactoConsecutivo++;
     impactoInterrumpioLoRa = true;
-    impactoReinicioPendiente = true;
-    impactoReinicioMagic = 0xA5A5C3C3;
     impactoConfirmadoEnOperacion = true;
     LoRa.receive();
-    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - reiniciando para iniciar ciclo\n",
+    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - cambiando a modo impacto sin reinicio\n",
                   impactoConsecutivo);
-    delay(50);
-    ESP.restart();
     return true;
 }
 
@@ -952,9 +961,18 @@ void manejarRestauracionFabrica() {
     Serial.println("📴 Apagando WiFi AP...");
     WiFi.softAPdisconnect(true);
     delay(100);
-    
-    // Limpiar EEPROM y reiniciar
-    limpiarEEPROMYReiniciar();
+
+    // Preparar flujo de baja antes del borrado local
+    bajaFabricaPendiente = true;
+    bajaFabricaIntentos = 0;
+    bajaFabricaUltimoIntento = 0;
+    modoConfiguracionActivo = true;
+    ultimoEscaneoBLE = 0;
+    bajaAutomaticaActivada = false;
+    enProcesoRegistro = false;
+
+    Serial.println("🧹 Baja de fábrica iniciada: se enviará solicitud al Monitor01 antes de borrar");
+    Serial.printf("🔁 Intentos de baja programados: %u\n", BAJA_FABRICA_MAX_INTENTOS);
 }
 
 
@@ -1319,6 +1337,9 @@ enProcesoRegistro = false;
     esperandoDatosConfig = false;
     pendienteEnvioConfig = false;
     bajaAutomaticaActivada = false;
+    bajaFabricaPendiente = false;
+    bajaFabricaIntentos = 0;
+    bajaFabricaUltimoIntento = 0;
 
     digitalWrite(LED_ROJO_PIN, HIGH);
     delay(DURACION_LED_CONFIRMACION_MS);
@@ -1339,6 +1360,9 @@ enProcesoRegistro = false;
         esperandoDatosConfig = false;
         pendienteEnvioConfig = false;
         bajaAutomaticaActivada = false;
+        bajaFabricaPendiente = false;
+        bajaFabricaIntentos = 0;
+        bajaFabricaUltimoIntento = 0;
 
         // Limpiar EEPROM y reiniciar
         limpiarEEPROMYReiniciar();
@@ -2086,7 +2110,19 @@ void loop() {
         return;
     }
 
-    bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo;
+    if (bajaFabricaPendiente &&
+        bajaFabricaIntentos >= BAJA_FABRICA_MAX_INTENTOS &&
+        !bajaAutomaticaActivada &&
+        !enProcesoRegistro &&
+        !deviceConnected) {
+        Serial.printf("🧹 Baja fábrica sin confirmación tras %u intento(s) - reiniciando en modo local\n",
+                      bajaFabricaIntentos);
+        bajaFabricaPendiente = false;
+        limpiarEEPROMYReiniciar();
+        return;
+    }
+
+    bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo || bajaFabricaPendiente;
     bool sesionPortalImpacto = wakeByImpact && (modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0);
     bool blePermitido = comunicacionesHabilitadas && !sesionPortalImpacto;
 
@@ -2139,22 +2175,41 @@ void loop() {
     unsigned long tiempoActual = millis();
     unsigned long tiempoDesdeEscaneoBLE = tiempoActual - ultimoEscaneoBLE;
     unsigned long intervaloEscaneo = registrado ? INTERVALO_ESCANEO_BAJA : INTERVALO_ESCANEO_ALTA;
+    bool bajaFabricaActiva = bajaFabricaPendiente;
+    if (bajaFabricaActiva) {
+        intervaloEscaneo = INTERVALO_ESCANEO_BAJA;
+    }
 
     if (blePermitido) {
         // Ejecutar BLE si es tiempo
         if (ultimoEscaneoBLE == 0 || tiempoDesdeEscaneoBLE >= intervaloEscaneo) {
             Serial.println("\n🔍 ===========================================");
             Serial.println("🎯 INICIANDO ESCANEO BLE");
-            Serial.printf("   Modo: %s\n", registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO");
+            Serial.printf("   Modo: %s\n",
+                          bajaFabricaActiva
+                              ? "SOLICITAR BAJA (FÁBRICA)"
+                              : (registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO"));
             Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
             Serial.println("🔍 ===========================================");
+
+            if (bajaFabricaActiva) {
+                if (bajaFabricaIntentos < 255) {
+                    bajaFabricaIntentos++;
+                }
+                bajaFabricaConsecutivo++;
+                bajaFabricaUltimoIntento = millis();
+                Serial.printf("🧹 Intento de baja fábrica %u/%u (consecutivo %lu)\n",
+                              bajaFabricaIntentos,
+                              BAJA_FABRICA_MAX_INTENTOS,
+                              bajaFabricaConsecutivo);
+            }
 
             scanForDevices();
 
             if (doConnect) {
                 Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
                 if (connectToServer()) {
-                    if (!registrado) {
+                    if (!registrado && !bajaFabricaActiva) {
                         // MODO REGISTRO
                         String solicitudRegistro = "REG:" + macAddress;
                         sendCommand(solicitudRegistro);
@@ -2213,6 +2268,9 @@ void loop() {
                     }
                     deviceConnected = false;
                     doConnect = false;
+                    if (bajaFabricaPendiente) {
+                        Serial.println("🧹 Baja fábrica sin confirmación - se reintentará en el próximo escaneo");
+                    }
                 }
             }
 
@@ -2384,6 +2442,12 @@ void loop() {
         if (!avisoEsperandoGolpe) {
             Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
             avisoEsperandoGolpe = true;
+        }
+        if (impactoConsecutivo >= IMPACTO_MAX_CICLOS_AUTO_REINICIO) {
+            Serial.printf("🔁 Ciclos de impacto completos (%lu) - reiniciando para volver al ciclo normal\n",
+                          impactoConsecutivo);
+            delay(200);
+            ESP.restart();
         }
         if (confirmarGolpesImpacto()) {
             impactoConsecutivo++;
