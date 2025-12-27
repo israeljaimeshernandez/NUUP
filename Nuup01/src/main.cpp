@@ -164,6 +164,7 @@ const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (má
 
 // --- Banderas de mantenimiento ---
 const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEPROM y reiniciar en setup
+const bool IMPACTO_EN_OPERACION_HABILITADO = false; // false: solo wakeup por impacto en deep sleep
 
 // --- EEPROM ---
 #define EEPROM_SIZE 128
@@ -657,6 +658,10 @@ bool detectarImpactoRapido(uint16_t ventanaMs) {
 
 bool atenderImpactoPrioritario(const char *contexto) {
     if (wakeByImpact) {
+        return false;
+    }
+
+    if (!IMPACTO_EN_OPERACION_HABILITADO) {
         return false;
     }
 
