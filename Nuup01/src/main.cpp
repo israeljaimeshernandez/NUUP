@@ -22,8 +22,8 @@
  * - Cliente BLE para emparejamiento con Monitor
  * - Análisis local de consumo con IA
  * - Detección de fugas y patrones anormales
- * - Deep sleep con wake-up por timer o impacto
- * - Sensor de vibración para detección de golpes
+ * - Deep sleep con wake-up por timer o botón
+ * - Interruptor físico entre GND y GPIO33 (pull-up) para modos de servicio
  * - LEDs indicadores de estado (verde/rojo)
  *
  * COMPILADO CON: Antigravity AI - Google DeepMind
@@ -31,6 +31,8 @@
  *
  ******************************************************************************/
 
+// 118 - 2025-12-31 Botón: reemplazo del sensor de impacto por switch pull-up, modos AP (<1s) y emparejamiento/potencia (>3s)
+//      con parpadeos LED dedicados, consecutivo en español y reinicio por toque corto en modos activos.
 // 117 - 2025-12-31 Impacto: detección permanente tras deep sleep normal; reinicio simulado como interrupción y consecutivo en español.
 // 116 - 2025-12-31 Impacto: detección continua con muestreo rápido y prioridad total; reinicio inmediato al detectar golpe.
 // 115 - 2025-12-31 Impacto: reinicio inmediato al detectar golpe en operación; arranque marca ciclo y prioridad de impacto.
@@ -115,7 +117,7 @@ unsigned long tiempoInicioConfiguracion = 0;
 // --- Pines ---
 #define LED_VERDE_PIN 27
 #define LED_ROJO_PIN 26
-#define SENSOR_IMPACTO_PIN 33
+#define BOTON_PIN 33
 #define LED_PIN LED_VERDE_PIN
 #define ADC_PIN 34
 #define LORA_SS 5
@@ -132,23 +134,12 @@ unsigned long LORA_BIDIRECCIONAL_TIMEOUT_MS = 2000;  // Tiempo máximo de espera
 bool esperandoRespuestaBidireccional = false;        // Controla el siguiente envío hasta recibir monitor_*
 unsigned long marcaEnvioBidireccional = 0;           // Inicio de espera de respuesta
 
-// --- Calibración de sensibilidad de impacto (ajustables) ---
-// 01) Ventana máxima para capturar toques consecutivos (ms)
-const uint16_t IMPACTO_VENTANA_MS = 1500;
-// 02) Tiempo mínimo entre toques para evitar rebotes (ms)
-const uint16_t IMPACTO_MIN_SEPARACION_MS = 70;
-// 03) Umbral mínimo de caída analógica respecto al valor base para contar un toque
-const uint16_t IMPACTO_UMBRAL_ANALOGICO = 15;
-// 04) Muestras usadas para estimar el nivel en reposo del sensor
-const uint8_t IMPACTO_MUESTRAS_BASE = 16;
-// 05) Cantidad mínima de toques válidos para aceptar el despertar
-const uint8_t IMPACTO_MIN_TOQUES = 1;
-// 06) Cantidad máxima de toques válidos (se ignoran adicionales)
-const uint8_t IMPACTO_MAX_TOQUES = 3;
-// 07) Tiempo en vigilia tras despertar por impacto para detectar BLE/WiFi (ms)
-const uint32_t IMPACTO_TIEMPO_VIGILIA_MS = 300000; // Por defecto 5 minutos (más tiempo para AP tras impacto)
-// 08) Cantidad de ciclos en modo impacto antes de reiniciar automáticamente
-const uint32_t IMPACTO_MAX_CICLOS_AUTO_REINICIO = 5;
+// --- Botón físico (switch entre GND y GPIO33 con pull-up) ---
+const uint32_t BOTON_PRESION_CORTA_MS = 1000;
+const uint32_t BOTON_PRESION_LARGA_MIN_MS = 3000;
+const uint32_t BOTON_REBOTE_MS = 40;
+const uint32_t BOTON_TIEMPO_VIGILIA_MS = 300000; // 5 minutos de ventana activa tras emparejamiento
+const uint8_t BOTON_INTENTOS_MAXIMOS = 3;
 
 // --- Tiempos ÚNICOS ---
 #define INTERVALO_ENVIO_DATOS 40000      // 20 segundos entre envíos LoRa (registrado)
@@ -158,8 +149,9 @@ const uint32_t IMPACTO_MAX_CICLOS_AUTO_REINICIO = 5;
 #define INCREMENTO_ESPERA_CONFIRMACION 500       // Aumento progresivo por intento para dar margen de sincronización
 #define REINTENTOS_CONFIRMACION 5        // Envío inicial + 4 reintentos antes de reiniciar
 #define LORA_POTENCIA_MIN_DBM 2          // Potencia mínima para el barrido dinámico
-#define LORA_POTENCIA_MAX_DBM 12         // Potencia máxima objetivo para el sensor
+#define LORA_POTENCIA_MAX_DBM 20         // Potencia máxima objetivo para el sensor
 #define LORA_POTENCIA_DEFECTO_DBM 2      // Potencia por defecto si no hay confirmaciones
+#define LORA_POTENCIA_INICIO_CONFIG_DBM 20 // Potencia inicial al ajustar con botón
 #define REINTENTOS_CONFIG_POTENCIA 5     // Veces que se intercambia configuracion/MAC/confirmacion
 #define INTERVALO_ESCANEO_ALTA 10000  // 10 segundos (búsqueda activa extendida)
 #define INTERVALO_ESCANEO_BAJA 15000  // 15 segundos (monitoreo)
@@ -168,7 +160,6 @@ const uint32_t IMPACTO_MAX_CICLOS_AUTO_REINICIO = 5;
 
 // --- Banderas de mantenimiento ---
 const bool LIMPIEZA_FABRICA_EN_SETUP = false; // Cambiar a true para limpiar EEPROM y reiniciar en setup
-const bool IMPACTO_EN_OPERACION_HABILITADO = false; // false: solo wakeup por impacto en deep sleep
 const uint8_t BAJA_FABRICA_MAX_INTENTOS = 5; // Intentos de baja antes de continuar con el reset local
 
 // --- EEPROM ---
@@ -247,6 +238,8 @@ unsigned long ultimoEscaneoBLE = 0;
 uint8_t potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
+uint8_t intentosBleBoton = 0;
+uint8_t intentosPotenciaBoton = 0;
 bool forzarEnvioPorTiempo = false;
 bool envioLoRaEjecutado = false;
 unsigned long ultimaMedicionMs = 0;
@@ -258,7 +251,10 @@ bool enProcesoRegistro = false;
 bool bajaAutomaticaActivada = false;
 unsigned long tiempoInicioBaja = 0;
 #define TIMEOUT_BAJA 15000
-bool wakeByImpact = false;
+bool wakeByImpact = false; // Modo emparejamiento/ajuste activado por botón (>3s)
+bool modoAPActivo = false;
+bool apIniciado = false;
+bool loraInicializado = false;
 RTC_DATA_ATTR uint32_t impactoConsecutivo = 1;
 bool impactoInterrumpioLoRa = false;
 unsigned long inicioVigiliaImpacto = 0;
@@ -288,9 +284,9 @@ RTC_DATA_ATTR uint32_t ultimaAlturaEnviada = 0;              // Última altura e
 RTC_DATA_ATTR uint32_t ultimaCapacidadEnviada = 0;           // Última capacidad (L) enviada al monitor
 RTC_DATA_ATTR char ultimoNombreEnviado[21] = "";            // Último nombre enviado al monitor
 RTC_DATA_ATTR bool cambiosConfiguracionPendientes = false;   // Obliga a enviar si hubo cambios de configuración
-RTC_DATA_ATTR bool impactoReinicioPendiente;                 // Marca reinicio por impacto fuera de deep sleep
-RTC_DATA_ATTR uint32_t impactoReinicioMagic;                 // Validación de reinicio por impacto
-RTC_DATA_ATTR bool impactoConfirmadoEnOperacion = false;      // Marca impacto confirmado antes de reinicio en operación
+RTC_DATA_ATTR bool impactoReinicioPendiente;                 // Marca reinicio por botón fuera de deep sleep
+RTC_DATA_ATTR uint32_t impactoReinicioMagic;                 // Validación de reinicio por botón
+RTC_DATA_ATTR bool impactoConfirmadoEnOperacion = false;      // Marca botón confirmado antes de reinicio en operación
 RTC_DATA_ATTR bool bajaFabricaPendiente = false;              // Solicitud de baja por reset de fábrica en espera
 RTC_DATA_ATTR uint8_t bajaFabricaIntentos = 0;                // Intentos acumulados de baja fábrica
 RTC_DATA_ATTR uint32_t bajaFabricaConsecutivo = 0;            // Consecutivo de intentos de baja fábrica
@@ -303,6 +299,9 @@ RTC_DATA_ATTR unsigned long bajaFabricaUltimoIntento = 0;     // Marca de tiempo
 #define SECUENCIA_LED_PARPADEANTE 5000
 #define SECUENCIA_INTERVALO_PARPADEO 200
 #define PARPADEO_LED_RAPIDO_MS 250
+#define PARPADEO_LED_AP_MS 150
+#define PARPADEO_LED_EMPAREJAMIENTO_MS 250
+#define PARPADEO_LED_BLE_MS 500
 #define PARPADEO_LED_LENTO_MS 1000
 #define DURACION_PARPADEO_PROCESO_BAJA_MS 5000
 #define DURACION_PARPADEO_FINAL_BAJA_MS 10000
@@ -360,6 +359,9 @@ void manejarReinicio();
 void manejarRestauracionFabrica();
 void configurarAlcanceWiFi(int metros);
 void verificarConexionCliente();
+void iniciarModoAP(const char* motivo);
+void iniciarModoEmparejamiento(const char* motivo);
+bool atenderBotonPrioritario(const char* contexto);
 
 // Funciones BLE
 void scanForDevices();
@@ -581,12 +583,6 @@ void verificarConexionCliente() {
             modoConfiguracionActivo = false;
             Serial.println("📱 Cliente desconectado - MODO NORMAL");
 
-            // Si el despertar fue por impacto y ya salió el usuario, reiniciar para cerrar sesión AP
-            if (wakeByImpact && !bajaFabricaPendiente) {
-                Serial.println("🔁 Configuración por impacto finalizada - Reiniciando ESP32...");
-                delay(500);
-                ESP.restart();
-            }
         }
         clientesAnteriores = clientes;
     }
@@ -599,102 +595,117 @@ void verificarConexionCliente() {
     }
 }
 
-bool confirmarGolpesImpacto() {
-    Serial.println("🔔 Detectando doble/triple toque para despertar...");
+enum class EventoBoton {
+    Ninguno,
+    Corto,
+    Largo,
+    LargoFueraRango
+};
 
-    // Calibrar el nivel de referencia con varias lecturas suaves
-    uint32_t acumulado = 0;
-    for (uint8_t i = 0; i < IMPACTO_MUESTRAS_BASE; i++) {
-        acumulado += analogRead(SENSOR_IMPACTO_PIN);
-        delay(2);
-    }
-    uint16_t baseReposo = acumulado / IMPACTO_MUESTRAS_BASE;
-    Serial.printf("📏 Nivel base de impacto: %u (umbral: -%u)\n", baseReposo, IMPACTO_UMBRAL_ANALOGICO);
-    Serial.printf("🎚️  Sensibilidad aumentada: se registrará golpe con caída ≥%u\n",
-                  IMPACTO_UMBRAL_ANALOGICO);
-    int toquesDetectados = 1; // Primer toque es el que despertó
-    unsigned long inicioVentana = millis();
-    bool ultimoEstado = digitalRead(SENSOR_IMPACTO_PIN);
-    unsigned long ultimoToque = inicioVentana;
+EventoBoton leerEventoBoton() {
+    static bool botonPresionado = false;
+    static unsigned long inicioPresion = 0;
+    static unsigned long ultimoCambio = 0;
 
-    while (millis() - inicioVentana < IMPACTO_VENTANA_MS) {
-        bool estadoActual = digitalRead(SENSOR_IMPACTO_PIN);
-        uint16_t lecturaAnalogica = analogRead(SENSOR_IMPACTO_PIN);
-        bool posibleToquePorAnalogico = baseReposo > lecturaAnalogica &&
-                                        (baseReposo - lecturaAnalogica) >= IMPACTO_UMBRAL_ANALOGICO;
-        bool transicionDigital = (ultimoEstado == HIGH && estadoActual == LOW);
+    unsigned long ahora = millis();
+    bool estadoActual = digitalRead(BOTON_PIN) == LOW;
 
-        if ((transicionDigital || posibleToquePorAnalogico) &&
-            (millis() - ultimoToque) >= IMPACTO_MIN_SEPARACION_MS) {
-            toquesDetectados++;
-            ultimoToque = millis();
-            Serial.printf("💥 Toque %d registrado (analog=%u, base=%u)\n", toquesDetectados, lecturaAnalogica, baseReposo);
-        }
+    if (estadoActual != botonPresionado && (ahora - ultimoCambio) >= BOTON_REBOTE_MS) {
+        ultimoCambio = ahora;
 
-        ultimoEstado = estadoActual;
+        if (estadoActual) {
+            botonPresionado = true;
+            inicioPresion = ahora;
+        } else {
+            botonPresionado = false;
+            unsigned long duracion = ahora - inicioPresion;
 
-        if (toquesDetectados >= IMPACTO_MAX_TOQUES) {
-            break; // No se requieren más de tres golpes
+            if (duracion < BOTON_PRESION_CORTA_MS) {
+                return EventoBoton::Corto;
+            }
+
+            if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
+                return EventoBoton::Largo;
+            }
         }
     }
 
-    Serial.printf("🔎 Total de toques detectados: %d\n", toquesDetectados);
-    Serial.printf("📈 Indicador de impacto: base %u, umbral -%u, toques válidos %s\n",
-                  baseReposo,
-                  IMPACTO_UMBRAL_ANALOGICO,
-                  toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES
-                      ? "✅ dentro del rango"
-                      : "❌ insuficientes/excesivos");
-    return toquesDetectados >= IMPACTO_MIN_TOQUES && toquesDetectados <= IMPACTO_MAX_TOQUES;
+    return EventoBoton::Ninguno;
 }
 
-bool detectarImpactoRapido(uint16_t ventanaMs) {
-    unsigned long inicio = millis();
-    uint16_t baseReposo = analogRead(SENSOR_IMPACTO_PIN);
-
-    while (millis() - inicio < ventanaMs) {
-        bool golpeDigital = digitalRead(SENSOR_IMPACTO_PIN) == LOW;
-        uint16_t lectura = analogRead(SENSOR_IMPACTO_PIN);
-        bool golpeAnalogico = baseReposo > lectura &&
-                              (baseReposo - lectura) >= IMPACTO_UMBRAL_ANALOGICO;
-        if (golpeDigital || golpeAnalogico) {
-            return true;
-        }
-        delay(2);
+void iniciarModoAP(const char* motivo) {
+    if (!modoAPActivo) {
+        modoAPActivo = true;
+        impactoInterrumpioLoRa = true;
+        Serial.printf("🌐 Modo AP activado (%s)\n", motivo);
     }
-    return false;
+
+    if (!apIniciado) {
+        configurarWiFiAP();
+        apIniciado = true;
+    }
 }
 
-bool atenderImpactoPrioritario(const char *contexto) {
-    if (wakeByImpact) {
-        return false;
+void iniciarModoEmparejamiento(const char* motivo) {
+    if (!registrado) {
+        Serial.println("ℹ️  Emparejamiento BLE ignorado: dispositivo sin registro.");
+        return;
     }
 
-    if (!IMPACTO_EN_OPERACION_HABILITADO) {
-        return false;
-    }
-
-    if (!detectarImpactoRapido(40)) {
-        return false;
-    }
-
-    Serial.printf("⚡ Impacto detectado durante %s - priorizando sensor\n", contexto);
-
-    if (!confirmarGolpesImpacto()) {
-        Serial.println("⚠️  Impacto sin toques válidos - se mantiene el flujo actual");
-        return false;
+    if (modoAPActivo) {
+        Serial.println("📴 Cerrando portal AP para iniciar emparejamiento BLE.");
+        modoAPActivo = false;
+        if (apIniciado) {
+            WiFi.softAPdisconnect(true);
+            WiFi.mode(WIFI_OFF);
+            apIniciado = false;
+        }
     }
 
     wakeByImpact = true;
     configuracionPotenciaFinalizada = false;
+    recalibrarPotenciaLoRa = true;
     inicioVigiliaImpacto = millis();
     impactoConsecutivo++;
     impactoInterrumpioLoRa = true;
     impactoConfirmadoEnOperacion = true;
-    LoRa.receive();
-    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - cambiando a modo impacto sin reinicio\n",
-                  impactoConsecutivo);
-    return true;
+    ultimoEscaneoBLE = 0;
+    intentosBleBoton = 0;
+    intentosPotenciaBoton = 0;
+
+    potenciaLoRaActualDbm = LORA_POTENCIA_INICIO_CONFIG_DBM;
+    dispositivo.potenciaLoRaDbm = LORA_POTENCIA_INICIO_CONFIG_DBM;
+    if (loraInicializado) {
+        LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
+    }
+
+    Serial.printf("🔁 Modo emparejamiento BLE activado (%s). Consecutivo %lu\n",
+                  motivo, impactoConsecutivo);
+}
+
+bool atenderBotonPrioritario(const char *contexto) {
+    EventoBoton evento = leerEventoBoton();
+
+    if (evento == EventoBoton::Ninguno) {
+        return false;
+    }
+
+    if (evento == EventoBoton::Corto) {
+        if (wakeByImpact || modoAPActivo) {
+            Serial.printf("🔁 Toque corto (%s): reiniciando a operación normal.\n", contexto);
+            delay(200);
+            ESP.restart();
+        }
+        iniciarModoAP("toque corto (<1s)");
+        return true;
+    }
+
+    if (evento == EventoBoton::Largo) {
+        iniciarModoEmparejamiento("presión larga (3-5s)");
+        return true;
+    }
+
+    return false;
 }
 
 void mostrarPaginaConfig() {
@@ -1568,6 +1579,53 @@ void manejarLED() {
         return;
     }
 
+    if (!registrado) {
+        // NO REGISTRADO: LED ROJO ENCENDIDO FIJO
+        digitalWrite(LED_ROJO_PIN, HIGH);
+        digitalWrite(LED_VERDE_PIN, LOW);
+        return;
+    }
+
+    if (modoAPActivo) {
+        static unsigned long ultimoBlinkAP = 0;
+        static bool estadoAP = false;
+
+        if (millis() - ultimoBlinkAP >= PARPADEO_LED_AP_MS) {
+            estadoAP = !estadoAP;
+            ultimoBlinkAP = millis();
+        }
+
+        digitalWrite(LED_VERDE_PIN, estadoAP);
+        digitalWrite(LED_ROJO_PIN, estadoAP);
+        return;
+    }
+
+    // ⭐⭐ MODO EMPAREJAMIENTO POR BOTÓN
+    if (wakeByImpact) {
+        static unsigned long ultimoBlinkEmparejamiento = 0;
+        static bool estadoEmparejamiento = false;
+        bool bleEncontrado = doConnect || deviceConnected || enProcesoRegistro;
+
+        unsigned long intervalo = bleEncontrado ? PARPADEO_LED_BLE_MS : PARPADEO_LED_EMPAREJAMIENTO_MS;
+
+        if (millis() - ultimoBlinkEmparejamiento >= intervalo) {
+            estadoEmparejamiento = !estadoEmparejamiento;
+            ultimoBlinkEmparejamiento = millis();
+        }
+
+        if (bleEncontrado) {
+            digitalWrite(LED_VERDE_PIN, estadoEmparejamiento);
+            digitalWrite(LED_ROJO_PIN, estadoEmparejamiento);
+        } else if (!configuracionPotenciaFinalizada) {
+            digitalWrite(LED_ROJO_PIN, estadoEmparejamiento);
+            digitalWrite(LED_VERDE_PIN, LOW);
+        } else {
+            digitalWrite(LED_VERDE_PIN, estadoEmparejamiento);
+            digitalWrite(LED_ROJO_PIN, LOW);
+        }
+        return;
+    }
+
     if (enProcesoRegistro && !bajaAutomaticaActivada) {
         static unsigned long ultimoBlinkRegistro = 0;
         static bool estadoRegistro = false;
@@ -1584,42 +1642,6 @@ void manejarLED() {
         }
 
         digitalWrite(LED_ROJO_PIN, LOW);
-        return;
-    }
-
-    // ⭐⭐ WAKE POR IMPACTO: LED VERDE PARPADEANDO EN ESPERA O FIJO CON CLIENTE
-    if (wakeByImpact) {
-        static unsigned long ultimoBlinkImpacto = 0;
-        static bool estadoImpacto = false;
-
-        bool clienteWiFiActivo = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
-
-        if (clienteWiFiActivo) {
-            digitalWrite(LED_VERDE_PIN, HIGH); // Usuario en portal: LED fijo
-        } else {
-            if (millis() - ultimoBlinkImpacto >= PARPADEO_LED_LENTO_MS) {
-                estadoImpacto = !estadoImpacto;
-                ultimoBlinkImpacto = millis();
-            }
-            digitalWrite(LED_VERDE_PIN, estadoImpacto);
-        }
-
-        digitalWrite(LED_ROJO_PIN, LOW);
-        return;
-    }
-
-    if (!registrado) {
-        // NO REGISTRADO: LED ROJO ENCENDIDO FIJO (o parpadeo corto al despertar por impacto)
-        if (wakeByImpact) {
-            if (millis() - ultimoCambioLedRojo >= PARPADEO_WAKE_ROJO_MS) {
-                estadoLedRojo = !estadoLedRojo;
-                digitalWrite(LED_ROJO_PIN, estadoLedRojo);
-                ultimoCambioLedRojo = millis();
-            }
-        } else {
-            digitalWrite(LED_ROJO_PIN, HIGH);
-        }
-        digitalWrite(LED_VERDE_PIN, LOW);
         return;
     }
 
@@ -1860,11 +1882,11 @@ void setup() {
     // ⭐ VERIFICAR CAUSA DE WAKEUP
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset_reason = esp_reset_reason();
-    bool requiereConfirmacionImpacto = true;
+    bool botonDesperto = false;
     
     Serial.begin(115200);
     Serial.println("\n🚀 ESP32 Iniciando cliente...");
-    Serial.printf("🆔 Ciclo de impacto: %lu - Inicio del sistema\n", impactoConsecutivo);
+    Serial.printf("🆔 Consecutivo de botón: %lu - Inicio del sistema\n", impactoConsecutivo);
 
     // Acumular el tiempo dormido previo para el conteo forzoso
     tiempoSinEnvioConfirmado += ultimoSleepProgramadoMs;
@@ -1876,7 +1898,7 @@ void setup() {
     switch(wakeup_reason) {
         case ESP_SLEEP_WAKEUP_EXT0:
             Serial.println("📅 Wakeup por BOTÓN");
-            wakeByImpact = true;
+            botonDesperto = true;
             break;
         case ESP_SLEEP_WAKEUP_TIMER:
             Serial.println("⏰ Wakeup por TIMER - Ciclo normal");
@@ -1894,21 +1916,11 @@ void setup() {
     }
 
     if (reset_reason == ESP_RST_SW && impactoReinicioPendiente && impactoReinicioMagic == 0xA5A5C3C3) {
-        Serial.println("⚡ Reinicio por impacto detectado - priorizando ciclo de impacto");
+        Serial.println("⚡ Reinicio por botón detectado - priorizando ciclo de emparejamiento");
         wakeByImpact = true;
-        if (impactoConfirmadoEnOperacion) {
-            Serial.println("✅ Impacto ya confirmado en operación - se omite la reconfirmación");
-            requiereConfirmacionImpacto = false;
-        }
         impactoReinicioPendiente = false;
         impactoReinicioMagic = 0;
     }
-
-    if (wakeByImpact) {
-        Serial.println("⚡ Wake por sensor de impacto - habilitando BLE/WiFi solo en este ciclo");
-    }
-
-    configuracionPotenciaFinalizada = !wakeByImpact;
 
     // Inicializar EEPROM
 
@@ -1928,8 +1940,6 @@ void setup() {
     // restauran los valores de fábrica.
     leerDatosDeEEPROM();
 
-    recalibrarPotenciaLoRa = wakeByImpact;
-
     // ⭐⭐ INICIALIZAR BLE INMEDIATAMENTE
     Serial.println("📱 INICIANDO BLE...");
     BLEDevice::init("NUUP_Controller");
@@ -1941,27 +1951,36 @@ void setup() {
     pinMode(echoPin, INPUT);
     pinMode(LED_PIN, OUTPUT);
     pinMode(LED_ROJO_PIN, OUTPUT);
-    pinMode(SENSOR_IMPACTO_PIN, INPUT_PULLUP);
+    pinMode(BOTON_PIN, INPUT_PULLUP);
     digitalWrite(LED_PIN, LOW);
     digitalWrite(LED_ROJO_PIN, LOW);
 
-    if (wakeByImpact) {
-        inicioVigiliaImpacto = millis();
-        if (!requiereConfirmacionImpacto) {
-            impactoConfirmadoEnOperacion = false;
-        } else if (!confirmarGolpesImpacto()) {
-            Serial.println("⚠️  Golpes insuficientes o fuera de rango (1-3). Volviendo a dormir...");
-            wakeByImpact = false;
-            prepararParaDeepSleep();
-            esp_deep_sleep_start();
-        } else {
-            impactoConfirmadoEnOperacion = false;
+    if (botonDesperto || digitalRead(BOTON_PIN) == LOW) {
+        Serial.println("🧭 Evaluando duración de botón en arranque...");
+        unsigned long inicioPresion = millis();
+        while (digitalRead(BOTON_PIN) == LOW) {
+            esp_task_wdt_reset();
+            delay(10);
+        }
+        unsigned long duracion = millis() - inicioPresion;
+        Serial.printf("⏱️  Duración botón: %lums\n", duracion);
+
+        if (duracion < BOTON_PRESION_CORTA_MS) {
+            iniciarModoAP("arranque por toque corto");
+        } else if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
+            iniciarModoEmparejamiento("arranque por presión larga");
         }
     }
 
-    if (wakeByImpact && !registrado) {
-        parpadearLED(LED_ROJO_PIN, PARPADEO_WAKE_ROJO_MS, DURACION_PARPADEO_WAKE_MS);
+    if (wakeByImpact) {
+        Serial.println("⚡ Modo emparejamiento activo - habilitando BLE/ajuste de potencia");
+        inicioVigiliaImpacto = millis();
+        intentosBleBoton = 0;
+        intentosPotenciaBoton = 0;
     }
+
+    configuracionPotenciaFinalizada = !wakeByImpact;
+    recalibrarPotenciaLoRa = wakeByImpact;
 
     // Parpadeo inicial de ambos LEDs durante 3 segundos
     unsigned long inicioParpadeo = millis();
@@ -2022,16 +2041,23 @@ void setup() {
     ultimoEnvioDatos = 0;
     ultimaMedicionMs = 0;
 
-    // ⭐⭐ INICIALIZAR WiFi AP Y SERVIDOR WEB
-    Serial.println("\n🌐 INICIANDO SERVICIOS WiFi...");
-    configurarWiFiAP();
+    // ⭐⭐ INICIALIZAR WiFi AP Y SERVIDOR WEB (solo si aplica)
+    if (modoAPActivo) {
+        Serial.println("\n🌐 INICIANDO SERVICIOS WiFi (modo AP activo)...");
+        configurarWiFiAP();
+        apIniciado = true;
+    } else {
+        Serial.println("\n🌐 WiFi AP en espera: toque corto para activar el portal.");
+    }
 
     Serial.println("\n🎯 ESTRATEGIA OPERATIVA:");
     Serial.println("   ==========================");
-    Serial.printf("   📱 BLE: Escaneo cada %d segundos\n", INTERVALO_ESCANEO_BAJA/1000);
+    Serial.printf("   📱 BLE: Escaneo cada %d segundos (solo en modo emparejamiento)\n", INTERVALO_ESCANEO_BAJA/1000);
     Serial.printf("   📊 Sensor: Medición cada %d segundos (cambios) / %d segundos (forzoso)\n", INTERVALO_ENVIO_CAMBIO/1000, INTERVALO_ENVIO_FORZOSO/1000);
-    Serial.printf("   🌐 WiFi: Servidor web SIEMPRE ACTIVO\n");
-    Serial.printf("   📍 IP: %s\n", WiFi.softAPIP().toString().c_str());
+    Serial.printf("   🌐 WiFi: %s\n", modoAPActivo ? "Portal AP ACTIVO" : "Portal AP bajo demanda");
+    if (modoAPActivo) {
+        Serial.printf("   📍 IP: %s\n", WiFi.softAPIP().toString().c_str());
+    }
     Serial.printf("   😴 Sleep: %d segundos entre ciclos máximos\n", INTERVALO_ENVIO_FORZOSO/1000);
     Serial.println("   ==========================");
     
@@ -2106,7 +2132,7 @@ void loop() {
     // ⭐ ALIMENTAR WATCHDOG
     esp_task_wdt_reset();
 
-    if (atenderImpactoPrioritario("loop principal")) {
+    if (atenderBotonPrioritario("loop principal")) {
         return;
     }
 
@@ -2122,9 +2148,9 @@ void loop() {
         return;
     }
 
-    bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoConfiguracionActivo || bajaFabricaPendiente;
-    bool sesionPortalImpacto = wakeByImpact && (modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0);
-    bool blePermitido = comunicacionesHabilitadas && !sesionPortalImpacto;
+    bool comunicacionesHabilitadas = wakeByImpact || !registrado || modoAPActivo || modoConfiguracionActivo || bajaFabricaPendiente;
+    bool sesionPortalActiva = modoAPActivo || modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
+    bool blePermitido = comunicacionesHabilitadas && !sesionPortalActiva;
 
     // ⭐⭐ PRIORIDAD 1: VERIFICAR CLIENTES WiFi
     if (comunicacionesHabilitadas) {
@@ -2139,6 +2165,11 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 3: MANEJAR LED
     manejarLED();
+
+    if (modoAPActivo) {
+        delay(50);
+        return;
+    }
 
     // ⭐⭐ PRIORIDAD 4: VERIFICAR Y ENVIAR CONFIG PENDIENTE BLE
     if (blePermitido && pendienteEnvioConfig && millis() >= tiempoProgramadoEnvio) {
@@ -2183,71 +2214,82 @@ void loop() {
     if (blePermitido) {
         // Ejecutar BLE si es tiempo
         if (ultimoEscaneoBLE == 0 || tiempoDesdeEscaneoBLE >= intervaloEscaneo) {
-            Serial.println("\n🔍 ===========================================");
-            Serial.println("🎯 INICIANDO ESCANEO BLE");
-            Serial.printf("   Modo: %s\n",
-                          bajaFabricaActiva
-                              ? "SOLICITAR BAJA (FÁBRICA)"
-                              : (registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO"));
-            Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
-            Serial.println("🔍 ===========================================");
-
-            if (bajaFabricaActiva) {
-                if (bajaFabricaIntentos < 255) {
-                    bajaFabricaIntentos++;
+            if (wakeByImpact && intentosBleBoton >= BOTON_INTENTOS_MAXIMOS) {
+                Serial.println("⏭️  Escaneo BLE omitido: máximo de intentos por botón alcanzado.");
+                ultimoEscaneoBLE = millis();
+                Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
+            } else {
+                if (wakeByImpact) {
+                    intentosBleBoton++;
+                    Serial.printf("🔁 Intento BLE por botón: %u/%u\n",
+                                  intentosBleBoton, BOTON_INTENTOS_MAXIMOS);
                 }
-                bajaFabricaConsecutivo++;
-                bajaFabricaUltimoIntento = millis();
-                Serial.printf("🧹 Intento de baja fábrica %u/%u (consecutivo %lu)\n",
-                              bajaFabricaIntentos,
-                              BAJA_FABRICA_MAX_INTENTOS,
-                              bajaFabricaConsecutivo);
-            }
+                Serial.println("\n🔍 ===========================================");
+                Serial.println("🎯 INICIANDO ESCANEO BLE");
+                Serial.printf("   Modo: %s\n",
+                              bajaFabricaActiva
+                                  ? "SOLICITAR BAJA (FÁBRICA)"
+                                  : (registrado ? "SOLICITAR BAJA" : "SOLICITAR REGISTRO"));
+                Serial.printf("   Tiempo desde último escaneo: %d seg\n", tiempoDesdeEscaneoBLE / 1000);
+                Serial.println("🔍 ===========================================");
 
-            scanForDevices();
+                if (bajaFabricaActiva) {
+                    if (bajaFabricaIntentos < 255) {
+                        bajaFabricaIntentos++;
+                    }
+                    bajaFabricaConsecutivo++;
+                    bajaFabricaUltimoIntento = millis();
+                    Serial.printf("🧹 Intento de baja fábrica %u/%u (consecutivo %lu)\n",
+                                  bajaFabricaIntentos,
+                                  BAJA_FABRICA_MAX_INTENTOS,
+                                  bajaFabricaConsecutivo);
+                }
 
-            if (doConnect) {
-                Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
-                if (connectToServer()) {
-                    if (!registrado && !bajaFabricaActiva) {
-                        // MODO REGISTRO
-                        String solicitudRegistro = "REG:" + macAddress;
-                        sendCommand(solicitudRegistro);
-                        Serial.println("📤 ENVIANDO SOLICITUD DE REGISTRO: " + solicitudRegistro);
-                        enProcesoRegistro = true;
-                        tiempoInicioRegistro = millis();
-                        Serial.println("⏳ Esperando confirmación de registro...");
+                scanForDevices();
+
+                if (doConnect) {
+                    Serial.println("\n✅ SERVICIO BLE ENCONTRADO - Conectando...");
+                    if (connectToServer()) {
+                        if (!registrado && !bajaFabricaActiva) {
+                            // MODO REGISTRO
+                            String solicitudRegistro = "REG:" + macAddress;
+                            sendCommand(solicitudRegistro);
+                            Serial.println("📤 ENVIANDO SOLICITUD DE REGISTRO: " + solicitudRegistro);
+                            enProcesoRegistro = true;
+                            tiempoInicioRegistro = millis();
+                            Serial.println("⏳ Esperando confirmación de registro...");
+                        } else {
+                            // MODO BAJA
+                            String solicitudBaja = "BAJA:" + macAddress;
+                            sendCommand(solicitudBaja);
+                            Serial.println("📤 ENVIANDO SOLICITUD DE BAJA: " + solicitudBaja);
+                            bajaAutomaticaActivada = true;
+                            tiempoInicioBaja = millis();
+                            enProcesoRegistro = true;
+                            Serial.println("⏳ Esperando confirmación de baja...");
+                        }
                     } else {
-                        // MODO BAJA
-                        String solicitudBaja = "BAJA:" + macAddress;
-                        sendCommand(solicitudBaja);
-                        Serial.println("📤 ENVIANDO SOLICITUD DE BAJA: " + solicitudBaja);
-                        bajaAutomaticaActivada = true;
-                        tiempoInicioBaja = millis();
-                        enProcesoRegistro = true;
-                        Serial.println("⏳ Esperando confirmación de baja...");
+                        Serial.println("❌ FALLO EN CONEXIÓN BLE");
                     }
                 } else {
-                    Serial.println("❌ FALLO EN CONEXIÓN BLE");
+                    Serial.println("❌ SERVIDOR NUUP_Monitor NO ENCONTRADO");
                 }
-            } else {
-                Serial.println("❌ SERVIDOR NUUP_Monitor NO ENCONTRADO");
-            }
 
-            ultimoEscaneoBLE = millis();
-            Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
+                ultimoEscaneoBLE = millis();
+                Serial.printf("🔍 Próximo escaneo BLE en: %d segundos\n\n", intervaloEscaneo / 1000);
 
-            // ⭐ SI SE ENCONTRÓ BLE, NO CONTINUAR INMEDIATAMENTE
-            if (doConnect) {
-                delay(100);
-                return;
+                // ⭐ SI SE ENCONTRÓ BLE, NO CONTINUAR INMEDIATAMENTE
+                if (doConnect) {
+                    delay(100);
+                    return;
+                }
             }
         }
     }
 
     // ⭐⭐ PRIORIDAD 6: PROCESAR COMUNICACIÓN BLE ACTIVA
     if (blePermitido && (enProcesoRegistro || bajaAutomaticaActivada || deviceConnected)) {
-        if (atenderImpactoPrioritario("BLE activo")) {
+        if (atenderBotonPrioritario("BLE activo")) {
             return;
         }
         static unsigned long ultimoUpdate = 0;
@@ -2301,9 +2343,16 @@ void loop() {
 
     // ⭐⭐ PRIORIDAD 6.5: AJUSTE DE POTENCIA TRAS IMPACTO (SIN TELEMETRÍA)
     if (wakeByImpact && registrado && !configuracionPotenciaFinalizada) {
-        Serial.println("\n🛠️  Ajuste de potencia por impacto (sin enviar telemetría de nivel)");
+        if (intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS) {
+            Serial.println("⏭️  Ajuste de potencia omitido: máximo de intentos por botón alcanzado.");
+            configuracionPotenciaFinalizada = true;
+        } else {
+        Serial.println("\n🛠️  Ajuste de potencia por botón (sin enviar telemetría de nivel)");
+        intentosPotenciaBoton++;
+        Serial.printf("🔁 Intento potencia por botón: %u/%u\n",
+                      intentosPotenciaBoton, BOTON_INTENTOS_MAXIMOS);
 
-        uint8_t potenciaConfirmada = LORA_POTENCIA_DEFECTO_DBM;
+        uint8_t potenciaConfirmada = LORA_POTENCIA_INICIO_CONFIG_DBM;
         bool confirmacionPotencia = intercambiarPotenciaConMonitor(potenciaConfirmada);
 
         if (confirmacionPotencia) {
@@ -2311,12 +2360,14 @@ void loop() {
             dispositivo.potenciaLoRaDbm = potenciaConfirmada;
             LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
             guardarDatosEnEEPROM();
-            Serial.printf("✅ Potencia confirmada tras impacto: %u dBm\n", potenciaConfirmada);
+            Serial.printf("✅ Potencia confirmada tras botón: %u dBm\n", potenciaConfirmada);
+            intentosPotenciaBoton = BOTON_INTENTOS_MAXIMOS;
         } else {
-            Serial.println("⚠️  Sin confirmación de potencia tras impacto (se mantiene potencia por defecto)");
+            Serial.println("⚠️  Sin confirmación de potencia tras botón (se mantiene potencia por defecto)");
         }
 
-        configuracionPotenciaFinalizada = true;
+        configuracionPotenciaFinalizada = confirmacionPotencia ||
+                                          intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS;
         recalibrarPotenciaLoRa = false;
         tiempoSinEnvioConfirmado = 0;
         marcaAcumuladorSinEnvio = millis();
@@ -2324,13 +2375,15 @@ void loop() {
         ultimoSleepProgramadoMs = intervaloEnvioActual;
 
         inicioVigiliaImpacto = millis();
-        Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
+        Serial.printf("🔁 Vigilia activa tras botón (consecutivo %lu)\n", impactoConsecutivo);
         delay(50);
         return;
+        }
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente && !wakeByImpact) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente &&
+        !wakeByImpact && !modoAPActivo && !modoConfiguracionActivo) {
         unsigned long tiempoActual = millis();
         unsigned long tiempoActivoSinEnvio = tiempoActual - marcaAcumuladorSinEnvio;
         unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActivoSinEnvio;
@@ -2348,12 +2401,17 @@ void loop() {
             envioLoRaEjecutado = false;
 
             int distancia = obtenerDistanciaValida();
+            if (modoAPActivo || wakeByImpact) {
+                Serial.println("⚡ Medición interrumpida por botón - priorizando modo solicitado");
+                impactoInterrumpioLoRa = true;
+                return;
+            }
             bool confirmado = enviarDatos(distancia);
             ultimoEnvioDatos = millis();
 
             if (!confirmado && envioLoRaEjecutado) {
                 if (impactoInterrumpioLoRa) {
-                    Serial.println("⚡ Envío interrumpido por impacto - se prioriza vigilia y no se reinicia");
+                    Serial.println("⚡ Envío interrumpido por botón - se prioriza vigilia y no se reinicia");
                     impactoInterrumpioLoRa = false;
                 } else {
                     Serial.println("❌ Sin confirmación tras reintentos. Reiniciando para reanudar ciclo.");
@@ -2380,7 +2438,7 @@ void loop() {
     }
 
     // ⭐⭐ PRIORIDAD 8: VERIFICAR SLEEP (SOLO SI ESTÁ REGISTRADO)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente && !modoConfiguracionActivo && !wakeByImpact) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente && !modoConfiguracionActivo && !modoAPActivo && !wakeByImpact) {
         unsigned long tiempoDesdeEnvio = millis() - ultimoEnvioDatos;
         unsigned long tiempoDesdeBLE = millis() - ultimoEscaneoBLE;
         unsigned long intervaloEscaneo = registrado ? INTERVALO_ESCANEO_BAJA : INTERVALO_ESCANEO_ALTA;
@@ -2406,7 +2464,7 @@ void loop() {
             ultimoEstado = millis();
             Serial.println("🔍 MODO BÚSQUEDA ACTIVA - Sin Deep Sleep");
         }
-        if (atenderImpactoPrioritario("modo sin alta")) {
+        if (atenderBotonPrioritario("modo sin alta")) {
             return;
         }
         delay(500); // Delay cooperativo normal
@@ -2415,49 +2473,32 @@ void loop() {
             inicioVigiliaImpacto = millis();
         }
 
-        static bool avisoEsperandoGolpe = false;
-        bool sesionAPActiva = modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
-        bool enlaceBLEActivo = deviceConnected || enProcesoRegistro || bajaAutomaticaActivada;
-
-        if (sesionAPActiva) {
-            static bool avisoMantenerseDespierto = false;
-            if (!avisoMantenerseDespierto) {
-                Serial.println("⏳ Modo impacto activo - manteniendo portal AP en primer plano");
-                avisoMantenerseDespierto = true;
-            }
-            avisoEsperandoGolpe = false;
-            delay(50);
-            return;
-        }
-
-        if (millis() - inicioVigiliaImpacto < IMPACTO_TIEMPO_VIGILIA_MS) {
-            if (atenderImpactoPrioritario("vigilia impacto")) {
-                return;
-            }
-            avisoEsperandoGolpe = false;
-            delay(50);
-            return;
-        }
-
-        if (!avisoEsperandoGolpe) {
-            Serial.printf("🔁 Esperando nuevo golpe para continuar (ciclo %lu)\n", impactoConsecutivo);
-            avisoEsperandoGolpe = true;
-        }
-        if (impactoConsecutivo >= IMPACTO_MAX_CICLOS_AUTO_REINICIO) {
-            Serial.printf("🔁 Ciclos de impacto completos (%lu) - reiniciando para volver al ciclo normal\n",
-                          impactoConsecutivo);
+        if (intentosBleBoton >= BOTON_INTENTOS_MAXIMOS &&
+            (configuracionPotenciaFinalizada || intentosPotenciaBoton >= BOTON_INTENTOS_MAXIMOS)) {
+            Serial.println("✅ Modo botón completado (BLE/potencia). Reiniciando a operación normal.");
             delay(200);
             ESP.restart();
         }
-        if (confirmarGolpesImpacto()) {
-            impactoConsecutivo++;
-            Serial.printf("✅ Nuevo golpe detectado - reiniciando vigilia por impacto (ciclo %lu)\n",
-                          impactoConsecutivo);
-            inicioVigiliaImpacto = millis();
-            avisoEsperandoGolpe = false;
-        } else {
-            delay(200);
+
+        bool sesionAPActiva = modoAPActivo || modoConfiguracionActivo || WiFi.softAPgetStationNum() > 0;
+
+        if (sesionAPActiva) {
+            delay(50);
+            return;
         }
+
+        if (millis() - inicioVigiliaImpacto < BOTON_TIEMPO_VIGILIA_MS) {
+            if (atenderBotonPrioritario("vigilia botón")) {
+                return;
+            }
+            delay(50);
+            return;
+        }
+
+        Serial.println("⏳ Vigilia por botón finalizada - regresando a operación normal.");
+        wakeByImpact = false;
+        configuracionPotenciaFinalizada = true;
+        delay(200);
         return;
     }
     
@@ -2655,7 +2696,7 @@ bool esperarConfirmacionConfiguracion(uint8_t potenciaEsperada, int intentoActua
     while (millis() - inicioEspera < ventana) {
         esp_task_wdt_reset();
 
-        if (atenderImpactoPrioritario("confirmación de configuración")) {
+        if (atenderBotonPrioritario("confirmación de configuración")) {
             return false;
         }
 
@@ -2824,7 +2865,7 @@ bool esperarConfirmacionLoRa(int intentoActual) {
     while (millis() - inicioEspera < ventana) {
         esp_task_wdt_reset();
 
-        if (atenderImpactoPrioritario("confirmación LoRa")) {
+        if (atenderBotonPrioritario("confirmación LoRa")) {
             return false;
         }
 
@@ -2882,7 +2923,7 @@ bool esperarConfirmacionLoRa(int intentoActual) {
 }
 
 bool enviarDatos(int distancia) {
-    if (atenderImpactoPrioritario("envío LoRa")) {
+    if (atenderBotonPrioritario("envío LoRa")) {
         return false;
     }
 
@@ -2993,7 +3034,7 @@ bool enviarDatos(int distancia) {
                       recalibrarPotenciaLoRa ? "dinámico" : "fijo");
 
         for (int intento = 1; intento <= REINTENTOS_CONFIRMACION; intento++) {
-            if (atenderImpactoPrioritario("reintento LoRa")) {
+            if (atenderBotonPrioritario("reintento LoRa")) {
                 return false;
             }
 
@@ -3025,7 +3066,7 @@ bool enviarDatos(int distancia) {
             unsigned long inicioEspera = millis();
             while (millis() - inicioEspera < espera) {
                 esp_task_wdt_reset();
-                if (atenderImpactoPrioritario("pausa entre reintentos LoRa")) {
+                if (atenderBotonPrioritario("pausa entre reintentos LoRa")) {
                     return false;
                 }
                 delay(10);
@@ -3084,32 +3125,55 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
         return true;
     }
 
-    potenciaConfirmada = LORA_POTENCIA_DEFECTO_DBM;
-    potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
+    uint8_t potenciaInicio = min<uint8_t>(LORA_POTENCIA_INICIO_CONFIG_DBM, LORA_POTENCIA_MAX_DBM);
+    potenciaConfirmada = potenciaInicio;
+    potenciaLoRaActualDbm = potenciaInicio;
 
     bool confirmado = false;
 
-    for (int intento = 1; intento <= REINTENTOS_CONFIG_POTENCIA; intento++) {
-        String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
-        uint8_t potenciaConfirmadaRx = potenciaConfirmada;
+    for (uint8_t potencia = potenciaInicio; potencia <= LORA_POTENCIA_MAX_DBM; potencia++) {
+        if (atenderBotonPrioritario("barrido potencia")) {
+            return false;
+        }
+        potenciaLoRaActualDbm = potencia;
+        potenciaConfirmada = potencia;
 
-        LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
-        unsigned long ventana = calcularVentanaConfirmacionMs(intento);
-        Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d, espera %lu ms)\n",
-                      solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA, ventana);
+        for (int intento = 1; intento <= REINTENTOS_CONFIG_POTENCIA; intento++) {
+            if (atenderBotonPrioritario("intento potencia")) {
+                return false;
+            }
+            String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
+            uint8_t potenciaConfirmadaRx = potenciaConfirmada;
 
-        if (LoRa.beginPacket()) {
-            LoRa.print(solicitud);
-            LoRa.endPacket();
+            LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
+            unsigned long ventana = calcularVentanaConfirmacionMs(intento);
+            Serial.printf("\n📡 Enviando ajuste de potencia (%s) usando %u dBm (intento %d/%d, espera %lu ms)\n",
+                          solicitud.c_str(), potenciaLoRaActualDbm, intento, REINTENTOS_CONFIG_POTENCIA, ventana);
 
-            if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento, potenciaConfirmadaRx)) {
-                Serial.printf("✅ Confirmación de potencia recibida: %u dBm\n", potenciaConfirmadaRx);
-                potenciaConfirmada = potenciaConfirmadaRx;
-                confirmado = true;
-                break;
+            if (LoRa.beginPacket()) {
+                LoRa.print(solicitud);
+                LoRa.endPacket();
+
+                if (esperarConfirmacionConfiguracion(potenciaConfirmada, intento, potenciaConfirmadaRx)) {
+                    Serial.printf("✅ Confirmación de potencia recibida: %u dBm\n", potenciaConfirmadaRx);
+                    potenciaConfirmada = potenciaConfirmadaRx;
+                    confirmado = true;
+                    break;
+                }
+            }
+            unsigned long inicioPausa = millis();
+            while (millis() - inicioPausa < 200) {
+                esp_task_wdt_reset();
+                if (atenderBotonPrioritario("pausa potencia")) {
+                    return false;
+                }
+                delay(10);
             }
         }
-        delay(200);
+
+        if (confirmado) {
+            break;
+        }
     }
 
     if (!confirmado) {
@@ -3150,6 +3214,10 @@ int obtenerDistanciaValida() {
     
     while (intentos < 5) { // Reducir intentos para mayor eficiencia
         esp_task_wdt_reset();
+
+        if (atenderBotonPrioritario("medición ultrasónica")) {
+            return 9999;
+        }
         
         distancia = measureDistance();
         
@@ -3176,7 +3244,14 @@ int obtenerDistanciaValida() {
         }
         
         intentos++;
-        delay(100);
+        unsigned long inicioEspera = millis();
+        while (millis() - inicioEspera < 100) {
+            esp_task_wdt_reset();
+            if (atenderBotonPrioritario("pausa medición")) {
+                return 9999;
+            }
+            delay(10);
+        }
     }
     
     // ⭐ FALLBACK: Si después de 5 intentos no hay medición válida
@@ -3219,21 +3294,21 @@ void prepararParaDeepSleep() {
         esp_sleep_enable_timer_wakeup(sleepTime * 1000);
         Serial.printf("   Sleep por TIMER: %lu ms (%lu seg)\n", sleepTime, sleepTime / 1000);
     } else {
-        // Sin alta: solo despertar por impacto
+        // Sin alta: solo despertar por botón
         ultimoSleepProgramadoMs = 0;
-        Serial.println("   Sleep sin alta - esperando impacto para despertar");
+        Serial.println("   Sleep sin alta - esperando botón para despertar");
     }
 
-    // ⭐ Wakeup adicional por sensor de impacto (nivel bajo)
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)SENSOR_IMPACTO_PIN, 0);
+    // ⭐ Wakeup adicional por botón (nivel bajo)
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BOTON_PIN, 0);
 
     // Apagar periféricos para ahorro de energía
     LoRa.sleep();
     WiFi.mode(WIFI_OFF);
     btStop();
 
-    Serial.printf("✅ Configurado sleep (timer=%s, impacto=GPIO%d)\n",
-                  registrado ? "SI" : "NO", SENSOR_IMPACTO_PIN);
+    Serial.printf("✅ Configurado sleep (timer=%s, botón=GPIO%d)\n",
+                  registrado ? "SI" : "NO", BOTON_PIN);
 }
 
 void iniciarLoRaConReintentos() {
@@ -3252,6 +3327,7 @@ void iniciarLoRaConReintentos() {
     
     if (intentos < 10) {
         Serial.println("✅ LoRa inicializado correctamente!");
+        loraInicializado = true;
         
         // Configurar parámetros LoRa
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
