@@ -240,7 +240,6 @@ bool botonIgnorarHastaSoltar = false;
 bool botonInterrumpioOperacion = false;
 bool recalibrarPotenciaLoRa = false;
 bool configuracionPotenciaFinalizada = false;
-uint8_t ciclosSinConfirmacionLoRa = 0;
 uint8_t intentosBleBoton = 0;
 uint8_t intentosPotenciaBoton = 0;
 bool forzarEnvioPorTiempo = false;
@@ -3037,11 +3036,9 @@ bool enviarDatos(int distancia) {
 
     bool enviarAhora = cambiosRelevantes || forzarEnvioPorTiempo;
 
-    // Asegurar que el ciclo de transmisión parte de la potencia por defecto cuando no hay confirmación vigente
-    if (!configuracionPotenciaFinalizada) {
-        potenciaLoRaActualDbm = LORA_POTENCIA_DEFECTO_DBM;
-        dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
-    }
+    // Asegurar que el ciclo de transmisión parte de la potencia mínima (no EEPROM)
+    potenciaLoRaActualDbm = LORA_POTENCIA_MIN_DBM;
+    dispositivo.potenciaLoRaDbm = LORA_POTENCIA_MIN_DBM;
 
     if (!enviarAhora) {
         Serial.println("⏸️  Sin cambios en la medición. No se envía LoRa para ahorrar energía.");
@@ -3060,10 +3057,6 @@ bool enviarDatos(int distancia) {
     bool confirmado = false;
     uint8_t potenciaConfirmada = potenciaLoRaActualDbm;
     bool ajustarPotenciaTrasDespertar = wakeByImpact || recalibrarPotenciaLoRa;
-
-    if (ciclosSinConfirmacionLoRa >= 1) {
-        potenciaLoRaActualDbm = LORA_POTENCIA_MAX_DBM;
-    }
     uint8_t potenciaInicio = max<uint8_t>(potenciaLoRaActualDbm, LORA_POTENCIA_MIN_DBM);
     uint8_t potenciaFin = recalibrarPotenciaLoRa ? LORA_POTENCIA_MAX_DBM : potenciaLoRaActualDbm;
 
@@ -3137,7 +3130,6 @@ bool enviarDatos(int distancia) {
         cambiosConfiguracionPendientes = false;
         recalibrarPotenciaLoRa = false;
         configuracionPotenciaFinalizada = true;
-        ciclosSinConfirmacionLoRa = 0;
 
         if (ajustarPotenciaTrasDespertar && !configuracionPotenciaFinalizada) {
             uint8_t potenciaAntesIntercambio = potenciaConfirmada;
@@ -3154,17 +3146,12 @@ bool enviarDatos(int distancia) {
                               potenciaAntesIntercambio);
             }
         }
-    } else {
-        if (ciclosSinConfirmacionLoRa < 255) {
-            ciclosSinConfirmacionLoRa++;
-        }
-        if (recalibrarPotenciaLoRa) {
+    } else if (recalibrarPotenciaLoRa) {
         dispositivo.potenciaLoRaDbm = LORA_POTENCIA_DEFECTO_DBM;
         potenciaLoRaActualDbm = dispositivo.potenciaLoRaDbm;
         LoRa.setTxPower(potenciaLoRaActualDbm, PA_OUTPUT_PA_BOOST_PIN);
         guardarDatosEnEEPROM();
         Serial.printf("⚠️  Barrido completo sin confirmación. Potencia devuelta a %u dBm\n", potenciaLoRaActualDbm);
-        }
     }
 
     return confirmado;
@@ -3176,7 +3163,7 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
         return true;
     }
 
-    uint8_t potenciaInicio = min<uint8_t>(LORA_POTENCIA_INICIO_CONFIG_DBM, LORA_POTENCIA_MAX_DBM);
+    uint8_t potenciaInicio = LORA_POTENCIA_MIN_DBM;
     potenciaConfirmada = potenciaInicio;
     potenciaLoRaActualDbm = potenciaInicio;
 
