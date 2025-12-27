@@ -10,7 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 135 - 2025-07-08 Control manual de estatus llenado (1/2) desde Monitor01 y publicación MQTT al backend.
+ * 136 - 2025-07-08 MQTT añade estatus (1/2) al payload para actualizar Devices en backend.
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -105,7 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 135 - 2025-07-08 Control manual de estatus llenado (1/2) desde Monitor01 y publicación MQTT al backend.
+// 136 - 2025-07-08 MQTT añade estatus (1/2) al payload para actualizar Devices en backend.
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -351,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 135;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 136;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -7018,11 +7018,13 @@ testLoRaPeriodico();
 
                 Serial.println("\n📡 [MQTT][TX] Telemetría hacia broker");
                 Serial.printf("   Topic   : %s\n", topico.c_str());
-                Serial.printf("   Payload : %s\n", mensajeLoRa.c_str());
+                int estatusLlenado = ESTATUS_LLENADO_ACTIVO ? 2 : 1;
+                String payloadMQTT = mensajeLoRa + "," + String(estatusLlenado);
+                Serial.printf("   Payload : %s\n", payloadMQTT.c_str());
                 Serial.println("   ✅ Solicitud: validar DEVICE_MODIFICACION y responder en NUUP/<MONITOR>/confirmacion/");
                 Serial.printf("   ℹ️ Ruta fija por monitor: NUUP/%s (MAC del sensor viaja en el payload)\n", macTopico.c_str());
 
-                if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
+                if (client.publish(topico.c_str(), payloadMQTT.c_str())) {
                     Serial.println("   📤 Enviada correctamente. Esperando confirmación del broker...");
                     esperandoConfirmacionBroker = true;
                     macEsperandoConfirmacion = macDestino;
