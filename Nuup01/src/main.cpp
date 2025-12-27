@@ -1966,16 +1966,23 @@ void setup() {
     if (botonDesperto || digitalRead(BOTON_PIN) == LOW) {
         Serial.println("🧭 Evaluando duración de botón en arranque...");
         unsigned long inicioPresion = millis();
+        bool largoDetectado = false;
         while (digitalRead(BOTON_PIN) == LOW) {
             esp_task_wdt_reset();
+            if (!largoDetectado &&
+                (millis() - inicioPresion) >= BOTON_PRESION_LARGA_MIN_MS) {
+                largoDetectado = true;
+                iniciarModoEmparejamiento("arranque por presión larga (sin soltar)");
+                break;
+            }
             delay(10);
         }
         unsigned long duracion = millis() - inicioPresion;
         Serial.printf("⏱️  Duración botón: %lums\n", duracion);
 
-        if (duracion < BOTON_PRESION_CORTA_MS) {
+        if (!largoDetectado && duracion < BOTON_PRESION_CORTA_MS) {
             iniciarModoAP("arranque por toque corto");
-        } else if (duracion >= BOTON_PRESION_LARGA_MIN_MS) {
+        } else if (!largoDetectado && duracion >= BOTON_PRESION_LARGA_MIN_MS) {
             iniciarModoEmparejamiento("arranque por presión larga");
         }
     }
