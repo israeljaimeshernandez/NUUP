@@ -638,6 +638,7 @@ EventoBoton leerEventoBoton() {
 void iniciarModoAP(const char* motivo) {
     if (!modoAPActivo) {
         modoAPActivo = true;
+        impactoInterrumpioLoRa = true;
         Serial.printf("🌐 Modo AP activado (%s)\n", motivo);
     }
 
@@ -2168,6 +2169,11 @@ void loop() {
     // ⭐⭐ PRIORIDAD 3: MANEJAR LED
     manejarLED();
 
+    if (modoAPActivo) {
+        delay(50);
+        return;
+    }
+
     // ⭐⭐ PRIORIDAD 4: VERIFICAR Y ENVIAR CONFIG PENDIENTE BLE
     if (blePermitido && pendienteEnvioConfig && millis() >= tiempoProgramadoEnvio) {
         Serial.println("\n🎯 EJECUTANDO ENVÍO CONFIG PROGRAMADO...");
@@ -2358,7 +2364,8 @@ void loop() {
     }
 
     // ⭐⭐ PRIORIDAD 7: MEDICIÓN DE SENSOR (solo si está registrado y no hay BLE activo)
-    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente && !wakeByImpact) {
+    if (registrado && !enProcesoRegistro && !bajaAutomaticaActivada && !bajaFabricaPendiente &&
+        !wakeByImpact && !modoAPActivo && !modoConfiguracionActivo) {
         unsigned long tiempoActual = millis();
         unsigned long tiempoActivoSinEnvio = tiempoActual - marcaAcumuladorSinEnvio;
         unsigned long tiempoSinEnvioActual = tiempoSinEnvioConfirmado + tiempoActivoSinEnvio;
@@ -2376,6 +2383,11 @@ void loop() {
             envioLoRaEjecutado = false;
 
             int distancia = obtenerDistanciaValida();
+            if (modoAPActivo || wakeByImpact) {
+                Serial.println("⚡ Medición interrumpida por botón - priorizando modo solicitado");
+                impactoInterrumpioLoRa = true;
+                return;
+            }
             bool confirmado = enviarDatos(distancia);
             ultimoEnvioDatos = millis();
 
@@ -3095,10 +3107,16 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
     bool confirmado = false;
 
     for (uint8_t potencia = potenciaInicio; potencia <= LORA_POTENCIA_MAX_DBM; potencia++) {
+        if (atenderBotonPrioritario("barrido potencia")) {
+            return false;
+        }
         potenciaLoRaActualDbm = potencia;
         potenciaConfirmada = potencia;
 
         for (int intento = 1; intento <= REINTENTOS_CONFIG_POTENCIA; intento++) {
+            if (atenderBotonPrioritario("intento potencia")) {
+                return false;
+            }
             String solicitud = "configuracion/" + macAddress + "/solicitud," + String(potenciaConfirmada);
             uint8_t potenciaConfirmadaRx = potenciaConfirmada;
 
@@ -3118,7 +3136,14 @@ bool intercambiarPotenciaConMonitor(uint8_t &potenciaConfirmada) {
                     break;
                 }
             }
-            delay(200);
+            unsigned long inicioPausa = millis();
+            while (millis() - inicioPausa < 200) {
+                esp_task_wdt_reset();
+                if (atenderBotonPrioritario("pausa potencia")) {
+                    return false;
+                }
+                delay(10);
+            }
         }
 
         if (confirmado) {
@@ -3164,6 +3189,10 @@ int obtenerDistanciaValida() {
     
     while (intentos < 5) { // Reducir intentos para mayor eficiencia
         esp_task_wdt_reset();
+
+        if (atenderBotonPrioritario("medición ultrasónica")) {
+            return 9999;
+        }
         
         distancia = measureDistance();
         
@@ -3190,7 +3219,14 @@ int obtenerDistanciaValida() {
         }
         
         intentos++;
-        delay(100);
+        unsigned long inicioEspera = millis();
+        while (millis() - inicioEspera < 100) {
+            esp_task_wdt_reset();
+            if (atenderBotonPrioritario("pausa medición")) {
+                return 9999;
+            }
+            delay(10);
+        }
     }
     
     // ⭐ FALLBACK: Si después de 5 intentos no hay medición válida
