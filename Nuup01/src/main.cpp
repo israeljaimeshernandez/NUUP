@@ -677,14 +677,10 @@ bool atenderImpactoPrioritario(const char *contexto) {
     inicioVigiliaImpacto = millis();
     impactoConsecutivo++;
     impactoInterrumpioLoRa = true;
-    impactoReinicioPendiente = true;
-    impactoReinicioMagic = 0xA5A5C3C3;
     impactoConfirmadoEnOperacion = true;
     LoRa.receive();
-    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - reiniciando para iniciar ciclo\n",
+    Serial.printf("🔁 Impacto prioritario activado (ciclo %lu) - cambiando a modo impacto sin reinicio\n",
                   impactoConsecutivo);
-    delay(50);
-    ESP.restart();
     return true;
 }
 
