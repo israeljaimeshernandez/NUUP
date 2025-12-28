@@ -10,6 +10,11 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
+ * 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
+ * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
+ * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
+ * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
+ * 130 - 2025-07-08 Botón WiFi a GPIO33 + OLED I2C vertical (SDA15/SCL4) para nivel de agua con parpadeo <10% y operación aislada.
  * 129 - LoRa: corrección de modificación pendiente; el monitor ya no se queda fijo en litros antiguos y valida alias/altura/capacidad sin bloquear por litros actuales.
  * 128 - LoRa: al recibir datos mientras hay modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
  * 127 - MQTT: el monitor atiende solicitudes de modificación iniciadas por el servidor (device_modificacion=1) aun sin
@@ -100,6 +105,11 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
+// 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
+// 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
+// 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
+// 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
+// 130 - 2025-07-08 Botón WiFi en GPIO33 y OLED vertical I2C (SDA15/SCL4) con nivel de agua y parpadeo <10%.
 // 129 - 2025-07-07 LoRa: se actualizan lecturas mientras hay modificación pendiente y la validación no bloquea por litros actuales.
 // 128 - 2025-07-07 LoRa: al recibir datos con modificación pendiente se actualiza el timestamp para evitar "SIN DATOS" en OLED.
 // 127 - 2025-07-06 MQTT: solicitudes de modificación iniciadas por servidor se aplican en EEPROM aunque no exista LoRa previo,
@@ -341,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 129;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 137;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -611,6 +621,11 @@ void verificarTiemposSinDatos();
 void debugMensajeLoRa(const String &mensaje);
 void testDispositivosRapido() ;
 void activarDispositivosTrasConfirmacion();
+void iniciarWaterDisplay();
+void actualizarWaterDisplay(int porcentaje);
+void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua);
+void publicarEstatusLlenadoMQTT();
+String insertarEstatusDespuesDeNombre(const String &payload, int estatus);
 
 
 //Definiciones pantalla TFT
@@ -620,6 +635,29 @@ void activarDispositivosTrasConfirmacion();
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool displayReady = false;
+
+// OLED secundario vertical (nivel de agua) - bus I2C independiente
+static const uint8_t WATER_OLED_SDA = 15;
+static const uint8_t WATER_OLED_SCL = 4;
+static const uint8_t WATER_OLED_ADDR = 0x3C;
+// Márgenes del tanque en el OLED vertical (ajustables para centrar el recuadro)
+static const uint8_t WATER_MARGIN_LEFT = 18;
+static const uint8_t WATER_MARGIN_RIGHT = 6;
+static const uint8_t WATER_MARGIN_TOP = 8;
+static const uint8_t WATER_MARGIN_BOTTOM = 6;
+TwoWire waterWire = TwoWire(1);
+Adafruit_SSD1306 waterDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &waterWire, OLED_RESET);
+bool waterDisplayOk = false;
+int waterDisplayUltimoPorcentaje = -1;
+unsigned long waterDisplayUltimoBlink = 0;
+bool waterDisplayBlinkOn = true;
+bool waterDisplayLlenando = false;
+int waterDisplayPorcentajeAnimado = 0;
+unsigned long waterDisplayUltimaAnimacion = 0;
+// Control manual de llenado: ajustar a true para enviar estatus=2, false para estatus=1
+bool ESTATUS_LLENADO_ACTIVO = false;
+unsigned long ultimoEnvioEstatusLlenado = 0;
+int ultimoEstatusEnviado = -1;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -779,8 +817,8 @@ void dibujarMensajeConexion();
 String escapeForJS(const String &input);
 
 // --- Pines para los botones---
-#define BOTON_S 33
-#define BOTON_W 4
+#define BOTON_S 32
+#define BOTON_W 33
 #define TIEMPO_BOTON 1000
 
 bool boton_s=false;
@@ -3775,9 +3813,6 @@ Serial.println("Subscripcion: baja/1/confirmacion/");
     client.subscribe((String(serial_number) + "/command").c_str(), 1);
 Serial.println("Subscripcion: /command");
    delay(50);
-    client.subscribe((String(serial_number) + "/estatus").c_str(), 1);
-Serial.println("Subscripcion: /estatus");
-   delay(50);
     suscribirTopicoConfirmacionMonitor();
 
     imprimirEstadoBajasPendientes("MQTT reconectado");
@@ -6032,6 +6067,181 @@ void dibujarContenidoPrincipal() {
     }
 }
 
+void iniciarWaterDisplay() {
+    waterWire.begin(WATER_OLED_SDA, WATER_OLED_SCL);
+    waterDisplayOk = waterDisplay.begin(SSD1306_SWITCHCAPVCC, WATER_OLED_ADDR);
+    if (!waterDisplayOk) {
+        Serial.println("❌ OLED nivel de agua: fallo al iniciar (SDA15/SCL4).");
+        return;
+    }
+    waterDisplay.setRotation(1); // Vertical
+    waterDisplay.clearDisplay();
+    waterDisplay.display();
+    Serial.println("✅ OLED nivel de agua inicializado en SDA15/SCL4.");
+}
+
+void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
+    const int ancho = waterDisplay.width();
+    const int alto = waterDisplay.height();
+    const int margenIzq = WATER_MARGIN_LEFT;
+    const int margenDer = WATER_MARGIN_RIGHT;
+    const int margenSup = WATER_MARGIN_TOP;
+    const int margenInf = WATER_MARGIN_BOTTOM;
+    const int marco = 2;
+    const int tanqueW = ancho - (margenIzq + margenDer);
+    const int tanqueH = alto - (margenSup + margenInf);
+    const int tanqueX = margenIzq;
+    const int tanqueY = margenSup;
+    const int interiorX = tanqueX + marco;
+    const int interiorY = tanqueY + marco;
+    const int interiorW = tanqueW - (marco * 2);
+    const int interiorH = tanqueH - (marco * 2);
+
+    waterDisplay.drawRect(tanqueX, tanqueY, tanqueW, tanqueH, SSD1306_WHITE);
+
+    const int pipeWidth = 10;
+    const int pipeHeight = 12;
+    const int pipeX = tanqueX + (tanqueW / 2) - (pipeWidth / 2);
+    const int pipeY = tanqueY - pipeHeight - 8;
+    const int spoutWidth = 26;
+    const int spoutHeight = 6;
+    const int spoutX = pipeX - 8;
+    const int spoutY = pipeY + pipeHeight - 2;
+    const int valveRadius = 5;
+    const int valveX = pipeX + pipeWidth / 2;
+    const int valveY = pipeY - valveRadius - 2;
+    const int capWidth = 16;
+    const int capHeight = 4;
+    const int capX = valveX - capWidth / 2;
+    const int capY = valveY - valveRadius - capHeight + 1;
+
+    waterDisplay.drawRect(pipeX, pipeY, pipeWidth, pipeHeight, SSD1306_WHITE);
+    waterDisplay.fillRect(pipeX + 1, pipeY + 1, pipeWidth - 2, pipeHeight - 2, SSD1306_WHITE);
+    waterDisplay.drawRect(spoutX, spoutY, spoutWidth, spoutHeight, SSD1306_WHITE);
+    waterDisplay.fillRect(spoutX + 1, spoutY + 1, spoutWidth - 2, spoutHeight - 2, SSD1306_WHITE);
+    waterDisplay.drawCircle(valveX, valveY, valveRadius, SSD1306_WHITE);
+    waterDisplay.drawFastHLine(valveX - 4, valveY, 8, SSD1306_WHITE);
+    waterDisplay.drawFastVLine(valveX, valveY - 4, 8, SSD1306_WHITE);
+    waterDisplay.drawRect(capX, capY, capWidth, capHeight, SSD1306_WHITE);
+    waterDisplay.drawFastHLine(capX, capY + capHeight + 1, capWidth, SSD1306_WHITE);
+
+    if (!mostrarAgua) {
+        return;
+    }
+
+    int alturaAgua = (interiorH * porcentaje) / 100;
+    alturaAgua = constrain(alturaAgua, 0, interiorH);
+    int aguaY = interiorY + (interiorH - alturaAgua);
+
+    waterDisplay.fillRect(interiorX, aguaY, interiorW, alturaAgua, SSD1306_WHITE);
+
+    int waveOffset = (millis() / 250) % 4;
+    for (int y = aguaY + waveOffset; y < interiorY + interiorH; y += 6) {
+        waterDisplay.drawFastHLine(interiorX, y, interiorW, SSD1306_BLACK);
+    }
+
+    if (waterDisplayLlenando) {
+        int dropOffset = (millis() / 120) % 10;
+        int dropX = spoutX + (spoutWidth / 2);
+        int dropYStart = spoutY + spoutHeight + 1;
+        int dropY = dropYStart + dropOffset;
+        int dropYMax = tanqueY + 8;
+        if (dropY < dropYMax) {
+            waterDisplay.drawFastVLine(dropX, dropYStart, dropY - dropYStart + 1, SSD1306_WHITE);
+            waterDisplay.drawPixel(dropX - 1, dropY, SSD1306_WHITE);
+            waterDisplay.drawPixel(dropX + 1, dropY, SSD1306_WHITE);
+        }
+    }
+}
+
+String insertarEstatusDespuesDeNombre(const String &payload, int estatus) {
+    int commaCount = 0;
+    for (int i = 0; i < payload.length(); i++) {
+        if (payload.charAt(i) == ',') {
+            commaCount++;
+            if (commaCount == 7) {
+                return payload.substring(0, i + 1) + String(estatus) + "," + payload.substring(i + 1);
+            }
+        }
+    }
+    return payload + "," + String(estatus);
+}
+
+void publicarEstatusLlenadoMQTT() {
+    if (!client.connected() || WiFi.status() != WL_CONNECTED || !mqttConfirmed) {
+        return;
+    }
+
+    asegurarMacMonitorFija("estatus_tx");
+    String macTopico = normalizarMac(macMonitorFija);
+    if (macTopico.isEmpty()) {
+        return;
+    }
+
+    int estatus = ESTATUS_LLENADO_ACTIVO ? 2 : 1;
+    unsigned long ahora = millis();
+    bool cambio = (estatus != ultimoEstatusEnviado);
+    if (!cambio && (ahora - ultimoEnvioEstatusLlenado < 30000)) {
+        return;
+    }
+
+    String topico = String("NUUP/") + macTopico + "/estatus";
+    String payload = String("{\"result\":") + estatus + "}";
+    if (client.publish(topico.c_str(), payload.c_str())) {
+        ultimoEnvioEstatusLlenado = ahora;
+        ultimoEstatusEnviado = estatus;
+        Serial.printf("💧 [MQTT][TX] Estatus llenado enviado (%d) -> %s\n", estatus, topico.c_str());
+    }
+}
+
+void actualizarWaterDisplay(int porcentaje) {
+    if (!waterDisplayOk) {
+        return;
+    }
+
+    porcentaje = constrain(porcentaje, 0, 100);
+    bool necesitaRender = false;
+    unsigned long ahora = millis();
+    int porcentajeRender = porcentaje;
+
+    if (!waterDisplayLlenando || porcentaje <= waterDisplayPorcentajeAnimado) {
+        if (waterDisplayPorcentajeAnimado != porcentaje) {
+            waterDisplayPorcentajeAnimado = porcentaje;
+            necesitaRender = true;
+        }
+    } else if (ahora - waterDisplayUltimaAnimacion >= 150) {
+        waterDisplayUltimaAnimacion = ahora;
+        waterDisplayPorcentajeAnimado = min(waterDisplayPorcentajeAnimado + 1, porcentaje);
+        necesitaRender = true;
+    }
+
+    porcentajeRender = waterDisplayPorcentajeAnimado;
+
+    if (porcentaje < 10) {
+        if (ahora - waterDisplayUltimoBlink >= 500) {
+            waterDisplayUltimoBlink = ahora;
+            waterDisplayBlinkOn = !waterDisplayBlinkOn;
+            necesitaRender = true;
+        }
+    } else if (!waterDisplayBlinkOn) {
+        waterDisplayBlinkOn = true;
+        necesitaRender = true;
+    }
+
+    if (porcentaje != waterDisplayUltimoPorcentaje) {
+        waterDisplayUltimoPorcentaje = porcentaje;
+        necesitaRender = true;
+    }
+
+    if (!necesitaRender) {
+        return;
+    }
+
+    waterDisplay.clearDisplay();
+    dibujarNivelAguaVertical(porcentajeRender, waterDisplayBlinkOn);
+    waterDisplay.display();
+}
+
 bool actualizarLecturasParcialesDesdeLoRa(int indice, const String &mensaje) {
     if (indice < 0 || indice >= MAX_DISPOSITIVOS) {
         return false;
@@ -6389,6 +6599,7 @@ void setup() {
   displayReady = true;
   Serial.println("OLED inicializado correctamente");
   display.setTextColor(SSD1306_WHITE);
+  iniciarWaterDisplay();
 
     // 11. Inicializar BLE
     iniciarBLE();
@@ -6821,11 +7032,13 @@ testLoRaPeriodico();
 
                 Serial.println("\n📡 [MQTT][TX] Telemetría hacia broker");
                 Serial.printf("   Topic   : %s\n", topico.c_str());
-                Serial.printf("   Payload : %s\n", mensajeLoRa.c_str());
+                int estatusLlenado = ESTATUS_LLENADO_ACTIVO ? 2 : 1;
+                String payloadMQTT = insertarEstatusDespuesDeNombre(mensajeLoRa, estatusLlenado);
+                Serial.printf("   Payload : %s\n", payloadMQTT.c_str());
                 Serial.println("   ✅ Solicitud: validar DEVICE_MODIFICACION y responder en NUUP/<MONITOR>/confirmacion/");
                 Serial.printf("   ℹ️ Ruta fija por monitor: NUUP/%s (MAC del sensor viaja en el payload)\n", macTopico.c_str());
 
-                if (client.publish(topico.c_str(), mensajeLoRa.c_str())) {
+                if (client.publish(topico.c_str(), payloadMQTT.c_str())) {
                     Serial.println("   📤 Enviada correctamente. Esperando confirmación del broker...");
                     esperandoConfirmacionBroker = true;
                     macEsperandoConfirmacion = macDestino;
@@ -6840,6 +7053,9 @@ testLoRaPeriodico();
                     Serial.println("   ❌ Error al publicar telemetría al broker");
                 }
             }
+
+            waterDisplayLlenando = ESTATUS_LLENADO_ACTIVO;
+            publicarEstatusLlenadoMQTT();
 
             nuevoMensajeLoRa = false; //solo publicar una vez el mensaje y esperar a otro nuevo
         }
@@ -6896,6 +7112,7 @@ if(!forceAPMode){
         dibujarTituloDispositivo();
         dibujarContenidoPrincipal();
         display.display();
+        actualizarWaterDisplay(0);
         delay(100);
         return; // Salir temprano
     }
@@ -6909,6 +7126,7 @@ if(!forceAPMode){
     
     // ⭐⭐ SEGURO: cantidadDispositivos es al menos 1
     Dispositivo dispActual = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
+    actualizarWaterDisplay(dispActual.porcentaje);
     
     // ⭐⭐ SOLO IMPRIMIR SI HAY CAMBIOS
     static String ultimoNombreMostrado = "";
