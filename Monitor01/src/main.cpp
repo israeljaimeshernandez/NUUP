@@ -10,7 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 139 - 2025-07-08 OLED: anima el llenado al mantener estatus=2 y fuerza refresco aunque no cambie el porcentaje.
+ * 140 - 2025-07-08 MQTT: estatus de llenado se integra en telemetría normal (sin tópico /estatus).
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -105,7 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 139 - 2025-07-08 OLED: anima el llenado al mantener estatus=2 y fuerza refresco aunque no cambie el porcentaje.
+// 140 - 2025-07-08 MQTT: estatus de llenado se integra en telemetría normal (sin tópico /estatus).
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -351,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 139;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 140;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -624,7 +624,6 @@ void activarDispositivosTrasConfirmacion();
 void iniciarWaterDisplay();
 void actualizarWaterDisplay(int porcentaje);
 void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua);
-void publicarEstatusLlenadoMQTT();
 String insertarEstatusDespuesDeNombre(const String &payload, int estatus);
 
 
@@ -657,8 +656,6 @@ unsigned long waterDisplayUltimaAnimacion = 0;
 unsigned long waterDisplayUltimaAnimacionLlenado = 0;
 // Control manual de llenado: ajustar a true para enviar estatus=2, false para estatus=1
 bool ESTATUS_LLENADO_ACTIVO = false;
-unsigned long ultimoEnvioEstatusLlenado = 0;
-int ultimoEstatusEnviado = -1;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -6168,33 +6165,6 @@ String insertarEstatusDespuesDeNombre(const String &payload, int estatus) {
     return payload + "," + String(estatus);
 }
 
-void publicarEstatusLlenadoMQTT() {
-    if (!client.connected() || WiFi.status() != WL_CONNECTED || !mqttConfirmed) {
-        return;
-    }
-
-    asegurarMacMonitorFija("estatus_tx");
-    String macTopico = normalizarMac(macMonitorFija);
-    if (macTopico.isEmpty()) {
-        return;
-    }
-
-    int estatus = ESTATUS_LLENADO_ACTIVO ? 2 : 1;
-    unsigned long ahora = millis();
-    bool cambio = (estatus != ultimoEstatusEnviado);
-    if (!cambio && (ahora - ultimoEnvioEstatusLlenado < 30000)) {
-        return;
-    }
-
-    String topico = String("NUUP/") + macTopico + "/estatus";
-    String payload = String("{\"result\":") + estatus + "}";
-    if (client.publish(topico.c_str(), payload.c_str())) {
-        ultimoEnvioEstatusLlenado = ahora;
-        ultimoEstatusEnviado = estatus;
-        Serial.printf("💧 [MQTT][TX] Estatus llenado enviado (%d) -> %s\n", estatus, topico.c_str());
-    }
-}
-
 void actualizarWaterDisplay(int porcentaje) {
     if (!waterDisplayOk) {
         return;
@@ -7068,7 +7038,6 @@ testLoRaPeriodico();
             }
 
             waterDisplayLlenando = ESTATUS_LLENADO_ACTIVO;
-            publicarEstatusLlenadoMQTT();
 
             nuevoMensajeLoRa = false; //solo publicar una vez el mensaje y esperar a otro nuevo
         }
