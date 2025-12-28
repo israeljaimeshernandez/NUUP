@@ -10,7 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
+ * 140 - 2025-07-08 MQTT: estatus de llenado se integra en telemetría normal (sin tópico /estatus).
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -105,7 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
+// 140 - 2025-07-08 MQTT: estatus de llenado se integra en telemetría normal (sin tópico /estatus).
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -351,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 137;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 140;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -624,7 +624,6 @@ void activarDispositivosTrasConfirmacion();
 void iniciarWaterDisplay();
 void actualizarWaterDisplay(int porcentaje);
 void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua);
-void publicarEstatusLlenadoMQTT();
 String insertarEstatusDespuesDeNombre(const String &payload, int estatus);
 
 
@@ -654,10 +653,9 @@ bool waterDisplayBlinkOn = true;
 bool waterDisplayLlenando = false;
 int waterDisplayPorcentajeAnimado = 0;
 unsigned long waterDisplayUltimaAnimacion = 0;
+unsigned long waterDisplayUltimaAnimacionLlenado = 0;
 // Control manual de llenado: ajustar a true para enviar estatus=2, false para estatus=1
 bool ESTATUS_LLENADO_ACTIVO = false;
-unsigned long ultimoEnvioEstatusLlenado = 0;
-int ultimoEstatusEnviado = -1;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -6159,39 +6157,12 @@ String insertarEstatusDespuesDeNombre(const String &payload, int estatus) {
     for (int i = 0; i < payload.length(); i++) {
         if (payload.charAt(i) == ',') {
             commaCount++;
-            if (commaCount == 7) {
+            if (commaCount == 8) {
                 return payload.substring(0, i + 1) + String(estatus) + "," + payload.substring(i + 1);
             }
         }
     }
     return payload + "," + String(estatus);
-}
-
-void publicarEstatusLlenadoMQTT() {
-    if (!client.connected() || WiFi.status() != WL_CONNECTED || !mqttConfirmed) {
-        return;
-    }
-
-    asegurarMacMonitorFija("estatus_tx");
-    String macTopico = normalizarMac(macMonitorFija);
-    if (macTopico.isEmpty()) {
-        return;
-    }
-
-    int estatus = ESTATUS_LLENADO_ACTIVO ? 2 : 1;
-    unsigned long ahora = millis();
-    bool cambio = (estatus != ultimoEstatusEnviado);
-    if (!cambio && (ahora - ultimoEnvioEstatusLlenado < 30000)) {
-        return;
-    }
-
-    String topico = String("NUUP/") + macTopico + "/estatus";
-    String payload = String("{\"result\":") + estatus + "}";
-    if (client.publish(topico.c_str(), payload.c_str())) {
-        ultimoEnvioEstatusLlenado = ahora;
-        ultimoEstatusEnviado = estatus;
-        Serial.printf("💧 [MQTT][TX] Estatus llenado enviado (%d) -> %s\n", estatus, topico.c_str());
-    }
 }
 
 void actualizarWaterDisplay(int porcentaje) {
@@ -6203,6 +6174,13 @@ void actualizarWaterDisplay(int porcentaje) {
     bool necesitaRender = false;
     unsigned long ahora = millis();
     int porcentajeRender = porcentaje;
+    static bool ultimoLlenando = false;
+
+    if (waterDisplayLlenando != ultimoLlenando) {
+        ultimoLlenando = waterDisplayLlenando;
+        waterDisplayUltimaAnimacionLlenado = ahora;
+        necesitaRender = true;
+    }
 
     if (!waterDisplayLlenando || porcentaje <= waterDisplayPorcentajeAnimado) {
         if (waterDisplayPorcentajeAnimado != porcentaje) {
@@ -6216,6 +6194,11 @@ void actualizarWaterDisplay(int porcentaje) {
     }
 
     porcentajeRender = waterDisplayPorcentajeAnimado;
+
+    if (waterDisplayLlenando && (ahora - waterDisplayUltimaAnimacionLlenado >= 150)) {
+        waterDisplayUltimaAnimacionLlenado = ahora;
+        necesitaRender = true;
+    }
 
     if (porcentaje < 10) {
         if (ahora - waterDisplayUltimoBlink >= 500) {
@@ -7055,7 +7038,6 @@ testLoRaPeriodico();
             }
 
             waterDisplayLlenando = ESTATUS_LLENADO_ACTIVO;
-            publicarEstatusLlenadoMQTT();
 
             nuevoMensajeLoRa = false; //solo publicar una vez el mensaje y esperar a otro nuevo
         }
@@ -7126,6 +7108,7 @@ if(!forceAPMode){
     
     // ⭐⭐ SEGURO: cantidadDispositivos es al menos 1
     Dispositivo dispActual = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
+    waterDisplayLlenando = ESTATUS_LLENADO_ACTIVO;
     actualizarWaterDisplay(dispActual.porcentaje);
     
     // ⭐⭐ SOLO IMPRIMIR SI HAY CAMBIOS
