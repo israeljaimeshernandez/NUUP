@@ -10,7 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 138 - 2025-07-08 MQTT inserta estatus después del nombre en el payload de telemetría (corrige alias que regresaba a "1").
+ * 139 - 2025-07-08 OLED: anima el llenado al mantener estatus=2 y fuerza refresco aunque no cambie el porcentaje.
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -105,7 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 138 - 2025-07-08 MQTT inserta estatus después del nombre en el payload de telemetría (corrige alias que regresaba a "1").
+// 139 - 2025-07-08 OLED: anima el llenado al mantener estatus=2 y fuerza refresco aunque no cambie el porcentaje.
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -351,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 138;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 139;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -654,6 +654,7 @@ bool waterDisplayBlinkOn = true;
 bool waterDisplayLlenando = false;
 int waterDisplayPorcentajeAnimado = 0;
 unsigned long waterDisplayUltimaAnimacion = 0;
+unsigned long waterDisplayUltimaAnimacionLlenado = 0;
 // Control manual de llenado: ajustar a true para enviar estatus=2, false para estatus=1
 bool ESTATUS_LLENADO_ACTIVO = false;
 unsigned long ultimoEnvioEstatusLlenado = 0;
@@ -6203,6 +6204,13 @@ void actualizarWaterDisplay(int porcentaje) {
     bool necesitaRender = false;
     unsigned long ahora = millis();
     int porcentajeRender = porcentaje;
+    static bool ultimoLlenando = false;
+
+    if (waterDisplayLlenando != ultimoLlenando) {
+        ultimoLlenando = waterDisplayLlenando;
+        waterDisplayUltimaAnimacionLlenado = ahora;
+        necesitaRender = true;
+    }
 
     if (!waterDisplayLlenando || porcentaje <= waterDisplayPorcentajeAnimado) {
         if (waterDisplayPorcentajeAnimado != porcentaje) {
@@ -6216,6 +6224,11 @@ void actualizarWaterDisplay(int porcentaje) {
     }
 
     porcentajeRender = waterDisplayPorcentajeAnimado;
+
+    if (waterDisplayLlenando && (ahora - waterDisplayUltimaAnimacionLlenado >= 150)) {
+        waterDisplayUltimaAnimacionLlenado = ahora;
+        necesitaRender = true;
+    }
 
     if (porcentaje < 10) {
         if (ahora - waterDisplayUltimoBlink >= 500) {
@@ -7126,6 +7139,7 @@ if(!forceAPMode){
     
     // ⭐⭐ SEGURO: cantidadDispositivos es al menos 1
     Dispositivo dispActual = obtenerDatosDispositivo(dispositivoActual % cantidadDispositivos);
+    waterDisplayLlenando = ESTATUS_LLENADO_ACTIVO;
     actualizarWaterDisplay(dispActual.porcentaje);
     
     // ⭐⭐ SOLO IMPRIMIR SI HAY CAMBIOS
