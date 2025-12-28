@@ -10,7 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
+ * 138 - 2025-07-08 MQTT inserta estatus después del nombre en el payload de telemetría (corrige alias que regresaba a "1").
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -105,7 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
+// 138 - 2025-07-08 MQTT inserta estatus después del nombre en el payload de telemetría (corrige alias que regresaba a "1").
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -351,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 137;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 138;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -6159,7 +6159,7 @@ String insertarEstatusDespuesDeNombre(const String &payload, int estatus) {
     for (int i = 0; i < payload.length(); i++) {
         if (payload.charAt(i) == ',') {
             commaCount++;
-            if (commaCount == 7) {
+            if (commaCount == 8) {
                 return payload.substring(0, i + 1) + String(estatus) + "," + payload.substring(i + 1);
             }
         }
