@@ -6113,15 +6113,17 @@ void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
     const int capX = valveX - capWidth / 2;
     const int capY = valveY - valveRadius - capHeight + 1;
 
-    waterDisplay.drawRect(pipeX, pipeY, pipeWidth, pipeHeight, SSD1306_WHITE);
-    waterDisplay.fillRect(pipeX + 1, pipeY + 1, pipeWidth - 2, pipeHeight - 2, SSD1306_WHITE);
-    waterDisplay.drawRect(spoutX, spoutY, spoutWidth, spoutHeight, SSD1306_WHITE);
-    waterDisplay.fillRect(spoutX + 1, spoutY + 1, spoutWidth - 2, spoutHeight - 2, SSD1306_WHITE);
-    waterDisplay.drawCircle(valveX, valveY, valveRadius, SSD1306_WHITE);
-    waterDisplay.drawFastHLine(valveX - 4, valveY, 8, SSD1306_WHITE);
-    waterDisplay.drawFastVLine(valveX, valveY - 4, 8, SSD1306_WHITE);
-    waterDisplay.drawRect(capX, capY, capWidth, capHeight, SSD1306_WHITE);
-    waterDisplay.drawFastHLine(capX, capY + capHeight + 1, capWidth, SSD1306_WHITE);
+    if (waterDisplayLlenando) {
+        waterDisplay.drawRect(pipeX, pipeY, pipeWidth, pipeHeight, SSD1306_WHITE);
+        waterDisplay.fillRect(pipeX + 1, pipeY + 1, pipeWidth - 2, pipeHeight - 2, SSD1306_WHITE);
+        waterDisplay.drawRect(spoutX, spoutY, spoutWidth, spoutHeight, SSD1306_WHITE);
+        waterDisplay.fillRect(spoutX + 1, spoutY + 1, spoutWidth - 2, spoutHeight - 2, SSD1306_WHITE);
+        waterDisplay.drawCircle(valveX, valveY, valveRadius, SSD1306_WHITE);
+        waterDisplay.drawFastHLine(valveX - 4, valveY, 8, SSD1306_WHITE);
+        waterDisplay.drawFastVLine(valveX, valveY - 4, 8, SSD1306_WHITE);
+        waterDisplay.drawRect(capX, capY, capWidth, capHeight, SSD1306_WHITE);
+        waterDisplay.drawFastHLine(capX, capY + capHeight + 1, capWidth, SSD1306_WHITE);
+    }
 
     if (!mostrarAgua) {
         return;
