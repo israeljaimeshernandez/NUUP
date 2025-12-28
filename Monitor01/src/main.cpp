@@ -10,7 +10,7 @@
  * Plataforma:  PlatformIO + Arduino Framework
  *
  * CONSECUTIVO ACTUAL:
- * 136 - 2025-07-08 MQTT añade estatus (1/2) al payload para actualizar Devices en backend.
+ * 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
  * 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
  * 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
  * 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10% sin afectar operación.
@@ -105,7 +105,7 @@
 // ============================================================================
 // HISTORIAL DE VERSIONES Y CORRECCIONES
 // ============================================================================
-// 136 - 2025-07-08 MQTT añade estatus (1/2) al payload para actualizar Devices en backend.
+// 137 - 2025-07-08 MQTT envía estatus (1/2) después del nombre en el payload de telemetría.
 // 133 - 2025-07-08 OLED vertical: márgenes configurables, manguera detallada y llenado por estatus MQTT=2.
 // 132 - 2025-07-08 OLED vertical: animación de llenado desde abajo al nivel actual cuando se está llenando.
 // 131 - 2025-07-08 OLED vertical: centrar tanque, manguera con animación de llenado y parpadeo <10%.
@@ -351,7 +351,7 @@ bool LORA_BIDIRECCIONAL_BORRAR = false;                    // Solo para desarrol
 unsigned long INTERVALO_BIDIRECCIONAL_LORA_MS = 100;       // Intervalo entre ciclos dev (ajustable)
 uint32_t consecutivoMonitorBidireccional = 0;              // Contador de respuestas dev
 uint32_t consecutivoConfirmacionesLoRa = 0;                // Consecutivo global de confirmaciones TX
-const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 136;            // Última modificación documentada
+const uint16_t CONSECUTIVO_CAMBIO_ACTUAL = 137;            // Última modificación documentada
 
 
 //Redes guardadas
@@ -625,6 +625,7 @@ void iniciarWaterDisplay();
 void actualizarWaterDisplay(int porcentaje);
 void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua);
 void publicarEstatusLlenadoMQTT();
+String insertarEstatusDespuesDeNombre(const String &payload, int estatus);
 
 
 //Definiciones pantalla TFT
@@ -6153,6 +6154,19 @@ void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
     }
 }
 
+String insertarEstatusDespuesDeNombre(const String &payload, int estatus) {
+    int commaCount = 0;
+    for (int i = 0; i < payload.length(); i++) {
+        if (payload.charAt(i) == ',') {
+            commaCount++;
+            if (commaCount == 7) {
+                return payload.substring(0, i + 1) + String(estatus) + "," + payload.substring(i + 1);
+            }
+        }
+    }
+    return payload + "," + String(estatus);
+}
+
 void publicarEstatusLlenadoMQTT() {
     if (!client.connected() || WiFi.status() != WL_CONNECTED || !mqttConfirmed) {
         return;
@@ -7019,7 +7033,7 @@ testLoRaPeriodico();
                 Serial.println("\n📡 [MQTT][TX] Telemetría hacia broker");
                 Serial.printf("   Topic   : %s\n", topico.c_str());
                 int estatusLlenado = ESTATUS_LLENADO_ACTIVO ? 2 : 1;
-                String payloadMQTT = mensajeLoRa + "," + String(estatusLlenado);
+                String payloadMQTT = insertarEstatusDespuesDeNombre(mensajeLoRa, estatusLlenado);
                 Serial.printf("   Payload : %s\n", payloadMQTT.c_str());
                 Serial.println("   ✅ Solicitud: validar DEVICE_MODIFICACION y responder en NUUP/<MONITOR>/confirmacion/");
                 Serial.printf("   ℹ️ Ruta fija por monitor: NUUP/%s (MAC del sensor viaja en el payload)\n", macTopico.c_str());
