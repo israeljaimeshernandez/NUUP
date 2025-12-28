@@ -655,7 +655,7 @@ int waterDisplayPorcentajeAnimado = 0;
 unsigned long waterDisplayUltimaAnimacion = 0;
 unsigned long waterDisplayUltimaAnimacionLlenado = 0;
 // Control manual de llenado: ajustar a true para enviar estatus=2, false para estatus=1
-bool ESTATUS_LLENADO_ACTIVO = true;
+bool ESTATUS_LLENADO_ACTIVO = false;
 
 // Estructura para los dispositivos
 struct Dispositivo {
@@ -6113,17 +6113,15 @@ void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
     const int capX = valveX - capWidth / 2;
     const int capY = valveY - valveRadius - capHeight + 1;
 
-    if (waterDisplayLlenando) {
-        waterDisplay.drawRect(pipeX, pipeY, pipeWidth, pipeHeight, SSD1306_WHITE);
-        waterDisplay.fillRect(pipeX + 1, pipeY + 1, pipeWidth - 2, pipeHeight - 2, SSD1306_WHITE);
-        waterDisplay.drawRect(spoutX, spoutY, spoutWidth, spoutHeight, SSD1306_WHITE);
-        waterDisplay.fillRect(spoutX + 1, spoutY + 1, spoutWidth - 2, spoutHeight - 2, SSD1306_WHITE);
-        waterDisplay.drawCircle(valveX, valveY, valveRadius, SSD1306_WHITE);
-        waterDisplay.drawFastHLine(valveX - 4, valveY, 8, SSD1306_WHITE);
-        waterDisplay.drawFastVLine(valveX, valveY - 4, 8, SSD1306_WHITE);
-        waterDisplay.drawRect(capX, capY, capWidth, capHeight, SSD1306_WHITE);
-        waterDisplay.drawFastHLine(capX, capY + capHeight + 1, capWidth, SSD1306_WHITE);
-    }
+    waterDisplay.drawRect(pipeX, pipeY, pipeWidth, pipeHeight, SSD1306_WHITE);
+    waterDisplay.fillRect(pipeX + 1, pipeY + 1, pipeWidth - 2, pipeHeight - 2, SSD1306_WHITE);
+    waterDisplay.drawRect(spoutX, spoutY, spoutWidth, spoutHeight, SSD1306_WHITE);
+    waterDisplay.fillRect(spoutX + 1, spoutY + 1, spoutWidth - 2, spoutHeight - 2, SSD1306_WHITE);
+    waterDisplay.drawCircle(valveX, valveY, valveRadius, SSD1306_WHITE);
+    waterDisplay.drawFastHLine(valveX - 4, valveY, 8, SSD1306_WHITE);
+    waterDisplay.drawFastVLine(valveX, valveY - 4, 8, SSD1306_WHITE);
+    waterDisplay.drawRect(capX, capY, capWidth, capHeight, SSD1306_WHITE);
+    waterDisplay.drawFastHLine(capX, capY + capHeight + 1, capWidth, SSD1306_WHITE);
 
     if (!mostrarAgua) {
         return;
