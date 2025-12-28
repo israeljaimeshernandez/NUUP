@@ -641,9 +641,9 @@ static const uint8_t WATER_OLED_SDA = 15;
 static const uint8_t WATER_OLED_SCL = 4;
 static const uint8_t WATER_OLED_ADDR = 0x3C;
 // Márgenes del tanque en el OLED vertical (ajustables para centrar el recuadro)
-static const uint8_t WATER_MARGIN_LEFT = 18;
-static const uint8_t WATER_MARGIN_RIGHT = 6;
-static const uint8_t WATER_MARGIN_TOP = 8;
+static const uint8_t WATER_MARGIN_LEFT = 4;//18
+static const uint8_t WATER_MARGIN_RIGHT = 2;//6
+static const uint8_t WATER_MARGIN_TOP = 14; //8
 static const uint8_t WATER_MARGIN_BOTTOM = 6;
 TwoWire waterWire = TwoWire(1);
 Adafruit_SSD1306 waterDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &waterWire, OLED_RESET);
