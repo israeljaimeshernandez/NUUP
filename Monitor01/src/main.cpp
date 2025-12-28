@@ -6133,21 +6133,24 @@ void dibujarNivelAguaVertical(int porcentaje, bool mostrarAgua) {
 
     waterDisplay.fillRect(interiorX, aguaY, interiorW, alturaAgua, SSD1306_WHITE);
 
-    int waveOffset = (millis() / 250) % 4;
-    for (int y = aguaY + waveOffset; y < interiorY + interiorH; y += 6) {
+    int waveOffset = (millis() / 250) % 6;
+    for (int y = aguaY + waveOffset; y < interiorY + interiorH; y += 12) {
         waterDisplay.drawFastHLine(interiorX, y, interiorW, SSD1306_BLACK);
     }
 
     if (waterDisplayLlenando) {
-        int dropOffset = (millis() / 120) % 10;
         int dropX = spoutX + (spoutWidth / 2);
         int dropYStart = spoutY + spoutHeight + 1;
-        int dropY = dropYStart + dropOffset;
-        int dropYMax = tanqueY + 8;
-        if (dropY < dropYMax) {
-            waterDisplay.drawFastVLine(dropX, dropYStart, dropY - dropYStart + 1, SSD1306_WHITE);
-            waterDisplay.drawPixel(dropX - 1, dropY, SSD1306_WHITE);
-            waterDisplay.drawPixel(dropX + 1, dropY, SSD1306_WHITE);
+        int dropYMax = interiorY + 12;
+        int dropTravel = max(1, dropYMax - dropYStart);
+        int dropOffset = (millis() / 80) % (dropTravel + 1);
+        int dropLength = min((dropOffset + 1) * 5, dropTravel + 1);
+        int dropY = dropYStart + dropLength - 1;
+        const int dropHalfWidth = 5;
+        if (dropY <= dropYMax) {
+            for (int x = dropX - dropHalfWidth; x < dropX + dropHalfWidth; x++) {
+                waterDisplay.drawFastVLine(x, dropYStart, dropLength, SSD1306_WHITE);
+            }
         }
     }
 }
