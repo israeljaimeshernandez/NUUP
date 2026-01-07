@@ -655,7 +655,7 @@ int waterDisplayPorcentajeAnimado = 0;
 unsigned long waterDisplayUltimaAnimacion = 0;
 unsigned long waterDisplayUltimaAnimacionLlenado = 0;
 // Control manual de llenado: ajustar a true para enviar estatus=2, false para estatus=1
-bool ESTATUS_LLENADO_ACTIVO = false;
+bool ESTATUS_LLENADO_ACTIVO = true;
 
 // Estructura para los dispositivos
 struct Dispositivo {
